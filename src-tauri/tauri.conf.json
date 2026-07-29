@@ -1,0 +1,53 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicovince/tauri/HEAD/crates/tauri-config-schema/schema.json",
+  "productName": "MaxSpeech",
+  "version": "0.1.0",
+  "identifier": "com.maxspeech.app",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "trayIcon": {
+      "iconPath": "icons/icon.png",
+      "iconAsTemplate": false,
+      "tooltip": "MaxSpeech - Voice to Text"
+    },
+    "windows": [
+      {
+        "label": "overlay",
+        "title": "MaxSpeech",
+        "width": 400,
+        "height": 60,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "visible": false,
+        "x": 760,
+        "y": 50
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  }
+}

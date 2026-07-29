@@ -1,0 +1,25 @@
+@import "tailwindcss";
+
+:root {
+  --ms-primary: #6366f1;
+  --ms-bg: #0f0f14;
+  --ms-surface: #1a1a24;
+  --ms-border: #2a2a3a;
+  --ms-text: #e4e4ef;
+  --ms-text-dim: #8888a0;
+  --ms-success: #22c55e;
+  --ms-error: #ef4444;
+  --ms-warning: #f59e0b;
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: var(--ms-bg);
+  color: var(--ms-text);
+  -webkit-font-smoothing: antialiased;
+}
