@@ -1,4 +1,4 @@
-name: Release
+name: Release MaxSpeech
 
 on:
   push:
@@ -13,22 +13,18 @@ jobs:
   publish-windows:
     runs-on: windows-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: "22"
           cache: npm
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
 
-      - name: Rust cache
-        uses: swatinem/rust-cache@v2
+      - uses: swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri -> target
+          workspaces: "src-tauri -> target"
 
       - name: Install frontend deps
         run: npm ci
@@ -41,12 +37,8 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: v__VERSION__
-          releaseName: MaxSpeech v__VERSION__
-          releaseBody: |
-            ## Install
-            Download **MaxSpeech_*_x64-setup.exe** (recommended) or the `.msi`.
-
-            Sign in with your MaxSpeech account after install. In-app updates use this release's `latest.json`.
+          releaseName: "MaxSpeech v__VERSION__"
+          releaseBody: "Windows installer for MaxSpeech. Download the NSIS setup.exe."
           releaseDraft: false
           prerelease: false
           uploadUpdaterJson: true
