@@ -1,15 +1,155 @@
 @import "tailwindcss";
 
-:root {
-  --ms-primary: #6366f1;
-  --ms-bg: #0f0f14;
-  --ms-surface: #1a1a24;
-  --ms-border: #2a2a3a;
-  --ms-text: #e4e4ef;
-  --ms-text-dim: #8888a0;
-  --ms-success: #22c55e;
+/* Default = Dark */
+:root,
+[data-theme="dark"] {
+  --ms-turquoise: #2dd4bf;
+  --ms-turquoise-dim: #14b8a6;
+  --ms-turquoise-glow: rgba(45, 212, 191, 0.35);
+  --ms-orange: #f97316;
+  --ms-orange-glow: rgba(249, 115, 22, 0.3);
+  --ms-bg: #000000;
+  --ms-bg-soft: #0a0a0a;
+  --ms-surface: #111111;
+  --ms-surface-2: #1a1a1a;
+  --ms-border: transparent;
+  --ms-text: #ffffff;
+  --ms-text-dim: #a3a3a3;
+  --ms-text-soft: rgba(255, 255, 255, 0.9);
+  --ms-success: #2dd4bf;
   --ms-error: #ef4444;
-  --ms-warning: #f59e0b;
+  --ms-warning: #f97316;
+  --ms-radius: 18px;
+  --ms-fill-muted: rgba(0, 0, 0, 0.35);
+  --ms-fill-track: rgba(0, 0, 0, 0.45);
+  --ms-hairline: rgba(255, 255, 255, 0.05);
+  --ms-row-border: rgba(255, 255, 255, 0.04);
+  --ms-hover-fg: #ffffff;
+  --ms-kbd-bg: #000000;
+  --ms-card-shadow: 0 4px 24px rgba(0, 0, 0, 0.35);
+  --ms-card-hover-shadow: 0 6px 28px rgba(45, 212, 191, 0.1);
+  --ms-toggle-off: #2a2a2a;
+  --ms-btn-primary-fg: #000000;
+  --ms-nav-active-bg: linear-gradient(
+    90deg,
+    rgba(45, 212, 191, 0.16),
+    rgba(249, 115, 22, 0.07)
+  );
+  --ms-scrollbar-track: transparent;
+  --ms-scrollbar-thumb: rgba(255, 255, 255, 0.12);
+  --ms-scrollbar-thumb-hover: rgba(255, 255, 255, 0.2);
+}
+
+/* Soft charcoal — still dark, easier on the eyes */
+[data-theme="gray"] {
+  --ms-turquoise: #2dd4bf;
+  --ms-turquoise-dim: #14b8a6;
+  --ms-turquoise-glow: rgba(45, 212, 191, 0.28);
+  --ms-orange: #fb923c;
+  --ms-orange-glow: rgba(251, 146, 60, 0.25);
+  --ms-bg: #1c1c1e;
+  --ms-bg-soft: #232326;
+  --ms-surface: #2c2c2e;
+  --ms-surface-2: #3a3a3c;
+  --ms-border: rgba(255, 255, 255, 0.04);
+  --ms-text: #f5f5f7;
+  --ms-text-dim: #a1a1a6;
+  --ms-text-soft: rgba(245, 245, 247, 0.92);
+  --ms-success: #2dd4bf;
+  --ms-error: #f87171;
+  --ms-warning: #fb923c;
+  --ms-fill-muted: rgba(0, 0, 0, 0.28);
+  --ms-fill-track: rgba(0, 0, 0, 0.4);
+  --ms-hairline: rgba(255, 255, 255, 0.07);
+  --ms-row-border: rgba(255, 255, 255, 0.06);
+  --ms-hover-fg: #ffffff;
+  --ms-kbd-bg: #1a1a1c;
+  --ms-card-shadow: 0 4px 22px rgba(0, 0, 0, 0.28);
+  --ms-card-hover-shadow: 0 6px 26px rgba(45, 212, 191, 0.12);
+  --ms-toggle-off: #3a3a3c;
+  --ms-btn-primary-fg: #000000;
+  --ms-nav-active-bg: linear-gradient(
+    90deg,
+    rgba(45, 212, 191, 0.2),
+    rgba(251, 146, 60, 0.1)
+  );
+  --ms-scrollbar-track: transparent;
+  --ms-scrollbar-thumb: rgba(255, 255, 255, 0.14);
+  --ms-scrollbar-thumb-hover: rgba(255, 255, 255, 0.24);
+}
+
+/* Soft light — not harsh pure white chrome */
+[data-theme="light"] {
+  --ms-turquoise: #0d9488;
+  --ms-turquoise-dim: #0f766e;
+  --ms-turquoise-glow: rgba(13, 148, 136, 0.18);
+  --ms-orange: #ea580c;
+  --ms-orange-glow: rgba(234, 88, 12, 0.14);
+  --ms-bg: #eef0f3;
+  --ms-bg-soft: #e4e7eb;
+  --ms-surface: #fafbfc;
+  --ms-surface-2: #f3f4f6;
+  --ms-border: rgba(15, 23, 42, 0.08);
+  --ms-text: #141418;
+  --ms-text-dim: #5c5f6a;
+  --ms-text-soft: rgba(20, 20, 24, 0.88);
+  --ms-success: #0d9488;
+  --ms-error: #dc2626;
+  --ms-warning: #ea580c;
+  --ms-fill-muted: rgba(15, 23, 42, 0.06);
+  --ms-fill-track: rgba(15, 23, 42, 0.1);
+  --ms-hairline: rgba(15, 23, 42, 0.08);
+  --ms-row-border: rgba(15, 23, 42, 0.06);
+  --ms-hover-fg: #0a0a0c;
+  --ms-kbd-bg: #e4e7eb;
+  --ms-card-shadow: 0 4px 18px rgba(15, 23, 42, 0.06);
+  --ms-card-hover-shadow: 0 6px 22px rgba(13, 148, 136, 0.1);
+  --ms-toggle-off: #d1d5db;
+  --ms-btn-primary-fg: #ffffff;
+  --ms-nav-active-bg: linear-gradient(
+    90deg,
+    rgba(13, 148, 136, 0.14),
+    rgba(234, 88, 12, 0.08)
+  );
+  --ms-scrollbar-track: transparent;
+  --ms-scrollbar-thumb: rgba(15, 23, 42, 0.18);
+  --ms-scrollbar-thumb-hover: rgba(15, 23, 42, 0.28);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* Thin, low-contrast scrollbars that blend into the panel edge */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--ms-scrollbar-thumb) var(--ms-scrollbar-track);
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+*::-webkit-scrollbar-track {
+  background: var(--ms-scrollbar-track);
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: var(--ms-scrollbar-thumb);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--ms-scrollbar-thumb-hover);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 html, body, #root {
@@ -18,8 +158,519 @@ html, body, #root {
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  background: var(--ms-bg);
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  /* Transparent by default (WebView2 otherwise paints white behind the pill). */
+  background: transparent;
   color: var(--ms-text);
   -webkit-font-smoothing: antialiased;
+  font-size: 14.5px; /* ~15% tighter feel with smaller window */
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+/* Only paint solid chrome for main windows — never the overlay. */
+html[data-window="shell"] body,
+html[data-window="onboarding"] body {
+  background: var(--ms-bg) !important;
+}
+
+/* Overlay window: fully clear chrome so only the pill/toast shows */
+html[data-window="overlay"],
+html[data-window="overlay"] body,
+html[data-window="overlay"] #root {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+
+.page-enter {
+  animation: fadeSlideIn 0.35s ease both;
+}
+
+@keyframes fadeSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.liquid-glass-pill {
+  /* No backdrop-filter: on a truly transparent always-on-top window, Windows
+     has to blur live desktop content every frame which is extremely expensive
+     and caused severe lag. Fake the frosted look with an opaque-ish gradient. */
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  background: linear-gradient(
+    145deg,
+    rgba(38, 38, 38, 0.98) 0%,
+    rgba(18, 18, 18, 0.99) 35%,
+    rgba(8, 8, 8, 1) 100%
+  );
+  border: none;
+  outline: none;
+  box-shadow: none;
+}
+
+.liquid-glass-bar {
+  border-radius: 999px;
+  border: none;
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.55) 0%,
+    var(--bar-hi, #99f6e4) 28%,
+    var(--bar-color, var(--ms-turquoise)) 100%
+  );
+  box-shadow:
+    0 0 10px color-mix(in srgb, var(--bar-color, var(--ms-turquoise)) 45%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.45),
+    inset 0 -2px 4px rgba(0, 0, 0, 0.2);
+  transition: height 55ms ease-out;
+  opacity: 0.95;
+  will-change: height;
+}
+
+.nav-icon {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: inherit;
+  transition: transform 0.2s ease, color 0.2s ease;
+}
+
+.nav-item:hover .nav-icon {
+  transform: scale(1.08);
+  color: var(--ms-turquoise);
+}
+
+.nav-icon-active {
+  color: var(--ms-turquoise);
+}
+
+.nav-logo-glow {
+  /* prefer .ms-logo for new UI */
+  box-shadow: 0 0 18px var(--ms-turquoise-glow);
+  image-rendering: -webkit-optimize-contrast;
+}
+
+.nav-icon svg {
+  display: block;
+}
+
+.accent-gradient-text {
+  background: linear-gradient(90deg, var(--ms-turquoise), #5eead4 45%, var(--ms-orange));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+[data-theme="light"] .accent-gradient-text {
+  background: linear-gradient(90deg, var(--ms-turquoise), #14b8a6 45%, var(--ms-orange));
+  -webkit-background-clip: text;
+  background-clip: text;
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, var(--ms-turquoise), var(--ms-turquoise-dim));
+  color: var(--ms-btn-primary-fg);
+  border: none;
+  border-radius: 999px;
+  font-weight: 600;
+  transition: transform 0.15s ease, box-shadow 0.2s ease, filter 0.2s ease;
+  box-shadow: 0 0 16px var(--ms-turquoise-glow);
+}
+
+.btn-primary:hover:not(:disabled) {
+  transform: translateY(-1px);
+  filter: brightness(1.08);
+}
+
+.btn-primary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn-orange {
+  background: linear-gradient(135deg, var(--ms-orange), #ea580c);
+  color: #fff;
+  border: none;
+  border-radius: 999px;
+  font-weight: 600;
+  transition: transform 0.15s ease, box-shadow 0.2s ease;
+  box-shadow: 0 0 14px var(--ms-orange-glow);
+}
+
+.input-field {
+  background: var(--ms-surface);
+  border: none;
+  color: var(--ms-text);
+  border-radius: var(--ms-radius);
+  outline: 1px solid var(--ms-border);
+  transition: outline-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.input-field:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--ms-turquoise-glow);
+}
+
+.nav-active {
+  background: var(--ms-nav-active-bg);
+  color: var(--ms-turquoise);
+  border: none;
+  border-radius: 999px;
+}
+
+.surface-card {
+  background: var(--ms-surface);
+  border: none;
+  border-radius: var(--ms-radius);
+  box-shadow: var(--ms-card-shadow);
+  transition: box-shadow 0.25s ease, transform 0.2s ease;
+}
+
+.surface-card:hover {
+  box-shadow: var(--ms-card-hover-shadow);
+}
+
+.overlay-root {
+  width: 100%;
+  height: 100%;
+  background: transparent !important;
+  background-color: transparent !important;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: stretch;
+  overflow: hidden;
+  gap: 0;
+  padding: 0;
+  margin: 0;
+  /* Never frost the full window — only the pill/toast */
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.overlay-root--toast {
+  justify-content: flex-end;
+  align-items: center;
+  padding-bottom: 0;
+}
+
+/* Zoomed + rounded MaxSpeech mark for in-app UI */
+.ms-logo {
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  overflow: hidden;
+  flex-shrink: 0;
+  box-shadow: 0 0 18px var(--ms-turquoise-glow);
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.ms-logo img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: scale(1.15);
+  transform-origin: center center;
+  display: block;
+}
+
+.ms-logo--lg {
+  width: 72px;
+  height: 72px;
+  border-radius: 20px;
+  margin-inline: auto;
+}
+
+.ms-logo--toast {
+  width: 29px;
+  height: 29px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow: 0 0 12px var(--ms-turquoise-glow);
+}
+
+.liquid-glass-toast {
+  width: 100%;
+  max-width: none;
+  height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  /* Soft frosted glass — no border / outline / hard edge ring.
+     No backdrop-filter: blurring a truly transparent always-on-top window's
+     live desktop content every frame is very expensive on Windows and caused
+     severe lag. Opaque-ish gradient fakes the glass look cheaply instead. */
+  background: linear-gradient(
+    145deg,
+    rgba(30, 40, 40, 0.98) 0%,
+    rgba(16, 26, 26, 0.99) 38%,
+    rgba(10, 14, 15, 1) 100%
+  );
+  border: none;
+  outline: none;
+  box-shadow: none;
+}
+
+.enhance-toast-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  background: linear-gradient(90deg, #5eead4, #fdba74);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.enhance-toast-sub {
+  font-size: 8px;
+  color: rgba(255, 255, 255, 0.7);
+  margin-top: 1px;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+
+.enhance-toast-snip {
+  margin-top: 3px;
+  font-size: 8px;
+  color: rgba(255, 255, 255, 0.82);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 194px;
+}
+
+.enhance-toast--in {
+  animation: enhanceToastIn 0.38s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.enhance-toast--out {
+  animation: enhanceToastOut 0.28s ease-in both;
+}
+
+@keyframes enhanceToastIn {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes enhanceToastOut {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(9px) scale(0.96);
+  }
+}
+
+/* Consistent page frame — works in the narrow center column */
+.page-shell {
+  width: 100%;
+  max-width: 42rem;
+  margin-inline: auto;
+  padding: 1.25rem 1.25rem 2rem;
+  box-sizing: border-box;
+}
+
+@media (min-width: 700px) {
+  .page-shell {
+    padding: 1.75rem 1.75rem 2.5rem;
+  }
+}
+
+.page-title {
+  font-size: 1.65rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+}
+
+.page-subtitle {
+  margin-top: 0.4rem;
+  font-size: 0.8125rem;
+  color: var(--ms-text-dim);
+  line-height: 1.45;
+}
+
+/* Smooth toggle switch */
+.toggle-switch {
+  position: relative;
+  width: 44px;
+  height: 26px;
+  border-radius: 999px;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.28s cubic-bezier(0.4, 0, 0.2, 1),
+    box-shadow 0.28s ease;
+}
+
+.toggle-off {
+  background: var(--ms-toggle-off);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.45);
+}
+
+.toggle-on {
+  background: linear-gradient(135deg, var(--ms-turquoise), var(--ms-turquoise-dim));
+  box-shadow: 0 0 14px var(--ms-turquoise-glow);
+}
+
+.toggle-knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+  transition: transform 0.28s cubic-bezier(0.34, 1.4, 0.64, 1);
+}
+
+.toggle-on .toggle-knob {
+  transform: translateX(18px);
+}
+
+.toggle-off .toggle-knob {
+  transform: translateX(0);
+}
+
+.settings-section-title {
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ms-turquoise);
+}
+
+.settings-group {
+  background: var(--ms-surface);
+  border-radius: var(--ms-radius);
+  overflow: hidden;
+  box-shadow: var(--ms-card-shadow);
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.95rem 1.1rem;
+  border-bottom: 1px solid var(--ms-row-border);
+}
+
+.settings-row:last-child {
+  border-bottom: none;
+}
+
+.settings-row-text {
+  min-width: 0;
+  flex: 1;
+}
+
+.settings-row-title {
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.settings-row-desc {
+  font-size: 0.72rem;
+  color: var(--ms-text-dim);
+  margin-top: 0.2rem;
+  line-height: 1.4;
+}
+
+/* Confirm modal */
+.ms-modal-backdrop {
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  animation: msModalFade 0.18s ease-out both;
+}
+
+.ms-modal {
+  animation: msModalPop 0.22s cubic-bezier(0.22, 1, 0.36, 1) both;
+  outline: 1px solid var(--ms-hairline);
+}
+
+@keyframes msModalFade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes msModalPop {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* Inline action spinner for Copy / Remake */
+.ms-spin {
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  display: inline-block;
+  animation: msSpin 0.55s linear infinite;
+  vertical-align: -1px;
+}
+
+@keyframes msSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.ms-btn-busy {
+  opacity: 0.45;
+  cursor: not-allowed;
+  pointer-events: none;
+  transform: scale(0.97);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.ms-btn-ok {
+  color: var(--ms-turquoise) !important;
+  background: var(--ms-turquoise-glow) !important;
+  transition: color 0.2s ease, background 0.2s ease, transform 0.2s ease;
+}
+
+.danger-zone {
+  background: rgba(239, 68, 68, 0.08);
+  outline: 1px solid rgba(239, 68, 68, 0.28);
+  border-radius: var(--ms-radius);
+  box-shadow: var(--ms-card-shadow);
+  overflow: hidden;
+}
+
+[data-theme="light"] .danger-zone {
+  background: rgba(220, 38, 38, 0.06);
+  outline-color: rgba(220, 38, 38, 0.22);
 }

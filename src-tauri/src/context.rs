@@ -49,3 +49,56 @@ pub fn get_foreground_app() -> Option<ForegroundApp> {
 pub fn get_foreground_app() -> Option<ForegroundApp> {
     None
 }
+
+/// Human-readable app label from an exe name (no .exe).
+pub fn friendly_app_name(exe: &str) -> String {
+    let lower = exe.to_lowercase();
+    let base = lower.rsplit(['\\', '/']).next().unwrap_or(&lower);
+    match base {
+        "cursor.exe" => "Cursor".into(),
+        "code.exe" => "VS Code".into(),
+        "slack.exe" => "Slack".into(),
+        "discord.exe" => "Discord".into(),
+        "outlook.exe" => "Outlook".into(),
+        "winword.exe" => "Word".into(),
+        "excel.exe" => "Excel".into(),
+        "powerpnt.exe" => "PowerPoint".into(),
+        "notion.exe" => "Notion".into(),
+        "chrome.exe" => "Chrome".into(),
+        "msedge.exe" => "Edge".into(),
+        "firefox.exe" => "Firefox".into(),
+        "brave.exe" => "Brave".into(),
+        "spotify.exe" => "Spotify".into(),
+        "teams.exe" | "ms-teams.exe" => "Teams".into(),
+        "notepad.exe" => "Notepad".into(),
+        "windowsterminal.exe" => "Terminal".into(),
+        "figma.exe" => "Figma".into(),
+        "obsidian.exe" => "Obsidian".into(),
+        "telegram.exe" => "Telegram".into(),
+        "whatsapp.exe" => "WhatsApp".into(),
+        "zoom.exe" => "Zoom".into(),
+        "" | "unknown" => "Unknown".into(),
+        other => {
+            let name = other.trim_end_matches(".exe").replace(['-', '_'], " ");
+            let mut chars = name.chars();
+            match chars.next() {
+                Some(c) => {
+                    let mut s = c.to_uppercase().collect::<String>();
+                    s.push_str(chars.as_str());
+                    // Title-case remaining words
+                    s.split_whitespace()
+                        .map(|w| {
+                            let mut c = w.chars();
+                            match c.next() {
+                                Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+                                None => String::new(),
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                }
+                None => "Unknown".into(),
+            }
+        }
+    }
+}

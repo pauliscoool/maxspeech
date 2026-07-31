@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+use crate::secrets;
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TranscriptionResult {
     pub text: String,
@@ -17,9 +19,6 @@ pub struct SpeakerSegment {
 pub async fn transcribe(
     file_path: &str,
 ) -> Result<TranscriptionResult, Box<dyn std::error::Error + Send + Sync>> {
-    let api_key = crate::secrets::get_secret("deepgram_api_key")?
-        .ok_or("Deepgram API key not set")?;
-
     let data = tokio::fs::read(file_path).await?;
     let ext = Path::new(file_path)
         .extension()
@@ -37,24 +36,56 @@ pub async fn transcribe(
     };
 
     let client = reqwest::Client::new();
-    let resp = client
-        .post("https://api.deepgram.com/v1/listen?model=nova-3&punctuate=true&diarize=true&smart_format=true")
-        .header("Authorization", format!("Token {}", api_key))
-        .header("Content-Type", mime)
-        .body(data)
-        .send()
-        .await?;
+    let mut last_err: Option<String> = None;
+    let mut body: Option<serde_json::Value> = None;
 
-    let body: serde_json::Value = resp.json().await?;
+    for (i, api_key) in secrets::deepgram_key_candidates().into_iter().enumerate() {
+        let resp = client
+            .post("https://api.deepgram.com/v1/listen?model=nova-3&punctuate=true&diarize=true&smart_format=true")
+            .header("Authorization", format!("Token {}", api_key))
+            .header("Content-Type", mime)
+            .body(data.clone())
+            .send()
+            .await;
+
+        match resp {
+            Ok(resp) => {
+                let status = resp.status();
+                let json: serde_json::Value = resp.json().await.unwrap_or(serde_json::json!({}));
+                if status.is_success() {
+                    if i > 0 {
+                        log::warn!("Deepgram batch auth failed with primary key; using app fallback");
+                    }
+                    body = Some(json);
+                    break;
+                }
+                let err = json["err_msg"]
+                    .as_str()
+                    .or_else(|| json["error"].as_str())
+                    .unwrap_or("Deepgram request failed")
+                    .to_string();
+                log::warn!("Deepgram batch attempt {} failed ({status}): {err}", i + 1);
+                last_err = Some(err);
+                // Retry on auth / forbidden; otherwise stop.
+                if status.as_u16() != 401 && status.as_u16() != 403 {
+                    break;
+                }
+            }
+            Err(e) => {
+                log::warn!("Deepgram batch attempt {} network error: {e}", i + 1);
+                last_err = Some(e.to_string());
+            }
+        }
+    }
+
+    let body = body.ok_or_else(|| last_err.unwrap_or_else(|| "Deepgram API key not set".into()))?;
 
     let text = body["results"]["channels"][0]["alternatives"][0]["transcript"]
         .as_str()
         .unwrap_or("")
         .to_string();
 
-    let duration_secs = body["metadata"]["duration"]
-        .as_f64()
-        .unwrap_or(0.0);
+    let duration_secs = body["metadata"]["duration"].as_f64().unwrap_or(0.0);
 
     // Extract speaker segments if diarization is present
     let mut speakers = Vec::new();

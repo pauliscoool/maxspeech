@@ -9,11 +9,14 @@
     "tauri": "tauri"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.111.0",
     "@tauri-apps/api": "^2.6.0",
     "@tauri-apps/plugin-autostart": "^2.2.0",
     "@tauri-apps/plugin-global-shortcut": "^2.2.0",
     "@tauri-apps/plugin-notification": "^2.2.0",
     "@tauri-apps/plugin-opener": "^2.2.0",
+    "@tauri-apps/plugin-process": "^2.3.1",
+    "@tauri-apps/plugin-updater": "^2.10.1",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   },

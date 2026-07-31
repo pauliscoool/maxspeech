@@ -1,9 +1,18 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>MaxSpeech</title>
+    <style>
+      /* First-paint safety: never let WebView2 show its default white page fill */
+      html, body, #root {
+        background: transparent !important;
+        background-color: transparent !important;
+        margin: 0;
+        height: 100%;
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>
