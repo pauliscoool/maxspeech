@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MaxSpeech — AI dictation for Windows, Mac &amp; Linux</title>
+    <meta
+      name="description"
+      content="Hold a hotkey, speak, and MaxSpeech types anywhere on Windows, macOS, and Linux. Try the playground, then download."
+    />
+    <link rel="icon" href="/logo.png" type="image/png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600&family=Syne:wght@600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="atmosphere" aria-hidden="true">
+      <div class="orb orb-a"></div>
+      <div class="orb orb-b"></div>
+      <div class="grain"></div>
+    </div>
+
+    <header class="top">
+      <a class="brand" href="/">
+        <img
+          class="brand-mark"
+          src="/logo.png"
+          srcset="/logo.png 1x, /logo@2x.png 2x"
+          width="36"
+          height="36"
+          alt=""
+        />
+        <span>MaxSpeech</span>
+      </a>
+      <nav class="top-nav">
+        <a class="top-link" href="#playground">Playground</a>
+        <a class="top-link" href="#scenarios">Scenarios</a>
+        <a class="top-link" href="#download">Download</a>
+        <a class="top-link" href="/terms.html">Terms</a>
+        <a class="top-link" href="/privacy.html">Privacy</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="hero-wrap">
+        <div class="hero">
+          <div class="hero-copy">
+            <h1 class="logo-word">MaxSpeech</h1>
+            <p class="lede">
+              Hold a hotkey. Speak. It types into whatever app you’re in —
+              cleaned up and ready to send.
+            </p>
+            <div class="cta-row">
+              <a
+                class="btn-primary"
+                id="download"
+                href="/downloads/MaxSpeech_0.1.0_x64-setup.exe"
+                download
+              >
+                Download for Windows
+              </a>
+              <p class="meta">v0.1.0 · NSIS · macOS DMG &amp; Linux builds on GitHub Releases</p>
+              <p class="platform-soon">
+                <a href="https://github.com/pauliscoool/maxspeech/releases/latest">Mac &amp; Linux builds</a>
+                · Windows installer below
+              </p>
+            </div>
+          </div>
+
+          <div class="hero-flow-stage" id="hero-flow-stage" aria-hidden="true">
+            <div class="flow-curve is-left">
+              <svg
+                viewBox="0 0 720 320"
+                preserveAspectRatio="xMidYMid meet"
+                overflow="visible"
+              >
+                <defs>
+                  <path
+                    id="flow-path-left"
+                    d="M -40 70 C 60 20, 160 20, 260 140 S 380 300, 500 260 S 620 140, 760 180"
+                    fill="none"
+                  />
+                </defs>
+                <text class="flow-curve-text">
+                  <textPath
+                    href="#flow-path-left"
+                    id="flow-trail-left"
+                    startOffset="0%"
+                  ></textPath>
+                </text>
+              </svg>
+            </div>
+
+            <div class="flow-curve is-right">
+              <svg
+                viewBox="0 0 720 320"
+                preserveAspectRatio="xMidYMid meet"
+                overflow="visible"
+              >
+                <defs>
+                  <path
+                    id="flow-path-right"
+                    d="M -40 220 C 80 280, 200 300, 320 200 S 460 60, 560 90 S 680 200, 760 160"
+                    fill="none"
+                  />
+                </defs>
+                <text class="flow-curve-text is-dim">
+                  <textPath
+                    href="#flow-path-right"
+                    id="flow-trail-right"
+                    startOffset="0%"
+                  ></textPath>
+                </text>
+              </svg>
+            </div>
+
+            <div class="flow-center">
+              <div class="flow-toast" id="flow-toast">
+                <img
+                  class="flow-toast-mark"
+                  src="/logo.png"
+                  srcset="/logo.png 1x, /logo@2x.png 2x"
+                  width="22"
+                  height="22"
+                  alt=""
+                />
+                <div class="flow-toast-copy">
+                  <div class="flow-toast-title" id="flow-toast-title">
+                    Fixed grammar
+                  </div>
+                  <div class="flow-toast-sub">Enhanced by MaxSpeech</div>
+                </div>
+              </div>
+
+              <div class="flow-live-row">
+                <div class="flow-active" id="flow-active">
+                  hold a hotkey · speak naturally
+                </div>
+                <div class="flow-pill">
+                  <div class="flow-bars" id="flow-bars">
+                    <i data-i="0"></i>
+                    <i data-i="1"></i>
+                    <i data-i="2"></i>
+                    <i data-i="3"></i>
+                    <i data-i="4"></i>
+                    <i data-i="5"></i>
+                    <i data-i="6"></i>
+                    <i data-i="7"></i>
+                    <i data-i="8"></i>
+                    <i data-i="9"></i>
+                    <i data-i="10"></i>
+                    <i data-i="11"></i>
+                    <i data-i="12"></i>
+                    <i data-i="13"></i>
+                    <i data-i="14"></i>
+                    <i data-i="15"></i>
+                  </div>
+                  <span class="flow-pill-label">Listening…</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <details class="install-help">
+            <summary>Having trouble installing?</summary>
+            <div class="install-notes">
+              <strong>Windows SmartScreen</strong>
+              <p>
+                New apps outside the Microsoft Store may show “Windows protected
+                your PC.” That doesn’t mean MaxSpeech is malware — Windows just
+                hasn’t seen this installer enough times yet.
+              </p>
+              <ol>
+                <li>Click <em>More info</em></li>
+                <li>Click <em>Run anyway</em></li>
+              </ol>
+              <p class="install-notes-foot">
+                A Microsoft Store listing is coming.
+                <a href="/terms.html">Terms</a> ·
+                <a href="/privacy.html">Privacy</a>
+              </p>
+            </div>
+          </details>
+        </div>
+      </section>
+
+      <section class="playground" id="playground">
+        <div class="section-head">
+          <p class="eyebrow">Try it</p>
+          <h2>Playground</h2>
+          <p class="section-lede">
+            Hold the mic button and speak. Watch the same listening bar, then
+            see your words land in the preview.
+          </p>
+        </div>
+
+        <div class="playground-stage">
+          <div class="preview-pane">
+            <div class="preview-chrome">
+              <span class="dot"></span>
+              <span class="dot"></span>
+              <span class="dot"></span>
+              <span class="preview-title" id="preview-title">Compose · Gmail</span>
+            </div>
+            <div class="preview-body" id="preview-body">
+              <p class="preview-placeholder" id="preview-placeholder">
+                Your dictation will appear here…
+              </p>
+              <p class="preview-text" id="preview-text" hidden></p>
+            </div>
+          </div>
+
+          <div class="playground-controls">
+            <button
+              type="button"
+              class="pill pill-interactive"
+              id="mic-btn"
+              aria-pressed="false"
+            >
+              <span class="pill-label" id="mic-label">Hold to talk</span>
+              <div class="wave" id="mic-wave" data-active="false">
+                <i style="--d: 0"></i>
+                <i style="--d: 1"></i>
+                <i style="--d: 2"></i>
+                <i style="--d: 3"></i>
+                <i style="--d: 4"></i>
+                <i style="--d: 5"></i>
+                <i style="--d: 6"></i>
+                <i style="--d: 7"></i>
+                <i style="--d: 8"></i>
+                <i style="--d: 9"></i>
+                <i style="--d: 10"></i>
+                <i style="--d: 11"></i>
+              </div>
+            </button>
+            <p class="playground-hint" id="mic-hint">
+              Uses your browser mic for a quick preview — the desktop app types
+              into any app on Windows, Mac, and Linux.
+            </p>
+            <button type="button" class="btn-ghost" id="clear-btn">Clear</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="scenarios" id="scenarios">
+        <div class="section-head">
+          <p class="eyebrow">Anywhere you type</p>
+          <h2>Scenarios</h2>
+          <p class="section-lede">
+            Same voice. Different apps. Preview how MaxSpeech feels in the
+            places you already work.
+          </p>
+        </div>
+
+        <div class="scenario-tabs" role="tablist" aria-label="App scenarios">
+          <button type="button" class="scenario-tab is-active" data-scene="gmail" role="tab" aria-selected="true">Gmail</button>
+          <button type="button" class="scenario-tab" data-scene="cursor" role="tab" aria-selected="false">Cursor</button>
+          <button type="button" class="scenario-tab" data-scene="slack" role="tab" aria-selected="false">Slack</button>
+          <button type="button" class="scenario-tab" data-scene="notion" role="tab" aria-selected="false">Notion</button>
+        </div>
+
+        <div class="scenario-frame" id="scenario-frame">
+          <div class="scenario-app" data-scene-panel="gmail">
+            <div class="mail-bar">
+              <span>New message</span>
+              <span class="mail-to">to: team@company.com</span>
+            </div>
+            <div class="mail-subject">Subject: Quick update</div>
+            <div class="scenario-type" data-lines='["Hey team —","I wrapped the onboarding flow and pushed the build.","Happy to jump on a call if you want a walkthrough."]'></div>
+          </div>
+
+          <div class="scenario-app" data-scene-panel="cursor" hidden>
+            <div class="code-bar">
+              <span>agent.ts</span>
+              <span class="code-path">src/lib · Cursor</span>
+            </div>
+            <pre class="code-block"><code><span class="c-muted">// Dictate the comment, keep coding</span>
+<span class="c-kw">async</span> <span class="c-fn">function</span> <span class="c-name">startDictation</span>() {
+<span class="scenario-type code-type" data-lines='["  // Hold hotkey, speak the intent,","  // MaxSpeech drops clean text here."]'></span>
+}</code></pre>
+          </div>
+
+          <div class="scenario-app" data-scene-panel="slack" hidden>
+            <div class="slack-bar">
+              <span># shipping</span>
+              <span class="slack-meta">3 unread</span>
+            </div>
+            <div class="slack-msg">
+              <strong>you</strong>
+              <div class="scenario-type" data-lines='["Ship looks good on my end — merging after lunch."]'></div>
+            </div>
+          </div>
+
+          <div class="scenario-app" data-scene-panel="notion" hidden>
+            <div class="notion-bar">Meeting notes</div>
+            <div class="scenario-type" data-lines='["## Decisions","- Ship MaxSpeech playground tonight","- Keep GitHub private; install via public page","","Next: polish the listening bar."]'>
+            </div>
+          </div>
+
+          <div class="scenario-pill" aria-hidden="true">
+            <div class="pill pill-sm">
+              <span class="pill-label">Listening</span>
+              <div class="wave">
+                <i style="--d: 0"></i>
+                <i style="--d: 2"></i>
+                <i style="--d: 4"></i>
+                <i style="--d: 6"></i>
+                <i style="--d: 8"></i>
+                <i style="--d: 10"></i>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="how">
+        <h2>How it works</h2>
+        <ol class="steps">
+          <li>
+            <strong>Install</strong>
+            <span>Run the setup file. MaxSpeech lives in the tray.</span>
+          </li>
+          <li>
+            <strong>Sign in</strong>
+            <span>Create an account so your plan and settings stay with you.</span>
+          </li>
+          <li>
+            <strong>Dictate</strong>
+            <span>Hold Ctrl + Win (or your hotkey), speak, release.</span>
+          </li>
+        </ol>
+      </section>
+    </main>
+
+    <footer class="foot">
+      <span>© MaxSpeech</span>
+      <span>
+        <a href="/terms.html">Terms</a> ·
+        <a href="/privacy.html">Privacy</a> ·
+        Source stays private · Installer is public here
+      </span>
+    </footer>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

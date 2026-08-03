@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { enable, disable, isEnabled } from "@tauri-apps/plugin-autostart";
-import { formatHotkey } from "../Shell";
 import Toggle from "../../components/Toggle";
 import {
   checkForUpdate,
@@ -12,6 +12,7 @@ import {
 import {
   PLAN_OPTIONS,
   formatWeeklyUsage,
+  tierSupportsMultilingual,
   weeklyUsagePct,
   type PlanStatus,
   type PlanTier,
@@ -30,17 +31,36 @@ import {
   pushCloudSettings,
   syncAllLocalHistoryIfMax,
 } from "../../lib/cloudSync";
+import {
+  DEFAULT_STT_LANGUAGES,
+  MAX_STT_LANGUAGES,
+  STT_LANGUAGES,
+  monolingualLanguages,
+  parseSttLanguages,
+} from "../../lib/sttLanguages";
+import {
+  canSelectTierWithoutPayment,
+  isOwnerFreePlanEmail,
+} from "../../lib/planAccess";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { defaultHotkey, detectOs, formatHotkey } from "../../lib/platform";
 
-const PRESET_KEYS = [
-  "ctrl+super", // Ctrl + Win (Fn is hardware-only on most Windows keyboards)
+const ALL_PRESET_KEYS = [
+  "ctrl+super", // Ctrl + Win — Windows LL hook only
   "ctrl+space",
   "alt+space",
   "ctrl+shift+space",
+  "ctrl+shift+z",
   "ctrl+`",
   "f8",
   "f9",
   "ctrl+shift+d",
 ];
+
+const PRESET_KEYS =
+  detectOs() === "windows"
+    ? ALL_PRESET_KEYS
+    : ALL_PRESET_KEYS.filter((k) => k !== "ctrl+super");
 
 export default function SettingsPage({
   authUser,
@@ -60,7 +80,7 @@ export default function SettingsPage({
   const [aiEnhance, setAiEnhance] = useState(true);
   const [soundCue, setSoundCue] = useState(false);
   const [insertSpace, setInsertSpace] = useState(true);
-  const [hotkey, setHotkey] = useState("ctrl+space");
+  const [hotkey, setHotkey] = useState(defaultHotkey());
   const [hotkeyMode, setHotkeyMode] = useState<"hold" | "toggle">("hold");
   const [capturing, setCapturing] = useState(false);
   const [hotkeyMsg, setHotkeyMsg] = useState("");
@@ -77,12 +97,38 @@ export default function SettingsPage({
   const [uiTheme, setUiTheme] = useState<UiTheme>("dark");
   const [logoutOpen, setLogoutOpen] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
+  const [sttMultilingual, setSttMultilingual] = useState(false);
+  const [sttLanguages, setSttLanguages] = useState<string[]>([...DEFAULT_STT_LANGUAGES]);
+  const [micDevices, setMicDevices] = useState<{ name: string; is_default: boolean }[]>([]);
+  const [micDevice, setMicDevice] = useState("default");
+  const [micMsg, setMicMsg] = useState("");
+  const [micTesting, setMicTesting] = useState(false);
+  const [micLevel, setMicLevel] = useState(0);
 
   useEffect(() => {
     refresh();
+    // Mic list must not depend on the rest of settings loading — a failed
+    // get_setting earlier used to skip microphones entirely.
+    void loadMicrophones();
     isEnabled().then(setAutostart).catch(() => {});
     getAppVersion().then(setAppVersion).catch(() => setAppVersion("0.1.0"));
   }, []);
+
+  useEffect(() => {
+    if (!micTesting) {
+      setMicLevel(0);
+      return;
+    }
+    let unlisten: (() => void) | undefined;
+    void listen<number>("mic-test-level", (e) => {
+      setMicLevel(typeof e.payload === "number" ? e.payload : 0);
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => {
+      unlisten?.();
+    };
+  }, [micTesting]);
 
   useEffect(() => {
     if (!capturing) return;
@@ -94,13 +140,30 @@ export default function SettingsPage({
         return;
       }
       const k = e.key.toLowerCase();
-      if (["control", "shift", "alt", "meta"].includes(k)) return;
-
       const parts: string[] = [];
       if (e.ctrlKey) parts.push("ctrl");
       if (e.altKey) parts.push("alt");
       if (e.shiftKey) parts.push("shift");
       if (e.metaKey) parts.push("super");
+
+      // Modifier-only (e.g. Ctrl+Win): accept when 2+ modifiers are held.
+      // Ctrl+Alt alone is intentionally blocked.
+      if (["control", "shift", "alt", "meta"].includes(k)) {
+        if (parts.length < 2) return;
+        const combo = parts.join("+");
+        if (combo === "ctrl+alt" || combo === "alt+ctrl") return;
+        setCapturing(false);
+        try {
+          await invoke("set_hotkey", { shortcut: combo });
+          setHotkey(combo);
+          setHotkeyMsg(`Hotkey set to ${formatHotkey(combo)}`);
+          void pushCloudSettings();
+          onChanged();
+        } catch (err) {
+          setHotkeyMsg(`Could not set hotkey: ${err}`);
+        }
+        return;
+      }
 
       let key = k;
       if (key === " ") key = "space";
@@ -146,18 +209,148 @@ export default function SettingsPage({
       setHotkey(await invoke<string>("get_hotkey"));
       const mode = await invoke<string>("get_hotkey_mode");
       setHotkeyMode(mode === "toggle" ? "toggle" : "hold");
+      let planStatus: PlanStatus | null = null;
       try {
-        setPlan(await invoke<PlanStatus>("get_plan_status"));
+        planStatus = await invoke<PlanStatus>("get_plan_status");
+        setPlan(planStatus);
       } catch {
         // Backend may not be ready yet during parallel work
       }
+      const multiAllowed = tierSupportsMultilingual(planStatus?.tier);
+      const multi = await invoke<string>("get_setting", { key: "stt_multilingual" });
+      let langs = parseSttLanguages(
+        await invoke<string>("get_setting", { key: "stt_languages" }),
+      );
+      // Free tier: force single-language mode even if old settings said otherwise.
+      // Prefer English when collapsing a stale multi-select (avoids language=ru on English speech).
+      if (!multiAllowed) {
+        if (multi === "true") {
+          await invoke("set_setting", { key: "stt_multilingual", value: "false" });
+        }
+        const healed = monolingualLanguages(langs);
+        if (multi === "true" || healed.join() !== langs.join()) {
+          langs = healed;
+          await invoke("set_setting", {
+            key: "stt_languages",
+            value: JSON.stringify(langs),
+          });
+        }
+        setSttMultilingual(false);
+      } else if (multi !== "true" && langs.length > 1) {
+        langs = monolingualLanguages(langs);
+        await invoke("set_setting", {
+          key: "stt_languages",
+          value: JSON.stringify(langs),
+        });
+        setSttMultilingual(false);
+      } else {
+        setSttMultilingual(multi === "true");
+      }
+      setSttLanguages(langs);
     } catch {
-      // ignore
+      // ignore — mic list loads on its own
+    }
+  }
+
+  function micNamesMatch(a: string, b: string) {
+    const norm = (s: string) =>
+      s
+        .toLowerCase()
+        .replace(/[®™©]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+    return a === b || norm(a) === norm(b);
+  }
+
+  async function loadMicrophones() {
+    try {
+      const devices = await invoke<{ name: string; is_default: boolean }[]>(
+        "list_microphones",
+      );
+      setMicDevices(devices);
+      const saved = await invoke<string>("get_microphone");
+      if (!saved || saved === "default") {
+        setMicDevice("default");
+        return devices;
+      }
+      const match = devices.find((d) => micNamesMatch(d.name, saved));
+      if (match) {
+        setMicDevice(match.name);
+        if (match.name !== saved) {
+          // Heal stored name to the live device string (trademark glyphs, etc.).
+          await invoke("set_microphone", { device: match.name });
+        }
+      } else {
+        // Keep preference selected in UI if possible; don't silently wipe it.
+        setMicDevice(saved);
+        setMicMsg(
+          `Saved mic “${saved}” isn’t connected right now — using system default until it’s back.`,
+        );
+      }
+      return devices;
+    } catch (e) {
+      setMicDevices([]);
+      setMicDevice("default");
+      setMicMsg(`Could not list microphones: ${e}`);
+      return [];
+    }
+  }
+
+  async function applyMicrophone(device: string) {
+    const next = device || "default";
+    setMicDevice(next);
+    setMicMsg("");
+    try {
+      const saved = await invoke<string>("set_microphone", { device: next });
+      setMicDevice(saved || next);
+      void pushCloudSettings();
+      const label =
+        (saved || next) === "default"
+          ? "System default"
+          : micDevices.find((d) => micNamesMatch(d.name, saved || next))?.name ||
+            saved ||
+            next;
+      setMicMsg(`Saved — using ${label}`);
+    } catch (e) {
+      setMicMsg(`Could not set microphone: ${e}`);
+      try {
+        setMicDevice(await invoke<string>("get_microphone"));
+      } catch {
+        setMicDevice("default");
+      }
+    }
+  }
+
+  async function testSelectedMic() {
+    setMicTesting(true);
+    setMicMsg("Listening… speak now");
+    setMicLevel(0);
+    try {
+      await loadMicrophones();
+      const result = await invoke<{
+        name: string;
+        peak: number;
+        ok: boolean;
+        message: string;
+      }>("test_microphone");
+      setMicMsg(result.message || (result.ok ? `Hearing you on ${result.name}` : "No signal"));
+    } catch (e) {
+      setMicMsg(`Mic test failed: ${e}`);
+    } finally {
+      setMicTesting(false);
     }
   }
 
   async function selectTier(tier: PlanTier) {
     if (settingTier || plan?.tier === tier) return;
+    if (!canSelectTierWithoutPayment(authUser?.email, tier)) {
+      setPlanMsg(
+        tier === "max"
+          ? "Max isn't available as a free plan — payment checkout is coming soon."
+          : "Payment checkout coming soon for paid plans.",
+      );
+      return;
+    }
     setSettingTier(tier);
     setPlanMsg("");
     try {
@@ -167,6 +360,8 @@ export default function SettingsPage({
       if (tier === "max") await syncAllLocalHistoryIfMax();
       const next = await invoke<PlanStatus>("get_plan_status");
       setPlan(next);
+      // Re-apply language gating when moving to/from Free.
+      await refresh();
       setPlanMsg(
         tier === "max"
           ? "Switched to Max — dictation history will sync to the cloud."
@@ -198,6 +393,53 @@ export default function SettingsPage({
     const next = !current;
     setter(next);
     await invoke("set_setting", { key, value: next ? "true" : "false" });
+    void pushCloudSettings();
+  }
+
+  async function toggleMultilingual() {
+    if (!tierSupportsMultilingual(plan?.tier)) return;
+    const next = !sttMultilingual;
+    setSttMultilingual(next);
+    try {
+      await invoke("set_setting", {
+        key: "stt_multilingual",
+        value: next ? "true" : "false",
+      });
+    } catch (e) {
+      setSttMultilingual(false);
+      console.error(e);
+      return;
+    }
+    // Single-language mode: prefer English if it was in the multi list.
+    if (!next && sttLanguages.length > 1) {
+      const one = monolingualLanguages(sttLanguages);
+      setSttLanguages(one);
+      await invoke("set_setting", {
+        key: "stt_languages",
+        value: JSON.stringify(one),
+      });
+    }
+    void pushCloudSettings();
+  }
+
+  async function toggleSttLanguage(code: string) {
+    const multiOn = sttMultilingual && tierSupportsMultilingual(plan?.tier);
+    let next: string[];
+    if (sttLanguages.includes(code)) {
+      next = sttLanguages.filter((c) => c !== code);
+      if (next.length === 0) next = ["en"];
+    } else if (!multiOn) {
+      next = [code];
+    } else if (sttLanguages.length >= MAX_STT_LANGUAGES) {
+      return;
+    } else {
+      next = [...sttLanguages, code];
+    }
+    setSttLanguages(next);
+    await invoke("set_setting", {
+      key: "stt_languages",
+      value: JSON.stringify(next),
+    });
     void pushCloudSettings();
   }
 
@@ -351,15 +593,19 @@ export default function SettingsPage({
             {PLAN_OPTIONS.map((opt) => {
               const active = plan?.tier === opt.tier;
               const busy = settingTier === opt.tier;
+              const allowed = canSelectTierWithoutPayment(authUser?.email, opt.tier);
+              const locked = !active && !allowed;
               return (
                 <button
                   key={opt.tier}
                   onClick={() => selectTier(opt.tier)}
-                  disabled={!!settingTier || active}
+                  disabled={!!settingTier || active || locked}
                   className={`text-left p-3 rounded-2xl transition-all disabled:cursor-default ${
                     active
                       ? "bg-[var(--ms-turquoise-glow)] ring-1 ring-[var(--ms-turquoise)]/40"
-                      : "text-[var(--ms-text-dim)] hover:text-[var(--ms-hover-fg)]"
+                      : locked
+                        ? "opacity-55 text-[var(--ms-text-dim)]"
+                        : "text-[var(--ms-text-dim)] hover:text-[var(--ms-hover-fg)]"
                   }`}
                   style={active ? undefined : { background: "var(--ms-fill-muted)" }}
                 >
@@ -386,15 +632,24 @@ export default function SettingsPage({
                       active ? "text-[var(--ms-turquoise)]" : "opacity-60"
                     }`}
                   >
-                    {busy ? "Switching…" : active ? "Current plan" : "Select"}
+                    {busy
+                      ? "Switching…"
+                      : active
+                        ? "Current plan"
+                        : locked
+                          ? opt.tier === "max"
+                            ? "Payment soon"
+                            : "Locked"
+                          : "Select"}
                   </div>
                 </button>
               );
             })}
           </div>
           <p className="text-[11px] text-[var(--ms-text-dim)] leading-relaxed mt-3 px-1">
-            Payment checkout coming soon — plans are selectable for testing.
-            Home dictation history stays on this device; cloud history sync is included with Max ($10).
+            {isOwnerFreePlanEmail(authUser?.email)
+              ? "Owner access: Free, Starter, and Pro are selectable on this account. Max stays locked until checkout ships."
+              : "Free plan is available now. Paid plans unlock when checkout ships. Home dictation history stays on this device; cloud history sync is included with Max."}
           </p>
           {planMsg && (
             <p className="text-xs text-[var(--ms-turquoise)] mt-2 px-1">{planMsg}</p>
@@ -474,6 +729,109 @@ export default function SettingsPage({
         </div>
       </section>
 
+      {/* Microphone */}
+      <section className="space-y-2.5">
+        <h2 className="settings-section-title" style={{ color: "var(--ms-orange)" }}>
+          Microphone
+        </h2>
+        <div className="settings-group">
+          <div className="settings-row settings-row-stack">
+            <div className="settings-row-text">
+              <div className="settings-row-title">Input device</div>
+              <div className="settings-row-desc">
+                Defaults to your system microphone. Tap a device to save it — used for every
+                dictation.
+              </div>
+            </div>
+            <div className="mic-device-list" role="listbox" aria-label="Microphone input device">
+              <button
+                type="button"
+                role="option"
+                aria-selected={micDevice === "default"}
+                className={`mic-device-option${micDevice === "default" ? " is-active" : ""}`}
+                onClick={() => void applyMicrophone("default")}
+              >
+                <span className="mic-device-name">System default</span>
+                {micDevices.find((d) => d.is_default) ? (
+                  <span className="mic-device-meta">
+                    {micDevices.find((d) => d.is_default)!.name}
+                  </span>
+                ) : null}
+              </button>
+              {micDevices.map((d) => {
+                const active =
+                  micDevice !== "default" && micNamesMatch(micDevice, d.name);
+                return (
+                  <button
+                    key={d.name}
+                    type="button"
+                    role="option"
+                    aria-selected={active}
+                    className={`mic-device-option${active ? " is-active" : ""}`}
+                    onClick={() => void applyMicrophone(d.name)}
+                  >
+                    <span className="mic-device-name">{d.name}</span>
+                    {d.is_default ? (
+                      <span className="mic-device-meta">System default</span>
+                    ) : null}
+                  </button>
+                );
+              })}
+              {micDevices.length === 0 ? (
+                <p className="text-xs text-[var(--ms-text-dim)] px-1 py-1">
+                  No microphones found yet. Click Refresh or Test mic.
+                </p>
+              ) : null}
+            </div>
+            <div className="flex flex-wrap gap-2 mt-1 items-center">
+              <button
+                type="button"
+                onClick={() =>
+                  void loadMicrophones().then(() => setMicMsg("Microphone list refreshed"))
+                }
+                className="text-[11px] px-2.5 py-1.5 rounded-full text-[var(--ms-text-dim)] hover:text-[var(--ms-hover-fg)] transition-colors"
+                style={{ background: "var(--ms-fill-muted)" }}
+              >
+                Refresh list
+              </button>
+              <button
+                type="button"
+                onClick={() => void testSelectedMic()}
+                disabled={micTesting}
+                className="btn-primary px-3 py-1.5 text-[11px] disabled:opacity-50"
+              >
+                {micTesting ? "Listening…" : "Test mic"}
+              </button>
+              {(micTesting || micLevel > 0) && (
+                <div
+                  className="mic-level-track"
+                  title="Live input level"
+                  aria-hidden
+                >
+                  <div
+                    className="mic-level-fill"
+                    style={{ width: `${Math.round(micLevel * 100)}%` }}
+                  />
+                </div>
+              )}
+            </div>
+            {micMsg ? (
+              <p
+                className={`text-xs mt-1 ${
+                  micMsg.toLowerCase().includes("fail") ||
+                  micMsg.toLowerCase().includes("could not") ||
+                  micMsg.toLowerCase().includes("silence")
+                    ? "text-[var(--ms-error)]"
+                    : "text-[var(--ms-turquoise)]"
+                }`}
+              >
+                {micMsg}
+              </p>
+            ) : null}
+          </div>
+        </div>
+      </section>
+
       {/* Dictation toggles */}
       <section className="space-y-2.5">
         <h2 className="settings-section-title" style={{ color: "var(--ms-orange)" }}>
@@ -504,6 +862,56 @@ export default function SettingsPage({
             checked={soundCue}
             onChange={() => toggleBool("sound_cue", soundCue, setSoundCue)}
           />
+          <SettingsToggle
+            title="Multilingual"
+            desc={
+              tierSupportsMultilingual(plan?.tier)
+                ? "Code-switch between languages in one dictation (pick up to 5). Off = one language."
+                : "Starter+ only. Free plan can use one language at a time."
+            }
+            checked={sttMultilingual && tierSupportsMultilingual(plan?.tier)}
+            onChange={() => void toggleMultilingual()}
+            disabled={!tierSupportsMultilingual(plan?.tier)}
+          />
+          <div className="settings-row settings-row-stack">
+            <div className="settings-row-text">
+              <div className="settings-row-title">
+                {sttMultilingual && tierSupportsMultilingual(plan?.tier)
+                  ? "Languages (up to 5)"
+                  : "Language"}
+              </div>
+              <div className="settings-row-desc">
+                {sttMultilingual && tierSupportsMultilingual(plan?.tier)
+                  ? "Code-switch mid-sentence between supported languages. For clearest English-only dictation, turn Multilingual off and select English."
+                  : "Speech recognition language for live dictation. Free plan: one language."}
+              </div>
+            </div>
+            <div className="lang-chip-grid">
+              {STT_LANGUAGES.map((lang) => {
+                const multiOn =
+                  sttMultilingual && tierSupportsMultilingual(plan?.tier);
+                const active = sttLanguages.includes(lang.code);
+                const lockedOut =
+                  multiOn && !active && sttLanguages.length >= MAX_STT_LANGUAGES;
+                return (
+                  <button
+                    key={lang.code}
+                    type="button"
+                    className={`lang-chip${active ? " is-active" : ""}${lockedOut ? " is-disabled" : ""}`}
+                    disabled={lockedOut}
+                    onClick={() => void toggleSttLanguage(lang.code)}
+                    title={
+                      lang.multi
+                        ? `${lang.label} · code-switch ready`
+                        : `${lang.label} · best as primary / single`
+                    }
+                  >
+                    {lang.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
           <div className="settings-row">
             <div className="settings-row-text">
               <div className="settings-row-title">Max recording</div>
@@ -544,7 +952,7 @@ export default function SettingsPage({
         <div className="settings-group">
           <SettingsToggle
             title="Launch at startup"
-            desc="Start MaxSpeech when Windows logs in"
+            desc="Start MaxSpeech when you log in"
             checked={autostart}
             onChange={toggleAutostart}
           />
@@ -600,6 +1008,41 @@ export default function SettingsPage({
           {updateMsg && (
             <p className="px-4 pb-3 text-xs text-[var(--ms-text-dim)]">{updateMsg}</p>
           )}
+
+          <div className="settings-row">
+            <div className="settings-row-text">
+              <div className="settings-row-title">Legal</div>
+              <div className="settings-row-desc">
+                Terms of Service and Privacy Policy
+              </div>
+            </div>
+            <div className="flex gap-2 shrink-0">
+              <button
+                type="button"
+                className="px-3 py-1.5 text-xs rounded-full text-[var(--ms-text-dim)] hover:text-[var(--ms-hover-fg)] transition-colors"
+                style={{ background: "var(--ms-fill-muted)" }}
+                onClick={() =>
+                  void openUrl("https://maxspeech.vercel.app/terms.html")
+                }
+              >
+                Terms
+              </button>
+              <button
+                type="button"
+                className="px-3 py-1.5 text-xs rounded-full text-[var(--ms-text-dim)] hover:text-[var(--ms-hover-fg)] transition-colors"
+                style={{ background: "var(--ms-fill-muted)" }}
+                onClick={() =>
+                  void openUrl("https://maxspeech.vercel.app/privacy.html")
+                }
+              >
+                Privacy
+              </button>
+            </div>
+          </div>
+          <p className="px-4 pb-3 text-[11px] text-[var(--ms-text-dim)] leading-relaxed">
+            Remake keeps at most 10 recent recordings on this PC. Live dictation
+            uses speech/AI APIs; MaxSpeech does not train models on your content.
+          </p>
         </div>
       </section>
 
@@ -664,19 +1107,26 @@ function SettingsToggle({
   desc,
   checked,
   onChange,
+  disabled,
 }: {
   title: string;
   desc: string;
   checked: boolean;
   onChange: () => void;
+  disabled?: boolean;
 }) {
   return (
-    <div className="settings-row">
+    <div className={`settings-row${disabled ? " opacity-70" : ""}`}>
       <div className="settings-row-text">
         <div className="settings-row-title">{title}</div>
         <div className="settings-row-desc">{desc}</div>
       </div>
-      <Toggle checked={checked} onChange={onChange} label={title} />
+      <Toggle
+        checked={checked}
+        onChange={onChange}
+        label={title}
+        disabled={disabled}
+      />
     </div>
   );
 }

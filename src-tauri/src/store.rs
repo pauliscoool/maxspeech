@@ -8,6 +8,10 @@ pub struct HistoryEntry {
     pub text: String,
     pub app_name: String,
     pub created_at: String,
+    /// Absolute path to local Remake WAV, if still retained (max 10 recent).
+    pub recording_path: Option<String>,
+    /// True when a Remake audio file exists on disk.
+    pub can_remake: bool,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -49,7 +53,8 @@ impl Store {
                  id INTEGER PRIMARY KEY AUTOINCREMENT,
                  text TEXT NOT NULL,
                  app_name TEXT NOT NULL DEFAULT '',
-                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                 recording_path TEXT
              );
              CREATE TABLE IF NOT EXISTS dictionary (
                  id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -68,12 +73,70 @@ impl Store {
                  tone TEXT NOT NULL DEFAULT 'default',
                  enabled INTEGER NOT NULL DEFAULT 1
              );
+             CREATE TABLE IF NOT EXISTS usage_events (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 word_count INTEGER NOT NULL,
+                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                 history_id INTEGER
+             );
              CREATE INDEX IF NOT EXISTS idx_history_created ON history(created_at);
-             CREATE INDEX IF NOT EXISTS idx_history_text ON history(text);",
+             CREATE INDEX IF NOT EXISTS idx_history_text ON history(text);
+             CREATE INDEX IF NOT EXISTS idx_usage_created ON usage_events(created_at);",
         )?;
         let store = Self { conn: Mutex::new(conn) };
+        let _ = store.migrate();
         let _ = store.seed_default_profiles();
         Ok(store)
+    }
+
+    fn migrate(&self) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        // recording_path for local Remake cache (nullable)
+        let _ = conn.execute(
+            "ALTER TABLE history ADD COLUMN recording_path TEXT",
+            [],
+        );
+        // Append-only usage ledger — deletes must never refund quota.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS usage_events (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 word_count INTEGER NOT NULL,
+                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                 history_id INTEGER
+             );
+             CREATE INDEX IF NOT EXISTS idx_usage_created ON usage_events(created_at);",
+        )?;
+
+        // One-time backfill from existing history so this week isn't under-counted.
+        let already: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM usage_events",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        if already == 0 {
+            let rows: Vec<(i64, String, String)> = {
+                let mut stmt =
+                    conn.prepare("SELECT id, text, created_at FROM history")?;
+                let mapped = stmt.query_map([], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })?;
+                mapped.filter_map(|r| r.ok()).collect()
+            };
+            for (id, text, created_at) in rows {
+                let word_count = text.split_whitespace().count() as i64;
+                conn.execute(
+                    "INSERT INTO usage_events (word_count, created_at, history_id) VALUES (?1, ?2, ?3)",
+                    params![word_count, created_at, id],
+                )?;
+            }
+        }
+        Ok(())
     }
 
     pub fn is_onboarded(&self) -> bool {
@@ -130,17 +193,17 @@ impl Store {
         self.set_setting("plan_tier", tier.as_str())
     }
 
-    /// Sum of whitespace-separated words in history since Monday 00:00 UTC.
+    /// Sum of billed words since Monday 00:00 UTC from the append-only usage ledger.
+    /// Deleting history never reduces this total.
     pub fn words_this_week(&self) -> Result<u64, rusqlite::Error> {
         let week_start = crate::plan::week_starts_at_sql();
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT text FROM history WHERE created_at >= ?1")?;
-        let texts = stmt.query_map(params![week_start], |row| row.get::<_, String>(0))?;
-        let mut total = 0u64;
-        for text in texts.filter_map(|r| r.ok()) {
-            total += text.split_whitespace().count() as u64;
-        }
-        Ok(total)
+        let total: i64 = conn.query_row(
+            "SELECT COALESCE(SUM(word_count), 0) FROM usage_events WHERE created_at >= ?1",
+            params![week_start],
+            |row| row.get(0),
+        )?;
+        Ok(total.max(0) as u64)
     }
 
     pub fn get_plan_status(&self) -> Result<crate::plan::PlanStatus, rusqlite::Error> {
@@ -155,36 +218,123 @@ impl Store {
     }
 
     pub fn add_history(&self, text: &str, app_name: &str) -> Result<i64, rusqlite::Error> {
+        let word_count = text.split_whitespace().count() as i64;
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT INTO history (text, app_name) VALUES (?1, ?2)",
             params![text, app_name],
         )?;
-        Ok(conn.last_insert_rowid())
+        let id = conn.last_insert_rowid();
+        // Bill usage at insert time. History deletes must never remove these rows.
+        conn.execute(
+            "INSERT INTO usage_events (word_count, history_id) VALUES (?1, ?2)",
+            params![word_count, id],
+        )?;
+        Ok(id)
     }
 
-    pub fn get_history(&self, search: &str) -> Result<Vec<HistoryEntry>, rusqlite::Error> {
+    pub fn set_history_recording_path(
+        &self,
+        id: i64,
+        path: Option<&str>,
+    ) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE history SET recording_path = ?1 WHERE id = ?2",
+            params![path, id],
+        )?;
+        Ok(())
+    }
+
+    /// Keep recordings only for the newest `keep` history rows that have paths; delete the rest.
+    pub fn prune_recordings(&self, keep: usize) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, recording_path FROM history WHERE recording_path IS NOT NULL AND recording_path != '' ORDER BY id DESC",
+        )?;
+        let rows: Vec<(i64, String)> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .filter_map(|r| r.ok())
+            .collect();
+        drop(stmt);
+
+        for (i, (id, path)) in rows.into_iter().enumerate() {
+            if i < keep {
+                // Drop stale DB pointers if file missing
+                if !std::path::Path::new(&path).is_file() {
+                    conn.execute(
+                        "UPDATE history SET recording_path = NULL WHERE id = ?1",
+                        params![id],
+                    )?;
+                }
+                continue;
+            }
+            crate::recording::delete_recording_file(&path);
+            conn.execute(
+                "UPDATE history SET recording_path = NULL WHERE id = ?1",
+                params![id],
+            )?;
+        }
+        Ok(())
+    }
+
+    fn map_history_row(
+        id: i64,
+        text: String,
+        app_name: String,
+        created_at: String,
+        recording_path: Option<String>,
+    ) -> HistoryEntry {
+        let path = recording_path.filter(|p| !p.is_empty());
+        let can_remake = path
+            .as_ref()
+            .map(|p| std::path::Path::new(p).is_file())
+            .unwrap_or(false);
+        HistoryEntry {
+            id,
+            text,
+            app_name,
+            created_at,
+            recording_path: if can_remake { path } else { None },
+            can_remake,
+        }
+    }
+
+    pub fn get_history(
+        &self,
+        search: &str,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<HistoryEntry>, rusqlite::Error> {
+        let limit = limit.clamp(1, 200);
+        let offset = offset.max(0);
         let conn = self.conn.lock().unwrap();
         if search.is_empty() {
-            let mut stmt = conn.prepare("SELECT id, text, app_name, created_at FROM history ORDER BY id DESC LIMIT 100")?;
-            let rows = stmt.query_map([], |row| {
-                Ok(HistoryEntry {
-                    id: row.get(0)?,
-                    text: row.get(1)?,
-                    app_name: row.get(2)?,
-                    created_at: row.get(3)?,
-                })
+            let mut stmt = conn.prepare(
+                "SELECT id, text, app_name, created_at, recording_path FROM history ORDER BY id DESC LIMIT ?1 OFFSET ?2",
+            )?;
+            let rows = stmt.query_map(params![limit, offset], |row| {
+                Ok(Self::map_history_row(
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
             })?;
             rows.collect()
         } else {
-            let mut stmt = conn.prepare("SELECT id, text, app_name, created_at FROM history WHERE text LIKE '%' || ?1 || '%' ORDER BY id DESC LIMIT 100")?;
-            let rows = stmt.query_map(params![search], |row| {
-                Ok(HistoryEntry {
-                    id: row.get(0)?,
-                    text: row.get(1)?,
-                    app_name: row.get(2)?,
-                    created_at: row.get(3)?,
-                })
+            let mut stmt = conn.prepare(
+                "SELECT id, text, app_name, created_at, recording_path FROM history WHERE text LIKE '%' || ?1 || '%' ORDER BY id DESC LIMIT ?2 OFFSET ?3",
+            )?;
+            let rows = stmt.query_map(params![search, limit, offset], |row| {
+                Ok(Self::map_history_row(
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
             })?;
             rows.collect()
         }
@@ -324,15 +474,16 @@ impl Store {
     pub fn get_history_by_id(&self, id: i64) -> Result<Option<HistoryEntry>, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         match conn.query_row(
-            "SELECT id, text, app_name, created_at FROM history WHERE id = ?1",
+            "SELECT id, text, app_name, created_at, recording_path FROM history WHERE id = ?1",
             params![id],
             |row| {
-                Ok(HistoryEntry {
-                    id: row.get(0)?,
-                    text: row.get(1)?,
-                    app_name: row.get(2)?,
-                    created_at: row.get(3)?,
-                })
+                Ok(Self::map_history_row(
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
             },
         ) {
             Ok(e) => Ok(Some(e)),
@@ -341,7 +492,30 @@ impl Store {
         }
     }
 
+    pub fn update_history_text(&self, id: i64, text: &str) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE history SET text = ?1 WHERE id = ?2",
+            params![text, id],
+        )?;
+        Ok(())
+    }
+
     pub fn delete_history(&self, id: i64) -> Result<(), rusqlite::Error> {
+        let path: Option<String> = {
+            let conn = self.conn.lock().unwrap();
+            conn.query_row(
+                "SELECT recording_path FROM history WHERE id = ?1",
+                params![id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .ok()
+            .flatten()
+            .filter(|p| !p.is_empty())
+        };
+        if let Some(path) = path {
+            crate::recording::delete_recording_file(&path);
+        }
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM history WHERE id = ?1", params![id])?;
         Ok(())
@@ -351,16 +525,27 @@ impl Store {
         if ids.is_empty() {
             return Ok(0);
         }
-        let conn = self.conn.lock().unwrap();
         let mut deleted = 0usize;
         for id in ids {
-            deleted += conn.execute("DELETE FROM history WHERE id = ?1", params![id])?;
+            self.delete_history(*id)?;
+            deleted += 1;
         }
         Ok(deleted)
     }
 
     pub fn clear_all_history(&self) -> Result<(), rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT recording_path FROM history WHERE recording_path IS NOT NULL AND recording_path != ''",
+        )?;
+        let paths: Vec<String> = stmt
+            .query_map([], |row| row.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        drop(stmt);
+        for path in paths {
+            crate::recording::delete_recording_file(&path);
+        }
         conn.execute("DELETE FROM history", [])?;
         Ok(())
     }
@@ -413,9 +598,22 @@ pub struct Stats {
 }
 
 fn dirs_data_dir() -> String {
+    data_dir()
+}
+
+pub fn data_dir() -> String {
+    // Prefer the OS app-data location:
+    // Windows: %LOCALAPPDATA%\MaxSpeech
+    // macOS: ~/Library/Application Support/MaxSpeech
+    // Linux: $XDG_DATA_HOME/MaxSpeech or ~/.local/share/MaxSpeech
+    if let Some(base) = dirs::data_dir() {
+        return base.join("MaxSpeech").to_string_lossy().into_owned();
+    }
     if let Some(d) = std::env::var_os("LOCALAPPDATA") {
-        let p = std::path::Path::new(&d).join("MaxSpeech");
-        return p.to_string_lossy().into_owned();
+        return std::path::Path::new(&d)
+            .join("MaxSpeech")
+            .to_string_lossy()
+            .into_owned();
     }
     "maxspeech_data".to_string()
 }

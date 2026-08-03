@@ -20,8 +20,15 @@ cpal = "0.15"
 url = "2"
 reqwest = { version = "0.12", features = ["json"] }
 rusqlite = { version = "0.33", features = ["bundled"] }
-keyring = { version = "3", features = ["windows-native"] }
+keyring = { version = "3", features = [
+  "apple-native",
+  "windows-native",
+  "sync-secret-service",
+  "crypto-rust",
+] }
 enigo = "0.3"
+arboard = "3"
+dirs = "6"
 base64 = "0.22"
 log = "0.4"
 env_logger = "0.11"
@@ -44,3 +51,11 @@ tauri-build = { version = "2", features = [] }
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
+
+# Faster iterative release builds (plenty of RAM on this machine).
+# Prefer speed of compiling the installer over max binary size wins.
+[profile.release]
+codegen-units = 8
+lto = "thin"
+opt-level = 3
+strip = true

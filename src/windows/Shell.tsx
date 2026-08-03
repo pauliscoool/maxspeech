@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import HomePage from "./pages/HomePage";
 import InsightsPage from "./pages/InsightsPage";
 import DictionaryPage from "./pages/DictionaryPage";
@@ -18,6 +19,7 @@ import {
 import { formatWeeklyUsage, weeklyUsagePct, planLabel, type PlanStatus } from "../lib/plan";
 import type { AuthUser } from "../lib/auth";
 import { pushHistoryIfMax, type HistoryPayload } from "../lib/cloudSync";
+import { formatHotkey as formatHotkeyOs } from "../lib/platform";
 
 export type PageId =
   | "home"
@@ -57,7 +59,7 @@ export default function Shell({ authUser }: { authUser: AuthUser | null }) {
     days_active: 0,
     avg_wpm: 0,
   });
-  const [hotkeyLabel, setHotkeyLabel] = useState("Ctrl + Space");
+  const [hotkeyLabel, setHotkeyLabel] = useState(formatHotkeyOs("ctrl+super"));
   const [hotkeyMode, setHotkeyMode] = useState("hold");
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [updating, setUpdating] = useState(false);
@@ -72,6 +74,27 @@ export default function Shell({ authUser }: { authUser: AuthUser | null }) {
   useEffect(() => {
     refresh();
   }, [page]);
+
+  // Refresh stats / plan when the window is focused again.
+  useEffect(() => {
+    const onVis = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    let unlisten: (() => void) | undefined;
+    void getCurrentWindow()
+      .onFocusChanged(({ payload: focused }) => {
+        if (focused) refresh();
+      })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch(() => {});
+    return () => {
+      document.removeEventListener("visibilitychange", onVis);
+      unlisten?.();
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -90,6 +113,31 @@ export default function Shell({ authUser }: { authUser: AuthUser | null }) {
     let unlisten: (() => void) | undefined;
     void listen<HistoryPayload>("history-added", (ev) => {
       void pushHistoryIfMax(ev.payload);
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => {
+      unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen<string>("navigate-page", (ev) => {
+      const next = ev.payload;
+      if (
+        next === "home" ||
+        next === "insights" ||
+        next === "dictionary" ||
+        next === "snippets" ||
+        next === "style" ||
+        next === "transforms" ||
+        next === "scratchpad" ||
+        next === "transcriber" ||
+        next === "settings"
+      ) {
+        goToPage(next);
+      }
     }).then((fn) => {
       unlisten = fn;
     });
@@ -429,18 +477,7 @@ function formatCount(n: number) {
 }
 
 export function formatHotkey(raw: string) {
-  return raw
-    .split("+")
-    .map((p) => {
-      const t = p.trim().toLowerCase();
-      if (t === "ctrl" || t === "control") return "Ctrl";
-      if (t === "alt") return "Alt";
-      if (t === "shift") return "Shift";
-      if (t === "super" || t === "meta" || t === "cmd" || t === "win") return "Win";
-      if (t === "space") return "Space";
-      return t.length === 1 ? t.toUpperCase() : t.charAt(0).toUpperCase() + t.slice(1);
-    })
-    .join(" + ");
+  return formatHotkeyOs(raw);
 }
 
 function iconProps() {
