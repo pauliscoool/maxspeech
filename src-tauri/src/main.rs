@@ -722,19 +722,26 @@ fn position_overlay(app: &tauri::AppHandle) {
         clear_overlay_background(&w);
         let _ = w.set_shadow(false);
         let _ = w.set_size(Size::Logical(LogicalSize {
-            width: 158.0,
-            height: 52.0,
+            width: 174.0,
+            height: 36.0,
         }));
         if let Ok(Some(monitor)) = w.current_monitor() {
             let scale = monitor.scale_factor();
             let size = monitor.size();
             let screen_w = size.width as f64 / scale;
             let screen_h = size.height as f64 / scale;
-            let x = (screen_w - 158.0) / 2.0;
-            let y = screen_h - 52.0 - 48.0;
+            let x = (screen_w - 174.0) / 2.0;
+            let y = screen_h - 36.0 - 48.0;
             let _ = w.set_position(Position::Logical(LogicalPosition { x, y }));
         }
         let _ = w.set_always_on_top(true);
-        let _ = w.set_ignore_cursor_events(false);
+        // Stay shown + click-through so WebView2 stays warm for instant hotkey paint.
+        let _ = w.set_ignore_cursor_events(true);
+        let _ = w.show();
+
+        // Warm TLS/DNS to Deepgram so the first dictation handshake is faster.
+        tauri::async_runtime::spawn(async {
+            stt::deepgram::prewarm().await;
+        });
     }
 }

@@ -6,19 +6,29 @@ use std::sync::{Arc, Mutex};
 use tauri::Emitter;
 
 const TARGET_RATE: u32 = 16000;
-const BAR_COUNT: usize = 21;
+const BAR_COUNT: usize = 29;
 
-// Visual meter only — never drops frames sent to STT.
+// Visual meter only.
 const NOISE_GATE: f32 = 0.003;
 const LEVEL_GAIN: f32 = 7.0;
 
-// Soft AGC for quiet mics. Keep boost modest — 6× was distorting speech so
-// Deepgram heard completely different words ("build" → "blood").
-const AGC_TARGET_RMS: f32 = 0.08;
-const AGC_MAX_GAIN: f32 = 2.5;
-const AGC_NOISE_FLOOR: f32 = 0.0015;
-const AGC_ATTACK: f32 = 0.18;
-const AGC_RELEASE: f32 = 0.08;
+// Soft AGC for quiet mics. Keep boost modest — over-boosting makes Deepgram
+// hear different words ("build"→"blood") and pulls up distant background talk.
+const AGC_TARGET_RMS: f32 = 0.09;
+const AGC_MAX_GAIN: f32 = 1.7;
+const AGC_NOISE_FLOOR: f32 = 0.01;
+const AGC_ATTACK: f32 = 0.14;
+const AGC_RELEASE: f32 = 0.1;
+
+// STT noise gate: mute frames well below the current close-talker level so
+// background conversations aren't transcribed. Uses absolute floor + relative
+// threshold vs a slow peak hold (closest / loudest speaker wins).
+const STT_GATE_FLOOR_OPEN: f32 = 0.01;
+const STT_GATE_FLOOR_CLOSE: f32 = 0.006;
+const STT_GATE_REL_OPEN: f32 = 0.38; // open at ≥38% of recent peak
+const STT_GATE_REL_CLOSE: f32 = 0.22;
+const STT_GATE_CLOSED_GAIN: f32 = 0.0;
+const STT_PEAK_DECAY: f32 = 0.995; // ~slow forget of prior loudness
 
 /// Empty / "default" means follow the OS default input device.
 pub const MIC_DEVICE_DEFAULT: &str = "default";
@@ -87,6 +97,10 @@ impl AudioCapture {
         let resample_state_clone = resample_state.clone();
         let agc_gain = Arc::new(Mutex::new(1.0f32));
         let agc_gain_clone = agc_gain.clone();
+        let gate_open = Arc::new(Mutex::new(false));
+        let gate_open_clone = gate_open.clone();
+        let gate_peak = Arc::new(Mutex::new(0.02f32));
+        let gate_peak_clone = gate_peak.clone();
         let ratio = native_rate as f64 / TARGET_RATE as f64;
 
         let err_fn = |err| log::error!("Audio stream error: {err}");
@@ -103,6 +117,8 @@ impl AudioCapture {
                             ratio,
                             &resample_state_clone,
                             &agc_gain_clone,
+                            &gate_open_clone,
+                            &gate_peak_clone,
                             &buffer_clone,
                             chunk_size,
                             &sender,
@@ -126,6 +142,8 @@ impl AudioCapture {
                             ratio,
                             &resample_state_clone,
                             &agc_gain_clone,
+                            &gate_open_clone,
+                            &gate_peak_clone,
                             &buffer_clone,
                             chunk_size,
                             &sender,
@@ -151,6 +169,8 @@ impl AudioCapture {
                             ratio,
                             &resample_state_clone,
                             &agc_gain_clone,
+                            &gate_open_clone,
+                            &gate_peak_clone,
                             &buffer_clone,
                             chunk_size,
                             &sender,
@@ -176,6 +196,8 @@ impl AudioCapture {
                             ratio,
                             &resample_state_clone,
                             &agc_gain_clone,
+                            &gate_open_clone,
+                            &gate_peak_clone,
                             &buffer_clone,
                             chunk_size,
                             &sender,
@@ -324,6 +346,8 @@ fn process_f32(
     ratio: f64,
     resample_pos: &Arc<Mutex<f64>>,
     agc_gain: &Arc<Mutex<f32>>,
+    gate_open: &Arc<Mutex<bool>>,
+    gate_peak: &Arc<Mutex<f32>>,
     buffer: &Arc<Mutex<Vec<i16>>>,
     chunk_size: usize,
     sender: &tokio::sync::mpsc::UnboundedSender<Vec<i16>>,
@@ -335,7 +359,18 @@ fn process_f32(
         return;
     }
 
-    let gained = apply_soft_agc(&mono, agc_gain);
+    // Gate first (drop distant/background), then gentle AGC on close speech only.
+    let gated = apply_stt_noise_gate(&mono, gate_open, gate_peak);
+    let open = *gate_open.lock().unwrap();
+    let gained = if open {
+        apply_soft_agc(&gated, agc_gain)
+    } else {
+        // Don't let AGC climb while the room is quiet / distant talkers are speaking.
+        if let Ok(mut g) = agc_gain.lock() {
+            *g = (*g * 0.92).max(1.0);
+        }
+        gated
+    };
 
     let frame = FRAME.fetch_add(1, Ordering::Relaxed);
     let bars = compute_bars(&gained, BAR_COUNT, frame);
@@ -358,9 +393,8 @@ fn process_f32(
     }
 }
 
-/// Downmix to mono.
-/// - Stereo headsets: pick the louder channel (avg washes speech with a dead side).
-/// - Mic arrays (3+ ch): average — loudest-channel picks noise on Intel SST arrays.
+/// Downmix to mono, preferring the loudest channel when it clearly dominates
+/// (closest talker on stereo / array mics). Otherwise average to reject noise spikes.
 fn to_mono(data: &[f32], channels: u16) -> Vec<f32> {
     let ch = channels.max(1) as usize;
     if ch == 1 {
@@ -369,18 +403,6 @@ fn to_mono(data: &[f32], channels: u16) -> Vec<f32> {
     let frames = data.len() / ch;
     if frames == 0 {
         return Vec::new();
-    }
-
-    if ch >= 3 {
-        return (0..frames)
-            .map(|frame| {
-                let mut sum = 0.0f32;
-                for c in 0..ch {
-                    sum += data[frame * ch + c];
-                }
-                sum / ch as f32
-            })
-            .collect();
     }
 
     let mut energies = vec![0.0f32; ch];
@@ -396,8 +418,62 @@ fn to_mono(data: &[f32], channels: u16) -> Vec<f32> {
         .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
         .map(|(i, _)| i)
         .unwrap_or(0);
+    let best_e = energies[best];
+    let mean_e = energies.iter().sum::<f32>() / ch as f32;
 
-    (0..frames).map(|frame| data[frame * ch + best]).collect()
+    // Clear winner (~closest / on-axis) → take that channel. Otherwise average.
+    let use_best = best_e > mean_e * 1.55 && best_e > 1e-8;
+    if use_best || ch == 2 {
+        return (0..frames).map(|frame| data[frame * ch + best]).collect();
+    }
+
+    (0..frames)
+        .map(|frame| {
+            let mut sum = 0.0f32;
+            for c in 0..ch {
+                sum += data[frame * ch + c];
+            }
+            sum / ch as f32
+        })
+        .collect()
+}
+
+/// Hysteresis gate vs absolute floor + recent peak (closest/loudest speaker).
+fn apply_stt_noise_gate(
+    samples: &[f32],
+    gate_open: &Arc<Mutex<bool>>,
+    gate_peak: &Arc<Mutex<f32>>,
+) -> Vec<f32> {
+    let rms = (samples.iter().map(|s| s * s).sum::<f32>() / samples.len().max(1) as f32).sqrt();
+
+    let mut peak = gate_peak.lock().unwrap();
+    if rms > *peak {
+        *peak = rms;
+    } else {
+        *peak = (*peak * STT_PEAK_DECAY).max(STT_GATE_FLOOR_OPEN);
+    }
+    let peak_now = *peak;
+    drop(peak);
+
+    let open_thr = STT_GATE_FLOOR_OPEN.max(peak_now * STT_GATE_REL_OPEN);
+    let close_thr = STT_GATE_FLOOR_CLOSE.max(peak_now * STT_GATE_REL_CLOSE);
+
+    let mut open = gate_open.lock().unwrap();
+    if *open {
+        if rms < close_thr {
+            *open = false;
+        }
+    } else if rms >= open_thr {
+        *open = true;
+    }
+    let pass = *open;
+    drop(open);
+
+    if pass {
+        samples.to_vec()
+    } else {
+        samples.iter().map(|&s| s * STT_GATE_CLOSED_GAIN).collect()
+    }
 }
 
 fn apply_soft_agc(samples: &[f32], gain_state: &Arc<Mutex<f32>>) -> Vec<f32> {

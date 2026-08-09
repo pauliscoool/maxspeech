@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicovince/tauri/HEAD/crates/tauri-config-schema/schema.json",
   "productName": "MaxSpeech",
-  "version": "0.1.2",
+  "version": "0.1.5",
   "identifier": "com.maxspeech.app",
   "build": {
     "frontendDist": "../dist",
@@ -15,8 +15,8 @@
       {
         "label": "overlay",
         "title": "MaxSpeech Overlay",
-        "width": 158,
-        "height": 52,
+        "width": 174,
+        "height": 36,
         "decorations": false,
         "transparent": true,
         "alwaysOnTop": true,

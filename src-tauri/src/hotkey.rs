@@ -501,7 +501,7 @@ mod win_mod_hook {
         let mode = MODE.lock().unwrap().clone();
         thread::spawn(move || {
             // Debounce brief Ctrl/Win flicker so we don't start then instantly stop.
-            thread::sleep(Duration::from_millis(40));
+            thread::sleep(Duration::from_millis(15));
             if EDGE_GEN.load(Ordering::SeqCst) != gen {
                 return;
             }

@@ -20,14 +20,14 @@ interface EnhanceEvent {
   enhanced: string;
 }
 
-/** Fewer, thicker bars — reads louder than the old skinny strip. */
-const BAR_COUNT = 21;
-const BAR_MAX_PX = 30;
-const BAR_WIDTH_PX = 3;
-/** Tighter sides than the old 218px pill; taller so the waveform can jump. */
-const OVERLAY_W = 158;
-const OVERLAY_H = 52;
-const PILL_OUT_MS = 80;
+/** Same bar density as before — not compressed into fewer fat sticks. */
+const BAR_COUNT = 29;
+const BAR_MAX_PX = 17;
+const BAR_WIDTH_PX = 2;
+/** Old pill was 218×38. ~20% narrower sides, ~5% less height — not taller. */
+const OVERLAY_W = 174;
+const OVERLAY_H = 36;
+const PILL_OUT_MS = 90;
 const TOAST_W = 220;
 const TOAST_H = 90;
 const TOAST_MS = 1600;
@@ -65,7 +65,8 @@ export default function Overlay() {
   }
 
   useEffect(() => {
-    positionBottomCenter(OVERLAY_W, OVERLAY_H);
+    // Warm path: stay visible + click-through while idle so the first hotkey paints instantly.
+    void resizeForState("idle");
     invoke<string>("get_setting", { key: "show_live_transcript" })
       .then((v) => setShowLive(v !== "false"))
       .catch(() => setShowLive(true));
@@ -361,21 +362,21 @@ export default function Overlay() {
       {!showToast && showPill && (
         <div
           data-tauri-drag-region
-          className={`liquid-glass-pill flex items-center gap-1.5 px-2.5 py-1.5 rounded-full select-none ${
+          className={`liquid-glass-pill flex items-center gap-1.5 px-2.5 py-1 rounded-full select-none ${
             showLimit ? "liquid-glass-pill--limit" : "w-full h-full"
           } ${pillLeaving ? "liquid-glass-pill--out" : "liquid-glass-pill--in"}`}
         >
           {!showLimit && (
             <div
-              className="flex items-end justify-center flex-1 min-w-0"
-              style={{ gap: "2px", height: `${BAR_MAX_PX}px` }}
+              className="flex items-end justify-center flex-1 min-w-[88px]"
+              style={{ gap: "1.5px", height: `${BAR_MAX_PX}px` }}
             >
               {levels.map((level, i) => {
                 const mid =
                   1 -
-                  (Math.abs(i - (BAR_COUNT - 1) / 2) / ((BAR_COUNT - 1) / 2)) * 0.22;
-                const px = Math.max(3, Math.round(level * mid * BAR_MAX_PX));
-                const isOrange = i % 5 === 2;
+                  (Math.abs(i - (BAR_COUNT - 1) / 2) / ((BAR_COUNT - 1) / 2)) * 0.18;
+                const px = Math.max(2, Math.round(level * mid * BAR_MAX_PX));
+                const isOrange = i % 6 === 3;
                 return (
                   <div
                     key={i}
@@ -398,7 +399,7 @@ export default function Overlay() {
             className={`font-medium truncate ${
               showLimit
                 ? "text-[10px] text-white/90 w-full text-center"
-                : "text-[9px] text-white/90 max-w-[56px]"
+                : "text-[8px] text-white/85 max-w-[72px]"
             }`}
           >
             {label}
@@ -434,15 +435,21 @@ async function positionBottomCenter(w: number, h: number) {
   }
 }
 
+/** Keep the overlay WebView shown (never hide) so Windows doesn't cold-wake it on hotkey. */
 async function resizeForState(state: DictationState, withToast = false) {
   try {
     const win = getCurrentWindow();
     const clear = [0, 0, 0, 0] as [number, number, number, number];
     await win.setBackgroundColor(clear).catch(() => {});
+    // Idle = transparent click-through shell at bottom-center (keeps WebView warm).
     if (state === "idle" && !withToast) {
-      await win.hide();
+      await positionBottomCenter(OVERLAY_W, OVERLAY_H);
+      await win.setIgnoreCursorEvents(true).catch(() => {});
+      await win.show();
       return;
     }
+    const needsClicks = state === "limit" || withToast;
+    await win.setIgnoreCursorEvents(!needsClicks).catch(() => {});
     await win.show();
     if (state === "limit") {
       await positionBottomCenter(LIMIT_W, LIMIT_H);

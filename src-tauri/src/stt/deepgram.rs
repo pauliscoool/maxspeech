@@ -1,9 +1,54 @@
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
+use std::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::secrets;
+
+/// Last Deepgram key that successfully connected (avoids retrying a bad user key every session).
+static LAST_GOOD_KEY: Mutex<Option<String>> = Mutex::new(None);
+
+/// High-value English terms that ASR often mangles; merged with the user dictionary as keyterms.
+const BUILTIN_KEYTERMS: &[&str] = &[
+    "MaxSpeech",
+    "Deepgram",
+    "Supabase",
+    "Tauri",
+    "Claude",
+    "ChatGPT",
+    // Version control — ASR loves "Git" → "get"
+    "Git",
+    "GitHub",
+    "GitLab",
+    "gitignore",
+    "git push",
+    "git pull",
+    "git commit",
+    "git clone",
+    "git merge",
+    "git rebase",
+    "git status",
+    "Vercel",
+    "cloud",
+    "Cloudflare",
+    "OpenAI",
+    "API",
+    "JSON",
+    "TypeScript",
+    "JavaScript",
+    "PostgreSQL",
+    "SQLite",
+    "Windows",
+    "macOS",
+    "Linux",
+    "Notion",
+    "Slack",
+    "Discord",
+    "Figma",
+    "Linear",
+    "Cursor",
+];
 
 #[derive(Debug, Clone)]
 pub struct DeepgramConfig {
@@ -11,6 +56,29 @@ pub struct DeepgramConfig {
     pub model: String,
     pub language: String,
     pub keywords: Vec<String>,
+}
+
+/// Merge user dictionary terms with built-in keyterms (deduped, capped for URL size).
+pub fn merge_keyterms(user: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for term in user
+        .into_iter()
+        .chain(BUILTIN_KEYTERMS.iter().map(|s| (*s).to_string()))
+    {
+        let t = term.trim().to_string();
+        if t.is_empty() {
+            continue;
+        }
+        let key = t.to_lowercase();
+        if seen.insert(key) {
+            out.push(t);
+        }
+        if out.len() >= 80 {
+            break;
+        }
+    }
+    out
 }
 
 impl Default for DeepgramConfig {
@@ -186,12 +254,12 @@ fn build_url(config: &DeepgramConfig) -> String {
     // chopping mid-word as aggressively.
     let endpointing = if config.language == "multi" { 250 } else { 400 };
     let mut url = format!(
-        "wss://api.deepgram.com/v1/listen?model={}&language={}&punctuate=true&interim_results=true&smart_format=true&endpointing={}&encoding=linear16&sample_rate=16000&channels=1",
+        "wss://api.deepgram.com/v1/listen?model={}&language={}&punctuate=true&interim_results=true&smart_format=true&numerals=true&endpointing={}&encoding=linear16&sample_rate=16000&channels=1",
         config.model, config.language, endpointing
     );
     // Nova-3 rejects legacy `keywords` (HTTP 400). Use `keyterm` instead.
-    // Cap to keep the handshake URL reasonable.
-    for kw in config.keywords.iter().take(50) {
+    // Cap to keep the handshake URL reasonable (Nova-3 allows many; URL length is the limit).
+    for kw in config.keywords.iter().take(80) {
         let term = kw.trim();
         if !term.is_empty() {
             url.push_str(&format!("&keyterm={}", urlenc(term)));
@@ -202,9 +270,42 @@ fn build_url(config: &DeepgramConfig) -> String {
         config.model,
         config.language,
         endpointing,
-        config.keywords.len().min(50)
+        config.keywords.len().min(80)
     );
     url
+}
+
+/// Cheap TLS/DNS warm so the first real listen handshake is faster.
+pub async fn prewarm() {
+    let candidates = {
+        let mut keys = secrets::deepgram_key_candidates();
+        if let Ok(guard) = LAST_GOOD_KEY.lock() {
+            if let Some(ref k) = *guard {
+                keys.retain(|x| x != k);
+                keys.insert(0, k.clone());
+            }
+        }
+        keys
+    };
+    let config = DeepgramConfig {
+        api_key: candidates.first().cloned().unwrap_or_default(),
+        keywords: Vec::new(),
+        ..Default::default()
+    };
+    for key in candidates {
+        let mut cfg = config.clone();
+        cfg.api_key = key;
+        match connect_ws(&cfg).await {
+            Ok(mut ws) => {
+                let _ = LAST_GOOD_KEY.lock().map(|mut g| *g = Some(cfg.api_key.clone()));
+                // Close immediately — we only wanted the handshake warm.
+                let _ = ws.close(None).await;
+                log::info!("Deepgram prewarm OK");
+                return;
+            }
+            Err(e) => log::warn!("Deepgram prewarm failed: {e}"),
+        }
+    }
 }
 
 async fn connect_ws(
@@ -235,7 +336,7 @@ pub async fn stream_audio(
     transcript_tx: mpsc::UnboundedSender<TranscriptChunk>,
     mut stop_rx: mpsc::Receiver<()>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let candidates = if config.api_key.is_empty() {
+    let mut candidates = if config.api_key.is_empty() {
         secrets::deepgram_key_candidates()
     } else {
         let mut keys = vec![config.api_key.clone()];
@@ -246,6 +347,15 @@ pub async fn stream_audio(
         }
         keys
     };
+    // Prefer the last key that worked (skips a failed user-key round-trip).
+    if let Ok(guard) = LAST_GOOD_KEY.lock() {
+        if let Some(ref k) = *guard {
+            if let Some(idx) = candidates.iter().position(|x| x == k) {
+                let good = candidates.remove(idx);
+                candidates.insert(0, good);
+            }
+        }
+    }
 
     let mut last_err: Option<Box<dyn std::error::Error + Send + Sync>> = None;
     let mut ws_stream = None;
@@ -258,6 +368,9 @@ pub async fn stream_audio(
                 } else {
                     log::info!("Deepgram WebSocket connected");
                 }
+                let _ = LAST_GOOD_KEY
+                    .lock()
+                    .map(|mut g| *g = Some(config.api_key.clone()));
                 ws_stream = Some(ws);
                 break;
             }

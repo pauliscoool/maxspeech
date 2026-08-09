@@ -48,6 +48,17 @@ impl Default for PipelineState {
     }
 }
 
+fn show_overlay_fast(app: &tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("overlay") {
+        // Kill WebView2's default white fill before the window becomes visible.
+        let _ = w.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+        let _ = w.set_shadow(false);
+        let _ = w.set_ignore_cursor_events(true);
+        let _ = w.show();
+        let _ = w.set_always_on_top(true);
+    }
+}
+
 pub fn start_dictation(app: &tauri::AppHandle) {
     let state = app.state::<PipelineState>();
     {
@@ -58,22 +69,24 @@ pub fn start_dictation(app: &tauri::AppHandle) {
         *active = true;
     }
 
+    // Paint the listening pill immediately — before SQLite / mic / Deepgram work.
+    let _ = app.emit("dictation-state", "listening");
+    show_overlay_fast(app);
+
     // Weekly word limit: hard stop when plan quota is exhausted (Mon 00:00 UTC reset).
-    if let Some(store) = app.try_state::<Store>() {
-        if let Ok(status) = store.get_plan_status() {
-            if !status.can_dictate {
-                if let Some(w) = app.get_webview_window("overlay") {
-                    // Kill WebView2's default white fill before the window becomes visible.
-                    let _ = w.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
-                    let _ = w.set_shadow(false);
-                    let _ = w.show();
-                    let _ = w.set_always_on_top(true);
-                }
-                let _ = app.emit("dictation-limit", true);
-                let _ = app.emit("dictation-state", "limit");
-                *state.active.lock().unwrap() = false;
-                return;
-            }
+    let plan_status = app
+        .try_state::<Store>()
+        .and_then(|store| store.get_plan_status().ok());
+    if let Some(ref status) = plan_status {
+        if !status.can_dictate {
+            let _ = app.emit("dictation-limit", true);
+            let _ = app.emit("dictation-state", "limit");
+            show_overlay_fast(app);
+            let _ = app
+                .get_webview_window("overlay")
+                .map(|w| w.set_ignore_cursor_events(false));
+            *state.active.lock().unwrap() = false;
+            return;
         }
     }
 
@@ -89,14 +102,6 @@ pub fn start_dictation(app: &tauri::AppHandle) {
     };
     *state.started_at.lock().unwrap() = Some(Instant::now());
 
-    let _ = app.emit("dictation-state", "listening");
-    if let Some(w) = app.get_webview_window("overlay") {
-        // Kill WebView2's default white fill before the window becomes visible.
-        let _ = w.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
-        let _ = w.set_shadow(false);
-        let _ = w.show();
-        let _ = w.set_always_on_top(true);
-    }
     log::info!(
         "Dictation started session={session_id} paste={paste_token} (max {}s wall-clock)",
         MAX_RECORDING.as_secs()
@@ -110,15 +115,14 @@ pub fn start_dictation(app: &tauri::AppHandle) {
         .map(|w| w.word)
         .collect();
 
+    let plan_tier = plan_status
+        .map(|s| s.tier)
+        .unwrap_or(crate::plan::PlanTier::Free);
     let (multilingual, languages) = app
         .try_state::<Store>()
         .map(|store| {
-            let tier = store
-                .get_plan_status()
-                .map(|s| s.tier)
-                .unwrap_or(crate::plan::PlanTier::Free);
             // Free tier: single language only (no code-switching).
-            let multi_allowed = tier != crate::plan::PlanTier::Free;
+            let multi_allowed = plan_tier != crate::plan::PlanTier::Free;
             let multi = multi_allowed
                 && store
                     .get_setting("stt_multilingual")
@@ -134,20 +138,29 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                     .as_deref(),
             );
             let langs = deepgram::effective_languages(multi, &langs);
-            // Heal persisted settings if a stale multi-select was left after multi off.
+            // Heal persisted settings off the hot path (async) if needed.
             if let Ok(Some(raw)) = store.get_setting("stt_languages") {
                 let parsed = deepgram::parse_languages_setting(Some(&raw));
                 if parsed != langs {
-                    let _ = store.set_setting(
-                        "stt_languages",
-                        &serde_json::to_string(&langs).unwrap_or_else(|_| "[\"en\"]".into()),
-                    );
-                    if !multi {
-                        let _ = store.set_setting("stt_multilingual", "false");
-                    }
-                    log::warn!(
-                        "Healed stt_languages from {parsed:?} → {langs:?} (multilingual={multi})"
-                    );
+                    let heal_langs = langs.clone();
+                    let heal_from = parsed.clone();
+                    let heal_multi = multi;
+                    let app_heal = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        if let Some(store) = app_heal.try_state::<Store>() {
+                            let _ = store.set_setting(
+                                "stt_languages",
+                                &serde_json::to_string(&heal_langs)
+                                    .unwrap_or_else(|_| "[\"en\"]".into()),
+                            );
+                            if !heal_multi {
+                                let _ = store.set_setting("stt_multilingual", "false");
+                            }
+                            log::warn!(
+                                "Healed stt_languages from {heal_from:?} → {heal_langs:?} (multilingual={heal_multi})"
+                            );
+                        }
+                    });
                 }
             }
             (multi, langs)
@@ -157,10 +170,10 @@ pub fn start_dictation(app: &tauri::AppHandle) {
     log::info!("STT language={language} multilingual={multilingual} selected={languages:?}");
     let language_for_pipeline = language.clone();
 
-    // Empty api_key → stream_audio tries user keyring key, then app fallback.
+    // Empty api_key → stream_audio tries cached / user / app fallback keys.
     let config = DeepgramConfig {
         api_key: String::new(),
-        keywords,
+        keywords: deepgram::merge_keyterms(keywords),
         language,
         ..Default::default()
     };
@@ -185,6 +198,17 @@ pub fn start_dictation(app: &tauri::AppHandle) {
             if audio_tx.send(chunk).is_err() {
                 break;
             }
+        }
+    });
+
+    // Start Deepgram handshake *before* opening the mic so TLS/WS overlaps WASAPI setup.
+    // Early PCM buffers in the unbounded channel until the socket is ready.
+    let app_for_stt = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = deepgram::stream_audio(config, audio_rx, transcript_tx, stop_rx).await {
+            log::error!("Deepgram stream error: {e}");
+            let _ = app_for_stt.emit("dictation-error", format!("STT error: {e}"));
+            let _ = app_for_stt.emit("dictation-state", "error");
         }
     });
 
@@ -236,15 +260,6 @@ pub fn start_dictation(app: &tauri::AppHandle) {
         );
         let _ = app_timeout.emit("dictation-error", "Max length: 2 minutes — stopping");
         stop_dictation(&app_timeout);
-    });
-
-    let app_for_stt = app.clone();
-    tauri::async_runtime::spawn(async move {
-        if let Err(e) = deepgram::stream_audio(config, audio_rx, transcript_tx, stop_rx).await {
-            log::error!("Deepgram stream error: {e}");
-            let _ = app_for_stt.emit("dictation-error", format!("STT error: {e}"));
-            let _ = app_for_stt.emit("dictation-state", "error");
-        }
     });
 
     let app_handle = app.clone();

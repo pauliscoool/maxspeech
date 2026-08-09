@@ -75,6 +75,23 @@ Grammarly-style cleanup (always apply): \
 - Do NOT add a greeting/sign-off the speaker did not say. \
 - Return ONLY the cleaned text, no commentary or quotes around it.";
 
+const ASR_CORRECTION_RULES: &str = "\
+CRITICAL — speech-to-text errors (high priority): \
+The input is an ASR transcript and often contains wrong near-homophones. \
+Using surrounding context, fix obvious mishears to the word the speaker clearly meant. \
+Prefer the reading that makes the sentence sensible. Examples: \
+- Git / version control (VERY common): 'get'→'Git' when talking about repos, \
+  push/pull/commit/clone/merge/place/branch. \
+  'Did you place it to get?' → 'Did you place it to Git?' \
+  'push it to get' → 'push it to Git'; 'get hub' → 'GitHub' \
+- tech/cloud: 'clout'→'cloud', 'a WS'→'AWS', 'verse cell'→'Vercel', \
+  'type script'→'TypeScript', 'post grass'→'Postgres' \
+- product names: MaxSpeech, Deepgram, Claude, ChatGPT, Cursor, Notion, Slack \
+- common: 'there'/'their'/'they're', 'to'/'too'/'two', 'its'/'it's' by grammar \
+Do NOT invent new content. Only swap clearly wrong ASR tokens. \
+Do NOT change ordinary English 'get' ('I want to get coffee'). \
+If both readings are plausible, keep the transcript as-is.";
+
 const MULTILINGUAL_RULES: &str = "\
 CRITICAL — multilingual / code-switched dictation: \
 The transcript may mix languages in one utterance (e.g. Russian then English). \
@@ -110,9 +127,11 @@ fn system_prompt_for_tone(tone: &str, multilingual: bool) -> String {
         }
     };
     if multilingual {
-        format!("{base}\n\n{GRAMMAR_RULES}\n\n{SELF_CORRECTION_RULES}\n\n{MULTILINGUAL_RULES}")
+        format!(
+            "{base}\n\n{GRAMMAR_RULES}\n\n{ASR_CORRECTION_RULES}\n\n{SELF_CORRECTION_RULES}\n\n{MULTILINGUAL_RULES}"
+        )
     } else {
-        format!("{base}\n\n{GRAMMAR_RULES}\n\n{SELF_CORRECTION_RULES}")
+        format!("{base}\n\n{GRAMMAR_RULES}\n\n{ASR_CORRECTION_RULES}\n\n{SELF_CORRECTION_RULES}")
     }
 }
 
@@ -349,7 +368,7 @@ pub async fn rewrite_with_llm(
     let system = format!(
         "You are a Grammarly-like dictation assistant. Rewrite the text per the instruction. \
          Instruction: {instruction}. Only return the rewritten text, nothing else.\n\n\
-         {GRAMMAR_RULES}\n\n{SELF_CORRECTION_RULES}"
+         {GRAMMAR_RULES}\n\n{ASR_CORRECTION_RULES}\n\n{SELF_CORRECTION_RULES}"
     );
     call_llm(&api_key, &system, text, 1024).await
 }
@@ -384,7 +403,7 @@ async fn cleanup_self_corrections_ex(
     };
     let system = format!(
         "You are a Grammarly-like cleanup pass for spoken dictation. \
-         {GRAMMAR_RULES} {SELF_CORRECTION_RULES}{multi} \
+         {GRAMMAR_RULES} {ASR_CORRECTION_RULES} {SELF_CORRECTION_RULES}{multi} \
          Only return the cleaned text, nothing else."
     );
     call_llm(&api_key, &system, text, 2048).await
