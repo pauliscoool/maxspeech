@@ -5,10 +5,11 @@ pub mod vocab;
 use crate::audio::AudioCapture;
 use crate::context;
 use crate::inject::{self, LastInsertion};
+use crate::recording::{self, MAX_REMAKE_RECORDINGS, WAV_SAMPLE_RATE};
 use crate::secrets;
 use crate::store::Store;
 use crate::stt::deepgram::{self, DeepgramConfig, TranscriptChunk};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
 use tokio::sync::mpsc;
@@ -25,6 +26,11 @@ pub struct PipelineState {
     started_at: Mutex<Option<Instant>>,
     /// Bumped on each start/stop so orphaned max-length timers cannot kill a newer session.
     session_gen: Mutex<u64>,
+    /// Bumped only when a *new* recording starts. A finishing enhance/inject from an
+    /// older recording skips paste if this no longer matches (prevents half+half).
+    paste_epoch: Mutex<u64>,
+    /// 16 kHz mono PCM for the active session (Remake cache).
+    session_pcm: Mutex<Option<Arc<Mutex<Vec<i16>>>>>,
 }
 
 impl Default for PipelineState {
@@ -36,6 +42,8 @@ impl Default for PipelineState {
             audio_capture: Mutex::new(AudioCapture::new()),
             started_at: Mutex::new(None),
             session_gen: Mutex::new(0),
+            paste_epoch: Mutex::new(0),
+            session_pcm: Mutex::new(None),
         }
     }
 }
@@ -54,14 +62,15 @@ pub fn start_dictation(app: &tauri::AppHandle) {
     if let Some(store) = app.try_state::<Store>() {
         if let Ok(status) = store.get_plan_status() {
             if !status.can_dictate {
-                let msg = match status.weekly_limit {
-                    Some(lim) => format!(
-                        "Weekly word limit reached ({lim} words). Upgrade in Settings or wait until Monday."
-                    ),
-                    None => "Weekly word limit reached. Check usage in Settings.".to_string(),
-                };
-                let _ = app.emit("dictation-error", msg);
-                let _ = app.emit("dictation-state", "error");
+                if let Some(w) = app.get_webview_window("overlay") {
+                    // Kill WebView2's default white fill before the window becomes visible.
+                    let _ = w.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+                    let _ = w.set_shadow(false);
+                    let _ = w.show();
+                    let _ = w.set_always_on_top(true);
+                }
+                let _ = app.emit("dictation-limit", true);
+                let _ = app.emit("dictation-state", "limit");
                 *state.active.lock().unwrap() = false;
                 return;
             }
@@ -72,6 +81,11 @@ pub fn start_dictation(app: &tauri::AppHandle) {
         let mut gen = state.session_gen.lock().unwrap();
         *gen = gen.wrapping_add(1);
         *gen
+    };
+    let paste_token = {
+        let mut epoch = state.paste_epoch.lock().unwrap();
+        *epoch = epoch.wrapping_add(1);
+        *epoch
     };
     *state.started_at.lock().unwrap() = Some(Instant::now());
 
@@ -84,7 +98,7 @@ pub fn start_dictation(app: &tauri::AppHandle) {
         let _ = w.set_always_on_top(true);
     }
     log::info!(
-        "Dictation started session={session_id} (max {}s wall-clock)",
+        "Dictation started session={session_id} paste={paste_token} (max {}s wall-clock)",
         MAX_RECORDING.as_secs()
     );
 
@@ -96,25 +110,95 @@ pub fn start_dictation(app: &tauri::AppHandle) {
         .map(|w| w.word)
         .collect();
 
+    let (multilingual, languages) = app
+        .try_state::<Store>()
+        .map(|store| {
+            let tier = store
+                .get_plan_status()
+                .map(|s| s.tier)
+                .unwrap_or(crate::plan::PlanTier::Free);
+            // Free tier: single language only (no code-switching).
+            let multi_allowed = tier != crate::plan::PlanTier::Free;
+            let multi = multi_allowed
+                && store
+                    .get_setting("stt_multilingual")
+                    .ok()
+                    .flatten()
+                    .as_deref()
+                    == Some("true");
+            let langs = deepgram::parse_languages_setting(
+                store
+                    .get_setting("stt_languages")
+                    .ok()
+                    .flatten()
+                    .as_deref(),
+            );
+            let langs = deepgram::effective_languages(multi, &langs);
+            // Heal persisted settings if a stale multi-select was left after multi off.
+            if let Ok(Some(raw)) = store.get_setting("stt_languages") {
+                let parsed = deepgram::parse_languages_setting(Some(&raw));
+                if parsed != langs {
+                    let _ = store.set_setting(
+                        "stt_languages",
+                        &serde_json::to_string(&langs).unwrap_or_else(|_| "[\"en\"]".into()),
+                    );
+                    if !multi {
+                        let _ = store.set_setting("stt_multilingual", "false");
+                    }
+                    log::warn!(
+                        "Healed stt_languages from {parsed:?} → {langs:?} (multilingual={multi})"
+                    );
+                }
+            }
+            (multi, langs)
+        })
+        .unwrap_or_else(|| (false, vec!["en".to_string()]));
+    let language = deepgram::resolve_language(multilingual, &languages);
+    log::info!("STT language={language} multilingual={multilingual} selected={languages:?}");
+    let language_for_pipeline = language.clone();
+
     // Empty api_key → stream_audio tries user keyring key, then app fallback.
     let config = DeepgramConfig {
         api_key: String::new(),
         keywords,
+        language,
         ..Default::default()
     };
 
+    let session_pcm: Arc<Mutex<Vec<i16>>> = Arc::new(Mutex::new(Vec::new()));
+    *state.session_pcm.lock().unwrap() = Some(session_pcm.clone());
+
+    let (tee_tx, mut tee_rx) = mpsc::unbounded_channel::<Vec<i16>>();
     let (audio_tx, audio_rx) = mpsc::unbounded_channel::<Vec<i16>>();
     let (transcript_tx, mut transcript_rx) = mpsc::unbounded_channel::<TranscriptChunk>();
     let (stop_tx, stop_rx) = mpsc::channel::<()>(1);
 
     *state.stop_tx.lock().unwrap() = Some(stop_tx);
 
+    // Tee mic chunks into the Remake PCM buffer and the STT stream.
+    let pcm_tee = session_pcm.clone();
+    tauri::async_runtime::spawn(async move {
+        while let Some(chunk) = tee_rx.recv().await {
+            if let Ok(mut buf) = pcm_tee.lock() {
+                buf.extend_from_slice(&chunk);
+            }
+            if audio_tx.send(chunk).is_err() {
+                break;
+            }
+        }
+    });
+
+    let mic_pref = app
+        .try_state::<Store>()
+        .and_then(|store| store.get_setting("mic_device").ok().flatten())
+        .filter(|s| !s.trim().is_empty());
     {
         let mut capture = state.audio_capture.lock().unwrap();
-        if let Err(e) = capture.start(audio_tx, app.clone()) {
+        if let Err(e) = capture.start(tee_tx, app.clone(), mic_pref.as_deref()) {
             log::error!("Failed to start audio capture: {e}");
             let _ = app.emit("dictation-error", format!("Mic error: {e}"));
             let _ = app.emit("dictation-state", "error");
+            *state.session_pcm.lock().unwrap() = None;
             invalidate_session(&state);
             return;
         }
@@ -159,6 +243,7 @@ pub fn start_dictation(app: &tauri::AppHandle) {
         if let Err(e) = deepgram::stream_audio(config, audio_rx, transcript_tx, stop_rx).await {
             log::error!("Deepgram stream error: {e}");
             let _ = app_for_stt.emit("dictation-error", format!("STT error: {e}"));
+            let _ = app_for_stt.emit("dictation-state", "error");
         }
     });
 
@@ -178,6 +263,10 @@ pub fn start_dictation(app: &tauri::AppHandle) {
 
         let text = final_text.trim().to_string();
         if text.is_empty() {
+            {
+                let state = app_handle.state::<PipelineState>();
+                *state.session_pcm.lock().unwrap() = None;
+            }
             let _ = app_handle.emit("dictation-state", "idle");
             return;
         }
@@ -192,6 +281,15 @@ pub fn start_dictation(app: &tauri::AppHandle) {
 
         if let Some(cmd_result) = commands::check_command(&text) {
             let pipeline_state = app_handle.state::<PipelineState>();
+            let still_current = {
+                let epoch = pipeline_state.paste_epoch.lock().unwrap();
+                *epoch == paste_token
+            };
+            if !still_current {
+                log::info!("Skipping command inject for stale paste={paste_token}");
+                let _ = app_handle.emit("dictation-state", "idle");
+                return;
+            }
             match cmd_result {
                 commands::CommandResult::ScratchThat => {
                     let last = pipeline_state.last_insertion.lock().unwrap();
@@ -228,8 +326,15 @@ pub fn start_dictation(app: &tauri::AppHandle) {
             let store = app_handle.state::<Store>();
             let expanded = vocab::expand_macros(&text, &store);
 
-            // Always apply local self-correction (works without an LLM key)
-            let corrected = tone::local_self_correct(&expanded);
+            // Multilingual / non-Latin: skip English-only local heuristics that
+            // can chop or mangle code-switched transcripts (e.g. Russian→English).
+            let multilingual_session =
+                language_for_pipeline == "multi" || tone::has_non_latin_script(&expanded);
+            let corrected = if multilingual_session {
+                expanded.clone()
+            } else {
+                tone::local_self_correct(&expanded)
+            };
 
             let has_llm_key = secrets::has_llm_api_key();
             let ai_enhance = store
@@ -241,12 +346,25 @@ pub fn start_dictation(app: &tauri::AppHandle) {
 
             let word_count = corrected.split_whitespace().count();
             let mut enhance_ran = false;
-            let mut final_output = if has_llm_key && ai_enhance {
+            // Multilingual / code-switch: keep Deepgram text as-is. The English
+            // Grammarly pass was compounding ASR mistakes into fluent wrong prose
+            // ("build function" stayed "blood function" or got rewritten further).
+            let mut final_output = if language_for_pipeline == "multi" {
+                log::info!("Skipping AI enhance for multilingual session");
+                corrected
+            } else if has_llm_key && ai_enhance {
                 let tone_name = fg
                     .as_ref()
                     .and_then(|a| tone::get_tone_for_app(a, &store))
                     .unwrap_or_else(|| "default".to_string());
-                match tone::enhance_dictation(&corrected, &tone_name, word_count >= 40).await {
+                match tone::enhance_dictation_ex(
+                    &corrected,
+                    &tone_name,
+                    word_count >= 40,
+                    multilingual_session,
+                )
+                .await
+                {
                     Ok(out) => {
                         log::info!("AI enhance ok ({} → {} chars)", corrected.len(), out.len());
                         enhance_ran = true;
@@ -282,12 +400,48 @@ pub fn start_dictation(app: &tauri::AppHandle) {
             }
 
             let pipeline_state = app_handle.state::<PipelineState>();
+            // If the user started a newer recording while we were enhancing, skip
+            // paste so two injections don't land as "half, then half".
+            let still_current = {
+                let epoch = pipeline_state.paste_epoch.lock().unwrap();
+                *epoch == paste_token
+            };
+            if !still_current {
+                log::info!(
+                    "Skipping paste for stale session paste={paste_token} (newer dictation started)"
+                );
+                let _ = app_handle.emit("dictation-state", "idle");
+                return;
+            }
+
             if let Ok(ins) = inject::inject_text(&final_output) {
                 *pipeline_state.last_insertion.lock().unwrap() = Some(ins);
             }
 
             let history_text = final_output.trim_end().to_string();
             if let Ok(hid) = store.add_history(&history_text, &app_name) {
+                // Persist local Remake WAV (newest 10 only).
+                let pcm = {
+                    let state = app_handle.state::<PipelineState>();
+                    let taken = state.session_pcm.lock().unwrap().take();
+                    match taken {
+                        Some(arc) => arc.lock().map(|g| g.clone()).unwrap_or_default(),
+                        None => Vec::new(),
+                    }
+                };
+                if !pcm.is_empty() {
+                    let path = recording::wav_path_for_history_id(hid);
+                    if let Err(e) = recording::write_wav_i16(&path, &pcm, WAV_SAMPLE_RATE) {
+                        log::warn!("Failed to save Remake recording: {e}");
+                    } else {
+                        let path_str = path.to_string_lossy().into_owned();
+                        let _ = store.set_history_recording_path(hid, Some(&path_str));
+                        if let Err(e) = store.prune_recordings(MAX_REMAKE_RECORDINGS) {
+                            log::warn!("prune_recordings: {e}");
+                        }
+                    }
+                }
+
                 let _ = app_handle.emit(
                     "history-added",
                     serde_json::json!({
@@ -344,6 +498,7 @@ pub fn stop_dictation(app: &tauri::AppHandle) {
     }
 
     state.audio_capture.lock().unwrap().stop();
+    // session_pcm is taken when history is saved (or cleared on empty transcript).
 
     if let Some(tx) = state.stop_tx.lock().unwrap().take() {
         let _ = tx.try_send(());

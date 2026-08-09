@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { createPortal } from "react-dom";
 
 export default function ConfirmModal({
   open,
@@ -32,7 +33,10 @@ export default function ConfirmModal({
 
   if (!open) return null;
 
-  return (
+  // Portal to body so `position: fixed` is not trapped by transformed /
+  // overflow scroll ancestors (e.g. main.page-enter), which pinned the
+  // tint + dialog to the top of the scrolled page.
+  return createPortal(
     <div
       className="fixed inset-0 z-[100] flex items-center justify-center p-4 ms-modal-backdrop"
       onClick={() => {
@@ -79,6 +83,7 @@ export default function ConfirmModal({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

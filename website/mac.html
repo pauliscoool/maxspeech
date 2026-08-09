@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Install MaxSpeech — Mac</title>
+    <meta name="description" content="Download and install MaxSpeech for macOS." />
+    <link rel="icon" href="/logo.png" type="image/png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600&family=Syne:wght@600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/get.css" />
+  </head>
+  <body class="get-page">
+    <div class="atmosphere" aria-hidden="true">
+      <div class="orb orb-a"></div>
+      <div class="orb orb-b"></div>
+      <div class="grain"></div>
+    </div>
+
+    <main class="get-shell">
+      <a class="brand get-brand" href="/">
+        <img class="brand-mark" src="/logo.png" width="36" height="36" alt="" />
+        <span>MaxSpeech</span>
+      </a>
+
+      <h1>Mac download</h1>
+      <p class="get-lede" id="lede">
+        Checking for the Apple Silicon <code>.dmg</code>…
+      </p>
+
+      <a
+        class="btn-primary is-disabled"
+        id="dl"
+        aria-disabled="true"
+        href="#"
+      >
+        Preparing Mac download…
+      </a>
+
+      <ol class="get-steps" id="steps">
+        <li>Open the downloaded <code>.dmg</code> and drag MaxSpeech into Applications.</li>
+        <li>
+          First launch: right-click the app → <em>Open</em> (unsigned build —
+          Gatekeeper may warn once).
+        </li>
+        <li>
+          Allow <strong>Microphone</strong> and <strong>Accessibility</strong>
+          when prompted (System Settings → Privacy &amp; Security).
+        </li>
+        <li>
+          Hold <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>Space</kbd> to
+          dictate. Release to type.
+        </li>
+      </ol>
+
+      <p class="get-alt">
+        <a href="/windows">Windows</a> · <a href="/linux">Linux</a> ·
+        <a href="/">Home</a>
+      </p>
+    </main>
+
+    <script>
+      (function () {
+        var SITE =
+          "/downloads/MaxSpeech_0.1.1_aarch64.dmg";
+        var GH =
+          "https://github.com/pauliscoool/maxspeech/releases/latest/download/MaxSpeech_0.1.1_aarch64.dmg";
+        var GH_API =
+          "https://api.github.com/repos/pauliscoool/maxspeech/releases/latest";
+        var btn = document.getElementById("dl");
+        var lede = document.getElementById("lede");
+
+        function enable(url, filename) {
+          btn.classList.remove("is-disabled");
+          btn.removeAttribute("aria-disabled");
+          btn.href = url;
+          btn.setAttribute("download", filename);
+          btn.textContent = "Download MaxSpeech for Mac";
+          lede.textContent =
+            "Your download should start automatically. If it doesn’t, use the button below. Apple Silicon (M1–M4) required.";
+          setTimeout(function () {
+            var a = document.createElement("a");
+            a.href = url;
+            a.setAttribute("download", filename);
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+          }, 400);
+        }
+
+        function pending() {
+          btn.classList.add("is-disabled");
+          btn.setAttribute("aria-disabled", "true");
+          btn.removeAttribute("download");
+          btn.href = "https://github.com/settings/billing";
+          btn.textContent = "Unlock Mac build (GitHub billing)";
+          btn.classList.remove("is-disabled");
+          btn.removeAttribute("aria-disabled");
+          lede.innerHTML =
+            "The Mac <code>.dmg</code> isn’t hosted yet. GitHub Actions is locked by a payment authorization failure, so CI can’t build it. Add a working payment method (or build on a Mac with <code>./scripts/build-mac.sh</code>), then re-run Release.";
+        }
+
+        function headOk(url) {
+          return fetch(url, { method: "HEAD", cache: "no-store" }).then(
+            function (r) {
+              return r.ok;
+            },
+            function () {
+              return false;
+            }
+          );
+        }
+
+        function findGithubDmg() {
+          return fetch(GH_API, {
+            headers: { Accept: "application/vnd.github+json" },
+            cache: "no-store",
+          })
+            .then(function (r) {
+              return r.ok ? r.json() : null;
+            })
+            .then(function (data) {
+              if (!data || !data.assets) return null;
+              var asset = data.assets.find(function (a) {
+                return /\.dmg$/i.test(a.name);
+              });
+              return asset
+                ? { url: asset.browser_download_url, name: asset.name }
+                : null;
+            })
+            .catch(function () {
+              return null;
+            });
+        }
+
+        headOk(SITE).then(function (ok) {
+          if (ok) {
+            enable(SITE, "MaxSpeech_0.1.1_aarch64.dmg");
+            return;
+          }
+          return findGithubDmg().then(function (asset) {
+            if (asset) {
+              enable(asset.url, asset.name);
+              return;
+            }
+            return headOk(GH).then(function (ghOk) {
+              if (ghOk) enable(GH, "MaxSpeech_0.1.1_aarch64.dmg");
+              else pending();
+            });
+          });
+        });
+      })();
+    </script>
+  </body>
+</html>

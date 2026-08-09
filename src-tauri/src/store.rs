@@ -81,7 +81,9 @@ impl Store {
              );
              CREATE INDEX IF NOT EXISTS idx_history_created ON history(created_at);
              CREATE INDEX IF NOT EXISTS idx_history_text ON history(text);
-             CREATE INDEX IF NOT EXISTS idx_usage_created ON usage_events(created_at);",
+             CREATE INDEX IF NOT EXISTS idx_usage_created ON usage_events(created_at);
+             CREATE UNIQUE INDEX IF NOT EXISTS idx_app_profiles_exe_title
+                 ON app_profiles(exe_pattern, title_pattern);",
         )?;
         let store = Self { conn: Mutex::new(conn) };
         let _ = store.migrate();
@@ -136,6 +138,17 @@ impl Store {
                 )?;
             }
         }
+        // Dedupe legacy rows before enforcing uniqueness (old seed used INSERT OR IGNORE
+        // without a unique key and could insert duplicates).
+        conn.execute_batch(
+            "DELETE FROM app_profiles
+             WHERE id NOT IN (
+               SELECT MIN(id) FROM app_profiles GROUP BY exe_pattern, title_pattern
+             );
+             CREATE UNIQUE INDEX IF NOT EXISTS idx_app_profiles_exe_title
+             ON app_profiles(exe_pattern, title_pattern);",
+        )?;
+
         Ok(())
     }
 
@@ -399,7 +412,11 @@ impl Store {
     pub fn get_app_profiles(&self) -> Result<Vec<AppProfile>, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, exe_pattern, title_pattern, tone, enabled FROM app_profiles ORDER BY exe_pattern",
+            "SELECT id, exe_pattern, title_pattern, tone, enabled FROM app_profiles
+             ORDER BY
+               CASE WHEN title_pattern = '' THEN 1 ELSE 0 END,
+               length(title_pattern) DESC,
+               exe_pattern COLLATE NOCASE",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(AppProfile {
@@ -568,23 +585,21 @@ impl Store {
     }
 
     pub fn seed_default_profiles(&self) -> Result<(), rusqlite::Error> {
-        let defaults: &[(&str, &str, &str)] = &[
-            ("slack.exe", "", "casual"),
-            ("discord.exe", "", "casual"),
-            ("outlook.exe", "", "formal"),
-            ("chrome.exe", "Gmail", "formal"),
-            ("code.exe", "", "code"),
-            ("cursor.exe", "", "code"),
-            ("winword.exe", "", "prose"),
-            ("notion.exe", "", "prose"),
-        ];
+        let defaults = crate::profiles::defaults::all_default_profiles();
         let conn = self.conn.lock().unwrap();
-        for &(exe, title, tone) in defaults {
-            conn.execute(
-                "INSERT OR IGNORE INTO app_profiles (exe_pattern, title_pattern, tone) VALUES (?1, ?2, ?3)",
-                params![exe, title, tone],
+        // Unique index makes INSERT OR IGNORE skip existing (exe, title) pairs
+        // so user tone/enabled customizations are never overwritten.
+        let tx = conn.unchecked_transaction()?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT OR IGNORE INTO app_profiles (exe_pattern, title_pattern, tone)
+                 VALUES (?1, ?2, ?3)",
             )?;
+            for (exe, title, tone) in defaults {
+                stmt.execute(params![exe, title, tone])?;
+            }
         }
+        tx.commit()?;
         Ok(())
     }
 }

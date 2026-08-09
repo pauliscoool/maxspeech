@@ -191,8 +191,9 @@ html[data-window="overlay"] #root {
     transform: translateY(8px);
   }
   to {
+    /* Omit transform so fill-mode doesn't leave a transform containing
+       block on <main>, which breaks position:fixed overlays. */
     opacity: 1;
-    transform: translateY(0);
   }
 }
 
@@ -227,8 +228,8 @@ html[data-window="overlay"] #root {
     0 0 10px color-mix(in srgb, var(--bar-color, var(--ms-turquoise)) 45%, transparent),
     inset 0 1px 0 rgba(255, 255, 255, 0.45),
     inset 0 -2px 4px rgba(0, 0, 0, 0.2);
-  transition: height 55ms ease-out;
-  opacity: 0.95;
+  transition: height 20ms linear;
+  opacity: 0.98;
   will-change: height;
 }
 
@@ -361,6 +362,76 @@ html[data-window="overlay"] #root {
   padding-bottom: 0;
 }
 
+.overlay-root--limit {
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
+  padding: 8px;
+  background: transparent !important;
+}
+
+.liquid-glass-pill--limit {
+  width: 158px;
+  height: 52px;
+  flex: 0 0 auto;
+  justify-content: center;
+}
+
+.liquid-glass-pill--in {
+  animation: overlayPillIn 0.12s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.liquid-glass-pill--out {
+  animation: overlayPillOut 0.08s ease-in both;
+}
+
+@keyframes overlayPillIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes overlayPillOut {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(7px) scale(0.96);
+  }
+}
+
+.limit-upgrade {
+  width: 100%;
+  max-width: 276px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  transition: transform 0.15s ease, opacity 0.15s ease;
+}
+
+.limit-upgrade:hover {
+  transform: translateY(-1px);
+  opacity: 0.96;
+}
+
+.limit-upgrade:active {
+  transform: translateY(0);
+}
+
 /* Zoomed + rounded MaxSpeech mark for in-app UI */
 .ms-logo {
   width: 32px;
@@ -403,8 +474,8 @@ html[data-window="overlay"] #root {
   box-sizing: border-box;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
+  gap: 8px;
+  padding: 8px 10px;
   border-radius: 14px;
   /* Soft frosted glass — no border / outline / hard edge ring.
      No backdrop-filter: blurring a truly transparent always-on-top window's
@@ -439,28 +510,28 @@ html[data-window="overlay"] #root {
 }
 
 .enhance-toast-snip {
-  margin-top: 3px;
+  margin-top: 2px;
   font-size: 8px;
   color: rgba(255, 255, 255, 0.82);
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 194px;
+  max-width: 155px;
 }
 
 .enhance-toast--in {
-  animation: enhanceToastIn 0.38s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: enhanceToastIn 0.22s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
 .enhance-toast--out {
-  animation: enhanceToastOut 0.28s ease-in both;
+  animation: enhanceToastOut 0.14s ease-in both;
 }
 
 @keyframes enhanceToastIn {
   from {
     opacity: 0;
-    transform: translateY(12px) scale(0.94);
+    transform: translateY(8px) scale(0.96);
   }
   to {
     opacity: 1;
@@ -475,7 +546,7 @@ html[data-window="overlay"] #root {
   }
   to {
     opacity: 0;
-    transform: translateY(9px) scale(0.96);
+    transform: translateY(6px) scale(0.97);
   }
 }
 
@@ -580,6 +651,29 @@ html[data-window="overlay"] #root {
   border-bottom: none;
 }
 
+.settings-nested {
+  border-top: 1px solid var(--ms-row-border);
+  margin-left: 0.85rem;
+  padding-left: 0.65rem;
+  border-left: 2px solid color-mix(in srgb, var(--ms-turquoise) 55%, transparent);
+  animation: settingsNestIn 0.22s ease both;
+}
+
+.settings-nested .settings-row {
+  border-bottom: none;
+}
+
+@keyframes settingsNestIn {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 .settings-row-text {
   min-width: 0;
   flex: 1;
@@ -595,6 +689,114 @@ html[data-window="overlay"] #root {
   color: var(--ms-text-dim);
   margin-top: 0.2rem;
   line-height: 1.4;
+}
+
+.settings-row-stack {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.mic-device-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  width: 100%;
+  max-height: 12rem;
+  overflow-y: auto;
+  margin-top: 0.35rem;
+}
+
+.mic-device-option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.1rem;
+  width: 100%;
+  text-align: left;
+  padding: 0.55rem 0.75rem;
+  border-radius: 0.75rem;
+  border: 1px solid var(--ms-row-border);
+  background: var(--ms-fill-muted);
+  color: var(--ms-text-soft);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+
+.mic-device-option:hover {
+  border-color: var(--ms-turquoise);
+  color: var(--ms-text);
+}
+
+.mic-device-option.is-active {
+  border-color: var(--ms-turquoise);
+  background: var(--ms-turquoise-glow);
+  color: var(--ms-turquoise);
+}
+
+.mic-device-name {
+  font-size: 0.78rem;
+  font-weight: 500;
+  line-height: 1.3;
+  word-break: break-word;
+}
+
+.mic-device-meta {
+  font-size: 0.68rem;
+  opacity: 0.75;
+  line-height: 1.3;
+}
+
+.mic-level-track {
+  flex: 1;
+  min-width: 5rem;
+  max-width: 10rem;
+  height: 0.45rem;
+  border-radius: 999px;
+  background: var(--ms-fill-track);
+  overflow: hidden;
+}
+
+.mic-level-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--ms-turquoise);
+  transition: width 0.06s linear;
+}
+
+.lang-chip-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.55rem;
+}
+
+.lang-chip {
+  border: 1px solid var(--ms-row-border);
+  background: transparent;
+  color: var(--ms-text-dim);
+  font-size: 0.72rem;
+  font-weight: 500;
+  padding: 0.28rem 0.55rem;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.lang-chip:hover:not(:disabled) {
+  border-color: var(--ms-turquoise);
+  color: var(--ms-text);
+}
+
+.lang-chip.is-active {
+  background: color-mix(in srgb, var(--ms-turquoise) 22%, transparent);
+  border-color: var(--ms-turquoise);
+  color: var(--ms-text);
+}
+
+.lang-chip.is-disabled,
+.lang-chip:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 /* Confirm modal */

@@ -1,5 +1,10 @@
 # macOS notes
 
+## Download
+
+Apple Silicon installer: [maxspeech.vercel.app/mac](https://maxspeech.vercel.app/mac)  
+(`website/downloads/MaxSpeech_*_aarch64.dmg`)
+
 ## Permissions
 
 MaxSpeech needs:
@@ -10,20 +15,26 @@ MaxSpeech needs:
 
 Grant these under **System Settings → Privacy & Security**.
 
-## Build
+## Build (local Mac)
 
 ```bash
 npm ci
+./scripts/build-mac.sh
+```
+
+Or:
+
+```bash
 npm run tauri build
 ```
 
-Produces a `.dmg` under `src-tauri/target/release/bundle/dmg/`.
+Produces a `.dmg` under `src-tauri/target/**/release/bundle/dmg/`. The helper script copies it to `website/downloads/MaxSpeech_<version>_aarch64.dmg`.
 
 Entitlements for mic / Apple Events: `src-tauri/Entitlements.plist`.
 
 ## Signing / notarization
 
-Release CI builds unsigned Apple Silicon binaries unless you add Apple signing secrets. For distribution outside Gatekeeper exceptions, configure Developer ID signing and notarization separately (not automated in this repo yet).
+Release CI and local scripts produce **unsigned** Apple Silicon binaries unless you add Apple signing secrets. First launch may need right-click → **Open**. Developer ID signing and notarization are not automated in this repo yet (follow-up).
 
 ## Default hotkey
 

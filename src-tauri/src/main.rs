@@ -6,6 +6,8 @@ mod hotkey;
 mod inject;
 mod pipeline;
 mod plan;
+mod profiles;
+mod recording;
 mod secrets;
 mod store;
 mod stt;
@@ -14,8 +16,32 @@ use store::Store;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
-    Manager, WebviewUrl, WebviewWindowBuilder,
+    Emitter, Manager, WebviewUrl, WebviewWindowBuilder,
 };
+
+fn stt_language_from_store(store: &Store) -> String {
+    let tier = store
+        .get_plan_status()
+        .map(|s| s.tier)
+        .unwrap_or(plan::PlanTier::Free);
+    let multi_allowed = tier != plan::PlanTier::Free;
+    let multilingual = multi_allowed
+        && store
+            .get_setting("stt_multilingual")
+            .ok()
+            .flatten()
+            .as_deref()
+            == Some("true");
+    let languages = stt::deepgram::parse_languages_setting(
+        store
+            .get_setting("stt_languages")
+            .ok()
+            .flatten()
+            .as_deref(),
+    );
+    let languages = stt::deepgram::effective_languages(multilingual, &languages);
+    stt::deepgram::resolve_language(multilingual, &languages)
+}
 
 #[tauri::command]
 async fn save_secret(key: String, value: String) -> Result<(), String> {
@@ -46,14 +72,93 @@ async fn get_setting(app: tauri::AppHandle, key: String) -> Result<String, Strin
 
 #[tauri::command]
 async fn set_setting(app: tauri::AppHandle, key: String, value: String) -> Result<(), String> {
-    app.state::<Store>()
-        .set_setting(&key, &value)
-        .map_err(|e| e.to_string())
+    let store = app.state::<Store>();
+    let tier = store
+        .get_plan_status()
+        .map(|s| s.tier)
+        .unwrap_or(plan::PlanTier::Free);
+    let free_tier = tier == plan::PlanTier::Free;
+
+    // Free plan: one language only — block multilingual and multi-select.
+    if free_tier && key == "stt_multilingual" && value == "true" {
+        return Err("Multilingual requires Starter or higher.".into());
+    }
+    let value = if key == "stt_languages" {
+        let langs = stt::deepgram::parse_languages_setting(Some(&value));
+        let multi = !free_tier
+            && store
+                .get_setting("stt_multilingual")
+                .ok()
+                .flatten()
+                .as_deref()
+                == Some("true");
+        let effective = stt::deepgram::effective_languages(multi && !free_tier, &langs);
+        serde_json::to_string(&effective).unwrap_or_else(|_| "[\"en\"]".into())
+    } else {
+        value
+    };
+
+    store.set_setting(&key, &value).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-async fn test_microphone(app: tauri::AppHandle) -> Result<(), String> {
-    audio::test_microphone(&app).map_err(|e| e.to_string())
+async fn list_microphones() -> Result<Vec<audio::MicDeviceInfo>, String> {
+    // cpal device enumeration must not run on the async runtime thread on Windows.
+    tauri::async_runtime::spawn_blocking(|| {
+        audio::list_microphones().map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn get_microphone(app: tauri::AppHandle) -> Result<String, String> {
+    let store = app.state::<Store>();
+    Ok(store
+        .get_setting("mic_device")
+        .map_err(|e| e.to_string())?
+        .unwrap_or_else(|| audio::MIC_DEVICE_DEFAULT.to_string()))
+}
+
+#[tauri::command]
+async fn set_microphone(app: tauri::AppHandle, device: String) -> Result<String, String> {
+    let store = app.state::<Store>();
+    let trimmed = device.trim().to_string();
+    let value = if trimmed.is_empty()
+        || trimmed.eq_ignore_ascii_case(audio::MIC_DEVICE_DEFAULT)
+    {
+        audio::MIC_DEVICE_DEFAULT.to_string()
+    } else {
+        let want = trimmed.clone();
+        let mics = tauri::async_runtime::spawn_blocking(move || {
+            audio::list_microphones().map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        audio::resolve_saved_mic_name(&want, &mics)
+            .filter(|v| v != audio::MIC_DEVICE_DEFAULT)
+            .ok_or_else(|| format!("Microphone not found: {want}"))?
+    };
+    store
+        .set_setting("mic_device", &value)
+        .map_err(|e| e.to_string())?;
+    log::info!("Microphone set to {value}");
+    Ok(value)
+}
+
+#[tauri::command]
+async fn test_microphone(app: tauri::AppHandle) -> Result<audio::MicTestResult, String> {
+    let pref = app
+        .state::<Store>()
+        .get_setting("mic_device")
+        .map_err(|e| e.to_string())?
+        .filter(|s| !s.trim().is_empty());
+    let app2 = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        audio::test_microphone(pref.as_deref(), Some(&app2)).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -71,9 +176,13 @@ async fn complete_onboarding(app: tauri::AppHandle) -> Result<(), String> {
 async fn get_history(
     app: tauri::AppHandle,
     search: String,
+    limit: Option<i64>,
+    offset: Option<i64>,
 ) -> Result<Vec<store::HistoryEntry>, String> {
     let store = app.state::<Store>();
-    store.get_history(&search).map_err(|e| e.to_string())
+    store
+        .get_history(&search, limit.unwrap_or(10), offset.unwrap_or(0))
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -186,8 +295,14 @@ async fn get_user_name() -> Result<String, String> {
 }
 
 #[tauri::command]
-async fn transcribe_file(path: String) -> Result<stt::batch::TranscriptionResult, String> {
-    stt::batch::transcribe(&path).await.map_err(|e| e.to_string())
+async fn transcribe_file(
+    app: tauri::AppHandle,
+    path: String,
+) -> Result<stt::batch::TranscriptionResult, String> {
+    let language = stt_language_from_store(&app.state::<Store>());
+    stt::batch::transcribe_with_language(&path, &language)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -226,20 +341,167 @@ async fn get_plan_status(app: tauri::AppHandle) -> Result<plan::PlanStatus, Stri
 async fn set_plan_tier(app: tauri::AppHandle, tier: String) -> Result<plan::PlanStatus, String> {
     let store = app.state::<Store>();
     let parsed = plan::PlanTier::parse(&tier);
+    let email = store
+        .get_setting("account_email")
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    const OWNER: &str = "pauldimov5@gmail.com";
+
+    match parsed {
+        plan::PlanTier::Free => {}
+        plan::PlanTier::Max => {
+            return Err(
+                "Max isn't available as a free plan. Payment checkout is coming soon.".into(),
+            );
+        }
+        plan::PlanTier::Starter | plan::PlanTier::Pro => {
+            if email != OWNER {
+                return Err(
+                    "Payment checkout coming soon for paid plans. Free plan stays available."
+                        .into(),
+                );
+            }
+        }
+    }
+
     store.set_plan_tier(parsed).map_err(|e| e.to_string())?;
     store.get_plan_status().map_err(|e| e.to_string())
 }
 
-/// Re-type a past dictation into the currently focused app.
 #[tauri::command]
-async fn remake_dictation(app: tauri::AppHandle, id: i64) -> Result<(), String> {
+async fn open_settings_page(app: tauri::AppHandle) -> Result<(), String> {
+    open_window(&app, "settings", "MaxSpeech", 935, 612);
+    let _ = app.emit("navigate-page", "settings");
+    Ok(())
+}
+
+/// Download the latest installer from `url`, emit progress, then launch it.
+/// Used when the signed Tauri updater isn't available yet.
+#[tauri::command]
+async fn download_and_run_installer(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    use futures_util::StreamExt;
+    use std::io::Write;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Download failed: {e}"))?;
+
+    if !response.status().is_success() {
+        return Err(format!("Download failed: HTTP {}", response.status()));
+    }
+
+    let total = response.content_length().unwrap_or(0);
+    let filename = url
+        .rsplit('/')
+        .next()
+        .and_then(|s| {
+            let clean = s.split('?').next().unwrap_or(s);
+            if clean.is_empty() { None } else { Some(clean) }
+        })
+        .unwrap_or("MaxSpeech-update.bin");
+
+    let path = std::env::temp_dir().join(filename);
+    let mut file = std::fs::File::create(&path)
+        .map_err(|e| format!("Could not write installer: {e}"))?;
+
+    let mut downloaded: u64 = 0;
+    let mut stream = response.bytes_stream();
+    let _ = app.emit("installer-download-progress", 0i32);
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("Download interrupted: {e}"))?;
+        file.write_all(&chunk)
+            .map_err(|e| format!("Could not write installer: {e}"))?;
+        downloaded += chunk.len() as u64;
+        if total > 0 {
+            let pct = ((downloaded * 100) / total).min(99) as i32;
+            let _ = app.emit("installer-download-progress", pct);
+        }
+    }
+    file.flush()
+        .map_err(|e| format!("Could not finish installer write: {e}"))?;
+    let _ = app.emit("installer-download-progress", 100u32);
+
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new(&path)
+            .spawn()
+            .map_err(|e| format!("Could not launch installer: {e}"))?;
+        // Unlock the running binary so NSIS can replace it.
+        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+        app.exit(0);
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("Could not open installer: {e}"))?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if path.extension().and_then(|e| e.to_str()) == Some("AppImage") {
+            let mut perms = std::fs::metadata(&path)
+                .map_err(|e| e.to_string())?
+                .permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&path, perms).map_err(|e| e.to_string())?;
+            std::process::Command::new(&path)
+                .spawn()
+                .map_err(|e| format!("Could not launch AppImage: {e}"))?;
+            tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+            app.exit(0);
+        } else {
+            std::process::Command::new("xdg-open")
+                .arg(&path)
+                .spawn()
+                .map_err(|e| format!("Could not open installer: {e}"))?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Re-transcribe a recent local recording. Types into the focused app when it
+/// isn't MaxSpeech; otherwise copies to the clipboard (injecting into our own
+/// WebView scrolls the history list via Space key events).
+#[tauri::command]
+async fn remake_dictation(app: tauri::AppHandle, id: i64) -> Result<String, String> {
     let store = app.state::<Store>();
     let entry = store
         .get_history_by_id(id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Dictation not found".to_string())?;
 
-    let text = entry.text;
+    if !entry.can_remake {
+        return Err(
+            "Remake is only available for your 10 most recent recordings still saved on this PC."
+                .into(),
+        );
+    }
+    let wav_path = entry
+        .recording_path
+        .clone()
+        .ok_or_else(|| "Recording file missing".to_string())?;
+
+    let language = stt_language_from_store(&store);
+    let result = stt::batch::transcribe_with_language(&wav_path, &language)
+        .await
+        .map_err(|e| e.to_string())?;
+    let text = result.text.trim().to_string();
+    if text.is_empty() {
+        return Err("Could not re-transcribe that recording.".into());
+    }
+
     let has_llm = secrets::has_llm_api_key();
     let ai_enhance = store
         .get_setting("ai_enhance")
@@ -248,12 +510,15 @@ async fn remake_dictation(app: tauri::AppHandle, id: i64) -> Result<(), String> 
         .map(|v| v != "false")
         .unwrap_or(true);
 
+    let multilingual = language == "multi" || pipeline::tone::has_non_latin_script(&text);
     let mut output = if has_llm && ai_enhance {
-        pipeline::tone::apply_tone(&text, "default")
+        pipeline::tone::enhance_dictation_ex(&text, "default", false, multilingual)
             .await
-            .unwrap_or(text)
+            .unwrap_or(text.clone())
+    } else if multilingual {
+        text.clone()
     } else {
-        text
+        pipeline::tone::local_self_correct(&text)
     };
 
     let trailing = store
@@ -266,10 +531,24 @@ async fn remake_dictation(app: tauri::AppHandle, id: i64) -> Result<(), String> 
         output.push(' ');
     }
 
-    // Brief delay so the user can click back into their target app
-    tokio::time::sleep(std::time::Duration::from_millis(350)).await;
-    inject::inject_text(&output).map_err(|e| e.to_string())?;
-    Ok(())
+    let saved = output.trim_end().to_string();
+    let _ = store.update_history_text(id, &saved);
+
+    let fg_is_self = context::get_foreground_app()
+        .map(|a| {
+            let exe = a.exe.to_lowercase();
+            exe.contains("maxspeech")
+        })
+        .unwrap_or(true);
+
+    if fg_is_self {
+        // Clicking Remake focuses MaxSpeech — don't type into the WebView.
+        inject::copy_text(&saved).map_err(|e| e.to_string())?;
+    } else {
+        tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+        inject::inject_text(&output).map_err(|e| e.to_string())?;
+    }
+    Ok(saved)
 }
 
 fn main() {
@@ -279,7 +558,8 @@ fn main() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            None,
+            // So login launches can stay tray-only while manual opens still show the UI.
+            Some(vec!["--autostart"]),
         ))
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
@@ -296,6 +576,9 @@ fn main() {
             clear_secret,
             get_setting,
             set_setting,
+            list_microphones,
+            get_microphone,
+            set_microphone,
             test_microphone,
             complete_onboarding,
             get_history,
@@ -320,6 +603,8 @@ fn main() {
             set_hotkey_mode,
             get_plan_status,
             set_plan_tier,
+            open_settings_page,
+            download_and_run_installer,
             remake_dictation,
         ])
         .setup(|app| {
@@ -353,10 +638,32 @@ fn main() {
             // Position floating dictation bar at bottom-center
             position_overlay(&handle);
 
-            // Check if onboarding is needed
+            // Refresh Windows/macOS login item so it includes --autostart.
+            {
+                use tauri_plugin_autostart::ManagerExt;
+                let launcher = handle.autolaunch();
+                if launcher.is_enabled().unwrap_or(false) {
+                    let _ = launcher.disable();
+                    let _ = launcher.enable();
+                }
+            }
+
+            // Onboarding always shows. Login autostart respects "show window at login".
+            // Manual launches (Start menu / tray / second instance) always open the UI.
             let store = handle.state::<Store>();
+            let from_autostart = std::env::args().any(|a| a == "--autostart");
             if !store.is_onboarded() {
                 open_window(&handle, "onboarding", "Welcome to MaxSpeech", 560, 520);
+            } else if from_autostart {
+                let show_at_login = store
+                    .get_setting("open_window_on_launch")
+                    .ok()
+                    .flatten()
+                    .map(|v| v == "true")
+                    .unwrap_or(false);
+                if show_at_login {
+                    open_window(&handle, "settings", "MaxSpeech", 935, 612);
+                }
             } else {
                 open_window(&handle, "settings", "MaxSpeech", 935, 612);
             }
@@ -366,8 +673,28 @@ fn main() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running MaxSpeech");
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                // Closing the UI hides to tray — do not kill the process.
+                match window.label() {
+                    "settings" | "onboarding" => {
+                        api.prevent_close();
+                        let _ = window.hide();
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .build(tauri::generate_context!())
+        .expect("error while building MaxSpeech")
+        .run(|_app, event| {
+            if let tauri::RunEvent::ExitRequested { api, code, .. } = event {
+                // Closing the last window must not quit; tray Quit still exits (code = Some).
+                if code.is_none() {
+                    api.prevent_exit();
+                }
+            }
+        });
 }
 
 fn open_window(app: &tauri::AppHandle, label: &str, title: &str, width: u32, height: u32) {
@@ -395,16 +722,16 @@ fn position_overlay(app: &tauri::AppHandle) {
         clear_overlay_background(&w);
         let _ = w.set_shadow(false);
         let _ = w.set_size(Size::Logical(LogicalSize {
-            width: 218.0,
-            height: 38.0,
+            width: 158.0,
+            height: 52.0,
         }));
         if let Ok(Some(monitor)) = w.current_monitor() {
             let scale = monitor.scale_factor();
             let size = monitor.size();
             let screen_w = size.width as f64 / scale;
             let screen_h = size.height as f64 / scale;
-            let x = (screen_w - 218.0) / 2.0;
-            let y = screen_h - 38.0 - 48.0;
+            let x = (screen_w - 158.0) / 2.0;
+            let y = screen_h - 52.0 - 48.0;
             let _ = w.set_position(Position::Logical(LogicalPosition { x, y }));
         }
         let _ = w.set_always_on_top(true);

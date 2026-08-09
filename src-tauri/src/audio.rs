@@ -1,24 +1,43 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use std::sync::{Arc, Mutex};
+use cpal::{Device, SampleFormat, SupportedStreamConfig};
+use serde::Serialize;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use tauri::Emitter;
 
 const TARGET_RATE: u32 = 16000;
-const BAR_COUNT: usize = 29;
+const BAR_COUNT: usize = 21;
 
 // Visual meter only — never drops frames sent to STT.
-// Lowered so quiet / far-field speech still moves the bars after soft AGC.
 const NOISE_GATE: f32 = 0.003;
 const LEVEL_GAIN: f32 = 7.0;
 
-// Soft AGC for the STT path: lift quiet speech toward a usable RMS, cap peaks.
-const AGC_TARGET_RMS: f32 = 0.10;
-const AGC_MAX_GAIN: f32 = 6.0;
-const AGC_NOISE_FLOOR: f32 = 0.0012;
-const AGC_ATTACK: f32 = 0.22;
-const AGC_RELEASE: f32 = 0.06;
+// Soft AGC for quiet mics. Keep boost modest — 6× was distorting speech so
+// Deepgram heard completely different words ("build" → "blood").
+const AGC_TARGET_RMS: f32 = 0.08;
+const AGC_MAX_GAIN: f32 = 2.5;
+const AGC_NOISE_FLOOR: f32 = 0.0015;
+const AGC_ATTACK: f32 = 0.18;
+const AGC_RELEASE: f32 = 0.08;
+
+/// Empty / "default" means follow the OS default input device.
+pub const MIC_DEVICE_DEFAULT: &str = "default";
 
 static FRAME: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MicDeviceInfo {
+    pub name: String,
+    pub is_default: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MicTestResult {
+    pub name: String,
+    pub peak: f32,
+    pub ok: bool,
+    pub message: String,
+}
 
 pub struct AudioCapture {
     stream: Option<cpal::Stream>,
@@ -40,13 +59,10 @@ impl AudioCapture {
         &mut self,
         sender: tokio::sync::mpsc::UnboundedSender<Vec<i16>>,
         app: tauri::AppHandle,
+        preferred_device: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let host = cpal::default_host();
-        let device = host
-            .default_input_device()
-            .ok_or("No input device available")?;
-
-        let supported = device.default_input_config()?;
+        let (device, label) = resolve_input_device(preferred_device)?;
+        let supported = pick_input_config(&device)?;
         let native_rate = supported.sample_rate().0;
         let channels = supported.channels();
         let sample_format = supported.sample_format();
@@ -56,11 +72,12 @@ impl AudioCapture {
         FRAME.store(0, Ordering::Relaxed);
 
         log::info!(
-            "Audio: {:?} @ {}Hz {}ch {:?}",
-            device.name().unwrap_or_default(),
+            "Audio: {:?} @ {}Hz {}ch {:?} (preferred={:?})",
+            label,
             native_rate,
             channels,
-            sample_format
+            sample_format,
+            preferred_device
         );
 
         let chunk_size = (TARGET_RATE as usize) / 10; // 100ms at 16kHz
@@ -75,7 +92,7 @@ impl AudioCapture {
         let err_fn = |err| log::error!("Audio stream error: {err}");
 
         let stream = match sample_format {
-            cpal::SampleFormat::F32 => {
+            SampleFormat::F32 => {
                 let app2 = app.clone();
                 device.build_input_stream(
                     &config,
@@ -96,7 +113,7 @@ impl AudioCapture {
                     None,
                 )?
             }
-            cpal::SampleFormat::I16 => {
+            SampleFormat::I16 => {
                 let app2 = app.clone();
                 device.build_input_stream(
                     &config,
@@ -119,7 +136,7 @@ impl AudioCapture {
                     None,
                 )?
             }
-            cpal::SampleFormat::U16 => {
+            SampleFormat::U16 => {
                 let app2 = app.clone();
                 device.build_input_stream(
                     &config,
@@ -127,6 +144,31 @@ impl AudioCapture {
                         let f32_data: Vec<f32> = data
                             .iter()
                             .map(|&s| (s as f32 / 32768.0) - 1.0)
+                            .collect();
+                        process_f32(
+                            &f32_data,
+                            channels,
+                            ratio,
+                            &resample_state_clone,
+                            &agc_gain_clone,
+                            &buffer_clone,
+                            chunk_size,
+                            &sender,
+                            &app2,
+                        );
+                    },
+                    err_fn,
+                    None,
+                )?
+            }
+            SampleFormat::I32 => {
+                let app2 = app.clone();
+                device.build_input_stream(
+                    &config,
+                    move |data: &[i32], _: &cpal::InputCallbackInfo| {
+                        let f32_data: Vec<f32> = data
+                            .iter()
+                            .map(|&s| s as f32 / 2147483648.0)
                             .collect();
                         process_f32(
                             &f32_data,
@@ -157,6 +199,125 @@ impl AudioCapture {
     }
 }
 
+pub fn list_microphones() -> Result<Vec<MicDeviceInfo>, Box<dyn std::error::Error>> {
+    let host = cpal::default_host();
+    let default_name = host
+        .default_input_device()
+        .and_then(|d| d.name().ok());
+
+    let mut out = Vec::new();
+    for device in host.input_devices()? {
+        let Ok(name) = device.name() else { continue };
+        // Skip devices that cannot open an input config at all.
+        if device.default_input_config().is_err() {
+            continue;
+        }
+        let is_default = default_name
+            .as_ref()
+            .is_some_and(|d| names_match(d, &name));
+        out.push(MicDeviceInfo { name, is_default });
+    }
+    // Stable order: default first, then alphabetical.
+    out.sort_by(|a, b| match (a.is_default, b.is_default) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+    });
+    Ok(out)
+}
+
+fn normalize_mic_pref(preferred: Option<&str>) -> Option<String> {
+    preferred
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case(MIC_DEVICE_DEFAULT))
+        .map(|s| s.to_string())
+}
+
+/// Collapse trademark glyphs / whitespace so "Intel® SST" matches across IPC/cloud.
+fn normalize_device_name(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut prev_space = false;
+    for ch in s.chars() {
+        let c = match ch {
+            '®' | '™' | '©' => ' ',
+            _ => ch.to_ascii_lowercase(),
+        };
+        if c.is_whitespace() {
+            if !prev_space && !out.is_empty() {
+                out.push(' ');
+                prev_space = true;
+            }
+            continue;
+        }
+        prev_space = false;
+        out.push(c);
+    }
+    out.trim().to_string()
+}
+
+fn names_match(a: &str, b: &str) -> bool {
+    a == b || normalize_device_name(a) == normalize_device_name(b)
+}
+
+/// Resolve a saved preference to a currently attached device name (exact or fuzzy).
+pub fn resolve_saved_mic_name(preferred: &str, devices: &[MicDeviceInfo]) -> Option<String> {
+    let pref = preferred.trim();
+    if pref.is_empty() || pref.eq_ignore_ascii_case(MIC_DEVICE_DEFAULT) {
+        return Some(MIC_DEVICE_DEFAULT.to_string());
+    }
+    devices
+        .iter()
+        .find(|d| names_match(&d.name, pref))
+        .map(|d| d.name.clone())
+}
+
+fn resolve_input_device(
+    preferred: Option<&str>,
+) -> Result<(Device, String), Box<dyn std::error::Error>> {
+    let host = cpal::default_host();
+    let pref = normalize_mic_pref(preferred);
+
+    if let Some(want) = pref.as_deref() {
+        let mut fuzzy: Option<(Device, String)> = None;
+        for device in host.input_devices()? {
+            if let Ok(name) = device.name() {
+                if name == want {
+                    return Ok((device, name));
+                }
+                if fuzzy.is_none() && names_match(&name, want) {
+                    fuzzy = Some((device, name));
+                }
+            }
+        }
+        if let Some(hit) = fuzzy {
+            log::info!("Microphone fuzzy-matched {want:?} → {:?}", hit.1);
+            return Ok(hit);
+        }
+        log::warn!("Saved microphone {want:?} not found — falling back to system default");
+    }
+
+    let device = host
+        .default_input_device()
+        .ok_or("No input device available")?;
+    let label = device
+        .name()
+        .unwrap_or_else(|_| "System default".into());
+    Ok((device, label))
+}
+
+/// Prefer the device's native shared-mode config (WASAPI often only supports one rate).
+fn pick_input_config(device: &Device) -> Result<SupportedStreamConfig, Box<dyn std::error::Error>> {
+    if let Ok(default) = device.default_input_config() {
+        return Ok(default);
+    }
+    // Fallback: first supported config at its max rate.
+    let mut ranges = device.supported_input_configs()?;
+    let range = ranges
+        .next()
+        .ok_or("No supported input configs for microphone")?;
+    Ok(range.with_max_sample_rate())
+}
+
 fn process_f32(
     data: &[f32],
     channels: u16,
@@ -168,23 +329,15 @@ fn process_f32(
     sender: &tokio::sync::mpsc::UnboundedSender<Vec<i16>>,
     app: &tauri::AppHandle,
 ) {
-    let mono: Vec<f32> = if channels == 1 {
-        data.to_vec()
-    } else {
-        data.chunks(channels as usize)
-            .map(|frame| frame.iter().sum::<f32>() / channels as f32)
-            .collect()
-    };
+    let mono = to_mono(data, channels);
 
     if mono.is_empty() {
         return;
     }
 
-    // Soft AGC on the STT path — never hard-gate silence; lift quiet speech, soft-cap peaks.
     let gained = apply_soft_agc(&mono, agc_gain);
 
     let frame = FRAME.fetch_add(1, Ordering::Relaxed);
-    // Bars reflect what Deepgram hears (post-AGC), not a separate gated stream.
     let bars = compute_bars(&gained, BAR_COUNT, frame);
     let _ = app.emit("audio-level", bars);
 
@@ -205,9 +358,48 @@ fn process_f32(
     }
 }
 
-/// Soft automatic gain for far-field / quiet input.
-/// Below the noise floor we ease toward unity so hiss isn't chased; otherwise we
-/// gently pull RMS toward AGC_TARGET_RMS with a hard max boost and soft clip.
+/// Downmix to mono.
+/// - Stereo headsets: pick the louder channel (avg washes speech with a dead side).
+/// - Mic arrays (3+ ch): average — loudest-channel picks noise on Intel SST arrays.
+fn to_mono(data: &[f32], channels: u16) -> Vec<f32> {
+    let ch = channels.max(1) as usize;
+    if ch == 1 {
+        return data.to_vec();
+    }
+    let frames = data.len() / ch;
+    if frames == 0 {
+        return Vec::new();
+    }
+
+    if ch >= 3 {
+        return (0..frames)
+            .map(|frame| {
+                let mut sum = 0.0f32;
+                for c in 0..ch {
+                    sum += data[frame * ch + c];
+                }
+                sum / ch as f32
+            })
+            .collect();
+    }
+
+    let mut energies = vec![0.0f32; ch];
+    for frame in 0..frames {
+        for c in 0..ch {
+            let s = data[frame * ch + c];
+            energies[c] += s * s;
+        }
+    }
+    let best = energies
+        .iter()
+        .enumerate()
+        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+
+    (0..frames).map(|frame| data[frame * ch + best]).collect()
+}
+
 fn apply_soft_agc(samples: &[f32], gain_state: &Arc<Mutex<f32>>) -> Vec<f32> {
     let rms = (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt();
     let peak = samples
@@ -217,13 +409,11 @@ fn apply_soft_agc(samples: &[f32], gain_state: &Arc<Mutex<f32>>) -> Vec<f32> {
         .fold(0.0f32, f32::max);
 
     let desired = if rms < AGC_NOISE_FLOOR {
-        // True near-silence: don't amplify room noise; drift back to 1×.
         1.0
     } else {
         let from_rms = (AGC_TARGET_RMS / rms).clamp(1.0, AGC_MAX_GAIN);
-        // Also respect peaks so a single spike doesn't force under-gain forever.
         let peak_cap = if peak > 1e-6 {
-            (0.95 / peak).clamp(1.0, AGC_MAX_GAIN)
+            (0.92 / peak).clamp(1.0, AGC_MAX_GAIN)
         } else {
             AGC_MAX_GAIN
         };
@@ -240,7 +430,6 @@ fn apply_soft_agc(samples: &[f32], gain_state: &Arc<Mutex<f32>>) -> Vec<f32> {
         .iter()
         .map(|&s| {
             let x = s * gain;
-            // Soft clip: keep peaks usable without hard digital clipping.
             if x.abs() <= 0.9 {
                 x
             } else {
@@ -281,7 +470,6 @@ fn compute_bars(samples: &[f32], n: usize, frame: u64) -> Vec<f32> {
         .fold(0.0f32, f32::max);
     let energy = (overall_rms * 0.65 + peak * 0.35).max(0.0);
 
-    // Soft floor so bars still breathe while mic is open
     let t = frame as f32 * 0.18;
     let mut bars = Vec::with_capacity(n);
 
@@ -311,7 +499,6 @@ fn compute_bars(samples: &[f32], n: usize, frame: u64) -> Vec<f32> {
             .fold(0.0f32, f32::max);
         let mixed = rms * 0.55 + local_peak * 0.45;
 
-        // Center-weighted envelope + per-bar phase so the meter looks alive
         let mid = 1.0 - (i as f32 - (n as f32 - 1.0) / 2.0).abs() / ((n as f32 - 1.0) / 2.0) * 0.25;
         let phase = i as f32 * 0.7 + t;
         let jitter = 0.12 * (phase.sin() * 0.5 + 0.5);
@@ -323,33 +510,110 @@ fn compute_bars(samples: &[f32], n: usize, frame: u64) -> Vec<f32> {
     bars
 }
 
-pub fn test_microphone(_app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
-    let host = cpal::default_host();
-    let device = host
-        .default_input_device()
-        .ok_or("No input device available")?;
-    let supported = device.default_input_config()?;
+pub fn test_microphone(
+    preferred_device: Option<&str>,
+    app: Option<&tauri::AppHandle>,
+) -> Result<MicTestResult, Box<dyn std::error::Error>> {
+    let (device, label) = resolve_input_device(preferred_device)?;
+    let supported = pick_input_config(&device)?;
+    let channels = supported.channels();
+    let sample_format = supported.sample_format();
     let config: cpal::StreamConfig = supported.into();
 
-    let received = Arc::new(Mutex::new(false));
-    let received_clone = received.clone();
+    let peak = Arc::new(Mutex::new(0.0f32));
+    let peak_cb = peak.clone();
+    let app_cb = app.cloned();
 
-    let stream = device.build_input_stream(
-        &config,
-        move |data: &[f32], _: &cpal::InputCallbackInfo| {
-            if !data.is_empty() {
-                *received_clone.lock().unwrap() = true;
-            }
-        },
-        |err| log::error!("Mic test error: {err}"),
-        None,
-    )?;
+    let err_fn = |err| log::error!("Mic test error: {err}");
+
+    let stream = match sample_format {
+        SampleFormat::F32 => device.build_input_stream(
+            &config,
+            move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                mic_test_callback(data, channels, &peak_cb, app_cb.as_ref());
+            },
+            err_fn,
+            None,
+        )?,
+        SampleFormat::I16 => device.build_input_stream(
+            &config,
+            move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                let f: Vec<f32> = data.iter().map(|&s| s as f32 / 32768.0).collect();
+                mic_test_callback(&f, channels, &peak_cb, app_cb.as_ref());
+            },
+            err_fn,
+            None,
+        )?,
+        SampleFormat::U16 => device.build_input_stream(
+            &config,
+            move |data: &[u16], _: &cpal::InputCallbackInfo| {
+                let f: Vec<f32> = data
+                    .iter()
+                    .map(|&s| (s as f32 / 32768.0) - 1.0)
+                    .collect();
+                mic_test_callback(&f, channels, &peak_cb, app_cb.as_ref());
+            },
+            err_fn,
+            None,
+        )?,
+        SampleFormat::I32 => device.build_input_stream(
+            &config,
+            move |data: &[i32], _: &cpal::InputCallbackInfo| {
+                let f: Vec<f32> = data
+                    .iter()
+                    .map(|&s| s as f32 / 2147483648.0)
+                    .collect();
+                mic_test_callback(&f, channels, &peak_cb, app_cb.as_ref());
+            },
+            err_fn,
+            None,
+        )?,
+        other => {
+            return Err(format!("Unsupported sample format for mic test: {other:?}").into());
+        }
+    };
+
     stream.play()?;
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    // Longer window — Bluetooth headsets often need a moment to wake the mic path.
+    std::thread::sleep(std::time::Duration::from_millis(1200));
     drop(stream);
-    if *received.lock().unwrap() {
-        Ok(())
+
+    let peak_v = *peak.lock().unwrap();
+    let ok = peak_v > 0.002;
+    let message = if ok {
+        format!("Hearing you on {label}")
     } else {
-        Err("No audio data received from microphone".into())
+        format!(
+            "Opened “{label}” but got silence. Speak, unmute it in Windows Sound settings, or pick another mic (Bluetooth headsets are often silent until active)."
+        )
+    };
+    Ok(MicTestResult {
+        name: label,
+        peak: peak_v,
+        ok,
+        message,
+    })
+}
+
+fn mic_test_callback(
+    data: &[f32],
+    channels: u16,
+    peak: &Arc<Mutex<f32>>,
+    app: Option<&tauri::AppHandle>,
+) {
+    let mono = to_mono(data, channels);
+    let level = mono
+        .iter()
+        .map(|s| s.abs())
+        .fold(0.0f32, f32::max);
+    {
+        let mut p = peak.lock().unwrap();
+        if level > *p {
+            *p = level;
+        }
+    }
+    if let Some(app) = app {
+        let meter = (level * 8.0).clamp(0.0, 1.0);
+        let _ = app.emit("mic-test-level", meter);
     }
 }

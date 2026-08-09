@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { signIn, signUp, type AuthUser } from "../lib/auth";
+import { signIn, signInLocal, signUp, type AuthUser } from "../lib/auth";
 
 export default function AuthPanel({
   onAuthed,
@@ -40,6 +40,21 @@ export default function AuthPanel({
     }
   }
 
+  async function continueLocal() {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    setInfo("");
+    try {
+      const user = await signInLocal();
+      onAuthed(user);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="w-full max-w-md space-y-5">
       <div className="text-center space-y-2">
@@ -57,7 +72,7 @@ export default function AuthPanel({
           {mode === "login" ? "Sign in" : "Create account"}
         </h1>
         <p className="text-sm text-[var(--ms-text-dim)]">
-          Your account lives on the MaxSpeech cloud — separate from other Maximus apps.
+          Cloud sync is optional — you can also continue locally on this PC.
         </p>
       </div>
 
@@ -114,6 +129,27 @@ export default function AuthPanel({
           {busy ? "Please wait…" : mode === "login" ? "Sign in" : "Create account"}
         </button>
       </form>
+
+      <div className="relative">
+        <div className="absolute inset-0 flex items-center" aria-hidden>
+          <div className="w-full border-t border-[var(--ms-hairline)]" />
+        </div>
+        <div className="relative flex justify-center text-xs">
+          <span className="px-2 bg-[var(--ms-bg)] text-[var(--ms-text-dim)]">or</span>
+        </div>
+      </div>
+
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() => void continueLocal()}
+        className="w-full px-4 py-2.5 text-sm rounded-full border border-[var(--ms-border)] text-[var(--ms-text)] hover:bg-[var(--ms-surface)] transition-colors disabled:opacity-50"
+      >
+        Continue locally
+      </button>
+      <p className="text-center text-xs text-[var(--ms-text-dim)] -mt-2">
+        No account needed. History and settings stay on this device.
+      </p>
 
       <p className="text-center text-sm text-[var(--ms-text-dim)]">
         {mode === "login" ? (

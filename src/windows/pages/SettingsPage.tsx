@@ -76,6 +76,7 @@ export default function SettingsPage({
   onEnterSelectDelete?: () => void;
 }) {
   const [autostart, setAutostart] = useState(false);
+  const [openOnLaunch, setOpenOnLaunch] = useState(false);
   const [showLive, setShowLive] = useState(true);
   const [aiEnhance, setAiEnhance] = useState(true);
   const [soundCue, setSoundCue] = useState(false);
@@ -196,6 +197,11 @@ export default function SettingsPage({
 
   async function refresh() {
     try {
+      const openLaunch = await invoke<string>("get_setting", {
+        key: "open_window_on_launch",
+      });
+      // Default off: stay in tray at PC login unless the user opts in.
+      setOpenOnLaunch(openLaunch === "true");
       const live = await invoke<string>("get_setting", { key: "show_live_transcript" });
       setShowLive(live !== "false");
       const enhance = await invoke<string>("get_setting", { key: "ai_enhance" });
@@ -487,11 +493,26 @@ export default function SettingsPage({
     if (updating) return;
     setUpdating(true);
     setUpdatePct(0);
-    setUpdateMsg("Downloading update…");
+    setUpdateMsg("Checking for the latest version…");
     try {
-      await installAvailableUpdate((pct) => setUpdatePct(pct));
+      await installAvailableUpdate((pct) => {
+        setUpdatePct(pct);
+        setUpdateMsg(
+          pct != null ? `Downloading update… ${pct}%` : "Downloading update…",
+        );
+      });
+      setUpdateMsg("Installer launched — finish the setup to complete the update.");
     } catch (e) {
-      setUpdateMsg(`Update failed: ${e}`);
+      const msg = String(e).replace(/^Error:\s*/i, "");
+      if (msg.includes("latest version")) {
+        setUpdateInfo(null);
+        onUpdateFound?.(null);
+      }
+      setUpdateMsg(
+        msg.includes("Opened the download") || msg.includes("latest version")
+          ? msg
+          : `Update failed: ${msg}`,
+      );
       setUpdating(false);
       setUpdatePct(null);
     }
@@ -532,7 +553,10 @@ export default function SettingsPage({
             <div className="settings-row">
               <div className="settings-row-text">
                 <div className="settings-row-title">{authUser.username}</div>
-                <div className="settings-row-desc">{authUser.email}</div>
+                <div className="settings-row-desc">
+                {authUser.email}
+                {authUser.local ? " · local only" : ""}
+              </div>
               </div>
             </div>
             <div className="settings-row">
@@ -952,10 +976,26 @@ export default function SettingsPage({
         <div className="settings-group">
           <SettingsToggle
             title="Launch at startup"
-            desc="Start MaxSpeech when you log in"
+            desc="Start MaxSpeech in the background when you log in"
             checked={autostart}
             onChange={toggleAutostart}
           />
+          {autostart && (
+            <div className="settings-nested">
+              <SettingsToggle
+                title="Show window at login"
+                desc="Off keeps MaxSpeech in the tray until you open it"
+                checked={openOnLaunch}
+                onChange={() =>
+                  toggleBool(
+                    "open_window_on_launch",
+                    openOnLaunch,
+                    setOpenOnLaunch,
+                  )
+                }
+              />
+            </div>
+          )}
         </div>
       </section>
 

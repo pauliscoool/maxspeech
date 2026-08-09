@@ -35,3 +35,8 @@ export function weeklyUsagePct(status: PlanStatus): number | null {
   if (status.weekly_limit == null || status.weekly_limit <= 0) return null;
   return Math.min(100, Math.round((status.words_used / status.weekly_limit) * 100));
 }
+
+/** Multilingual / code-switching is Starter+ only. Free = one language. */
+export function tierSupportsMultilingual(tier: PlanTier | null | undefined): boolean {
+  return !!tier && tier !== "free";
+}

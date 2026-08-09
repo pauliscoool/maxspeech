@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Install MaxSpeech — Linux</title>
+    <meta name="description" content="Download and install MaxSpeech for Linux." />
+    <link rel="icon" href="/logo.png" type="image/png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600&family=Syne:wght@600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/get.css" />
+  </head>
+  <body class="get-page">
+    <div class="atmosphere" aria-hidden="true">
+      <div class="orb orb-a"></div>
+      <div class="orb orb-b"></div>
+      <div class="grain"></div>
+    </div>
+
+    <main class="get-shell">
+      <a class="brand get-brand" href="/">
+        <img class="brand-mark" src="/logo.png" width="36" height="36" alt="" />
+        <span>MaxSpeech</span>
+      </a>
+
+      <h1>Linux download</h1>
+      <p class="get-lede">
+        Your AppImage download should start automatically. Prefer a
+        <code>.deb</code>? Use the second button.
+      </p>
+
+      <a
+        class="btn-primary"
+        id="dl"
+        href="/downloads/MaxSpeech_0.1.1_amd64.AppImage"
+        download
+      >
+        Download MaxSpeech AppImage
+      </a>
+      <p class="get-alt" style="margin-top: -1rem; margin-bottom: 1.5rem">
+        <a href="/downloads/maxspeech_0.1.1_amd64.deb" download
+          >Or download .deb</a
+        >
+      </p>
+
+      <ol class="get-steps">
+        <li>
+          Make it executable, then run:
+          <pre><code>chmod +x MaxSpeech_0.1.1_amd64.AppImage
+./MaxSpeech_0.1.1_amd64.AppImage</code></pre>
+        </li>
+        <li>
+          Or install the package:
+          <pre><code>sudo dpkg -i maxspeech_0.1.1_amd64.deb</code></pre>
+        </li>
+        <li>Prefer an <strong>X11</strong> session for global hotkeys and paste.</li>
+        <li>
+          Hold <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>Space</kbd> to
+          dictate. Release to type.
+        </li>
+      </ol>
+
+      <p class="get-alt">
+        <a href="/windows">Windows</a> · <a href="/mac">Mac</a> ·
+        <a href="/">Home</a>
+      </p>
+    </main>
+
+    <script>
+      setTimeout(function () {
+        var a = document.createElement("a");
+        a.href = "/downloads/MaxSpeech_0.1.1_amd64.AppImage";
+        a.setAttribute("download", "MaxSpeech_0.1.1_amd64.AppImage");
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      }, 400);
+    </script>
+  </body>
+</html>

@@ -1,5 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { PageId } from "../Shell";
 import { friendlyAppName } from "../../lib/appNames";
 import ConfirmModal from "../../components/ConfirmModal";
@@ -9,9 +11,13 @@ interface HistoryEntry {
   text: string;
   app_name: string;
   created_at: string;
+  recording_path?: string | null;
+  can_remake?: boolean;
 }
 
 type BtnState = "idle" | "loading" | "ok";
+
+const PAGE_SIZE = 10;
 
 export default function HomePage({
   displayName,
@@ -29,6 +35,9 @@ export default function HomePage({
   const [name, setName] = useState(displayName || "there");
   const [entries, setEntries] = useState<HistoryEntry[]>([]);
   const [search, setSearch] = useState("");
+  const [hasMore, setHasMore] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [copyState, setCopyState] = useState<Record<number, BtnState>>({});
   const [remakeState, setRemakeState] = useState<Record<number, BtnState>>({});
   const [deleteId, setDeleteId] = useState<number | null>(null);
@@ -36,6 +45,11 @@ export default function HomePage({
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [bulkConfirm, setBulkConfirm] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
+  const loadGen = useRef(0);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const loadingMoreRef = useRef(false);
+  const hasMoreRef = useRef(false);
+  const entriesLenRef = useRef(0);
 
   useEffect(() => {
     if (displayName) {
@@ -45,14 +59,121 @@ export default function HomePage({
     invoke<string>("get_user_name").then(setName).catch(() => {});
   }, [displayName]);
 
+  async function loadPage(offset: number, replace: boolean) {
+    const gen = ++loadGen.current;
+    if (replace) {
+      setLoading(true);
+      loadingMoreRef.current = false;
+      setLoadingMore(false);
+    } else {
+      if (loadingMoreRef.current || !hasMoreRef.current) return;
+      loadingMoreRef.current = true;
+      setLoadingMore(true);
+    }
+    try {
+      const rows = await invoke<HistoryEntry[]>("get_history", {
+        search,
+        limit: PAGE_SIZE,
+        offset,
+      });
+      if (gen !== loadGen.current) return;
+      setEntries((prev) => {
+        const next = replace ? rows : [...prev, ...rows.filter((r) => !prev.some((p) => p.id === r.id))];
+        entriesLenRef.current = next.length;
+        return next;
+      });
+      const more = rows.length >= PAGE_SIZE;
+      hasMoreRef.current = more;
+      setHasMore(more);
+    } catch {
+      if (gen !== loadGen.current) return;
+      if (replace) {
+        setEntries([]);
+        entriesLenRef.current = 0;
+      }
+      hasMoreRef.current = false;
+      setHasMore(false);
+    } finally {
+      if (gen === loadGen.current) {
+        setLoading(false);
+        loadingMoreRef.current = false;
+        setLoadingMore(false);
+      }
+    }
+  }
+
+  function reloadHistory() {
+    void loadPage(0, true);
+  }
+
+  function loadMore() {
+    void loadPage(entriesLenRef.current, false);
+  }
+
   useEffect(() => {
-    const t = setTimeout(() => {
-      invoke<HistoryEntry[]>("get_history", { search })
-        .then(setEntries)
-        .catch(() => setEntries([]));
-    }, 150);
-    return () => clearTimeout(t);
+    const t = window.setTimeout(() => reloadHistory(), 150);
+    return () => window.clearTimeout(t);
   }, [search]);
+
+  // Refresh when returning to the app / this page so new dictations show up.
+  useEffect(() => {
+    const onFocus = () => reloadHistory();
+    const onVis = () => {
+      if (document.visibilityState === "visible") reloadHistory();
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVis);
+
+    let unlistenFocus: (() => void) | undefined;
+    let unlistenHistory: (() => void) | undefined;
+    void getCurrentWindow()
+      .onFocusChanged(({ payload: focused }) => {
+        if (focused) {
+          reloadHistory();
+          onChanged();
+        }
+      })
+      .then((fn) => {
+        unlistenFocus = fn;
+      })
+      .catch(() => {});
+    void listen("history-added", () => {
+      reloadHistory();
+      onChanged();
+    }).then((fn) => {
+      unlistenHistory = fn;
+    });
+
+    // Immediate refresh on mount (e.g. navigating back to Home).
+    reloadHistory();
+
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVis);
+      unlistenFocus?.();
+      unlistenHistory?.();
+    };
+  }, [search, onChanged]);
+
+  // Load the next page when the bottom sentinel scrolls into view.
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el || !hasMore) return;
+    let root: Element | null = el.parentElement;
+    while (root) {
+      const { overflowY } = getComputedStyle(root);
+      if (overflowY === "auto" || overflowY === "scroll") break;
+      root = root.parentElement;
+    }
+    const observer = new IntersectionObserver(
+      (items) => {
+        if (items.some((i) => i.isIntersecting)) loadMore();
+      },
+      { root, rootMargin: "160px 0px", threshold: 0 },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [hasMore, entries.length]);
 
   useEffect(() => {
     if (!selectMode) {
@@ -85,7 +206,11 @@ export default function HomePage({
     setDeleting(true);
     try {
       await invoke("delete_history", { id: deleteId });
-      setEntries((prev) => prev.filter((e) => e.id !== deleteId));
+      setEntries((prev) => {
+        const next = prev.filter((e) => e.id !== deleteId);
+        entriesLenRef.current = next.length;
+        return next;
+      });
       onChanged();
       setDeleteId(null);
     } catch (e) {
@@ -97,13 +222,21 @@ export default function HomePage({
 
   async function remake(id: number) {
     if (remakeState[id] === "loading") return;
+    // Blur so Space/key inject can't scroll the history list.
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
     setRemakeState((s) => ({ ...s, [id]: "loading" }));
     try {
-      await invoke("remake_dictation", { id });
+      const text = await invoke<string>("remake_dictation", { id });
+      setEntries((prev) =>
+        prev.map((e) => (e.id === id ? { ...e, text } : e)),
+      );
+      onChanged();
       setRemakeState((s) => ({ ...s, [id]: "ok" }));
       setTimeout(() => {
         setRemakeState((s) => ({ ...s, [id]: "idle" }));
-      }, 600);
+      }, 900);
     } catch (e) {
       console.error(e);
       setRemakeState((s) => ({ ...s, [id]: "idle" }));
@@ -125,7 +258,11 @@ export default function HomePage({
     try {
       const ids = Array.from(selected);
       await invoke("delete_history_many", { ids });
-      setEntries((prev) => prev.filter((e) => !selected.has(e.id)));
+      setEntries((prev) => {
+        const next = prev.filter((e) => !selected.has(e.id));
+        entriesLenRef.current = next.length;
+        return next;
+      });
       setSelected(new Set());
       setBulkConfirm(false);
       onSelectModeChange?.(false);
@@ -207,7 +344,11 @@ export default function HomePage({
         )}
       </div>
 
-      {entries.length === 0 ? (
+      {loading && entries.length === 0 ? (
+        <div className="surface-card p-8 text-center">
+          <p className="text-xs text-[var(--ms-text-dim)]">Loading…</p>
+        </div>
+      ) : entries.length === 0 ? (
         <div className="surface-card p-8 text-center space-y-2">
           <p className="text-sm text-[var(--ms-text)]">No dictations yet</p>
           <p className="text-xs text-[var(--ms-text-dim)]">
@@ -274,12 +415,20 @@ export default function HomePage({
                               state={cState}
                               onClick={() => copyText(entry.id, entry.text)}
                             />
-                            <IconBtn
-                              label={rState === "loading" ? "…" : rState === "ok" ? "Done" : "Remake"}
-                              state={rState}
-                              onClick={() => remake(entry.id)}
-                              title="Re-enhance & type into the focused app"
-                            />
+                            {entry.can_remake ? (
+                              <IconBtn
+                                label={
+                                  rState === "loading"
+                                    ? "…"
+                                    : rState === "ok"
+                                      ? "Copied"
+                                      : "Remake"
+                                }
+                                state={rState}
+                                onClick={() => remake(entry.id)}
+                                title="Re-transcribe from the saved recording and copy the result"
+                              />
+                            ) : null}
                             <IconBtn
                               label="Delete"
                               onClick={() => setDeleteId(entry.id)}
@@ -301,6 +450,10 @@ export default function HomePage({
               })}
             </section>
           ))}
+          <div ref={sentinelRef} className="h-4" aria-hidden />
+          {loadingMore ? (
+            <p className="text-center text-[11px] text-[var(--ms-text-dim)] pb-2">Loading more…</p>
+          ) : null}
         </div>
       )}
 

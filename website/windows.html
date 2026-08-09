@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Install MaxSpeech — Windows</title>
+    <meta name="description" content="Download and install MaxSpeech for Windows." />
+    <link rel="icon" href="/logo.png" type="image/png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600&family=Syne:wght@600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/get.css" />
+  </head>
+  <body class="get-page">
+    <div class="atmosphere" aria-hidden="true">
+      <div class="orb orb-a"></div>
+      <div class="orb orb-b"></div>
+      <div class="grain"></div>
+    </div>
+
+    <main class="get-shell">
+      <a class="brand get-brand" href="/">
+        <img class="brand-mark" src="/logo.png" width="36" height="36" alt="" />
+        <span>MaxSpeech</span>
+      </a>
+
+      <h1>Windows download</h1>
+      <p class="get-lede">
+        Your download should start automatically. If it doesn’t, use the button
+        below.
+      </p>
+
+      <a
+        class="btn-primary"
+        id="dl"
+        href="/downloads/MaxSpeech_0.1.2_x64-setup.exe"
+        download
+      >
+        Download MaxSpeech for Windows
+      </a>
+
+      <ol class="get-steps">
+        <li>Open the downloaded <code>.exe</code> file.</li>
+        <li>
+          If SmartScreen appears: <em>More info</em> → <em>Run anyway</em>.
+        </li>
+        <li>Finish the installer, then open MaxSpeech and sign in.</li>
+        <li>Hold <kbd>Ctrl</kbd> + <kbd>Win</kbd> to dictate. Release to type.</li>
+      </ol>
+
+      <p class="get-alt">
+        <a href="/mac">Mac</a> · <a href="/linux">Linux</a> ·
+        <a href="/">Home</a>
+      </p>
+    </main>
+
+    <script>
+      // Kick off the file download as soon as the page opens.
+      setTimeout(function () {
+        var a = document.createElement("a");
+        a.href = "/downloads/MaxSpeech_0.1.2_x64-setup.exe";
+        a.setAttribute("download", "MaxSpeech_0.1.2_x64-setup.exe");
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      }, 400);
+    </script>
+  </body>
+</html>

@@ -19,6 +19,13 @@ pub struct SpeakerSegment {
 pub async fn transcribe(
     file_path: &str,
 ) -> Result<TranscriptionResult, Box<dyn std::error::Error + Send + Sync>> {
+    transcribe_with_language(file_path, "en").await
+}
+
+pub async fn transcribe_with_language(
+    file_path: &str,
+    language: &str,
+) -> Result<TranscriptionResult, Box<dyn std::error::Error + Send + Sync>> {
     let data = tokio::fs::read(file_path).await?;
     let ext = Path::new(file_path)
         .extension()
@@ -35,13 +42,22 @@ pub async fn transcribe(
         _ => "audio/wav",
     };
 
+    let lang = if language.trim().is_empty() {
+        "en"
+    } else {
+        language.trim()
+    };
+    let url = format!(
+        "https://api.deepgram.com/v1/listen?model=nova-3&language={lang}&punctuate=true&diarize=true&smart_format=true"
+    );
+
     let client = reqwest::Client::new();
     let mut last_err: Option<String> = None;
     let mut body: Option<serde_json::Value> = None;
 
     for (i, api_key) in secrets::deepgram_key_candidates().into_iter().enumerate() {
         let resp = client
-            .post("https://api.deepgram.com/v1/listen?model=nova-3&punctuate=true&diarize=true&smart_format=true")
+            .post(&url)
             .header("Authorization", format!("Token {}", api_key))
             .header("Content-Type", mime)
             .body(data.clone())

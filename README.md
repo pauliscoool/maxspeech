@@ -24,9 +24,14 @@ After install, create an account / sign in. Accounts and settings sync to the de
 
 ## Auto-updates
 
-The app checks:
+The app checks for updates on launch (and periodically) using:
 
-`https://github.com/pauliscoool/maxspeech/releases/latest/download/latest.json`
+1. **Signed Tauri updater** — `https://github.com/pauliscoool/maxspeech/releases/latest/download/latest.json` (needs GitHub Actions + signing key)
+2. **Fallback manifest** — `https://maxspeech.vercel.app/updates/latest.json` (platform URLs under `platforms`) and the GitHub Releases API
+
+When a newer version is found, a banner appears in the app. Signed releases install in-app; otherwise Download opens the installer for the current OS (Windows `.exe`, Mac `.dmg`, or Linux AppImage).
+
+> **Note:** If GitHub Actions is locked by a billing issue, tag pushes won't auto-publish. Build locally (`scripts/build-installer.ps1` / `scripts/build-mac.sh` / Linux scripts), copy into `website/downloads/`, update `website/updates/latest.json`, and optionally `gh release upload`.
 
 ## Develop
 
@@ -38,6 +43,8 @@ npm run tauri dev
 ```bash
 npm run tauri build
 ```
+
+On a Mac, prefer `./scripts/build-mac.sh` to also copy the `.dmg` into `website/downloads/`.
 
 CI runs on Windows, macOS, and Ubuntu (compile + frontend). Tagged releases package all three platforms.
 

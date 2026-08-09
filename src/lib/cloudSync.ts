@@ -10,6 +10,9 @@ export const SYNC_SETTING_KEYS = [
   "sound_cue",
   "ui_theme",
   "plan_tier",
+  "stt_multilingual",
+  "stt_languages",
+  "mic_device",
 ] as const;
 
 export type CloudSettings = Record<string, string>;
@@ -44,6 +47,9 @@ async function applyLocalSettings(settings: CloudSettings): Promise<void> {
     try {
       if (key === "plan_tier") {
         await invoke("set_plan_tier", { tier: v });
+      } else if (key === "mic_device") {
+        // Validate / fuzzy-match against currently attached devices.
+        await invoke("set_microphone", { device: v });
       } else {
         await invoke("set_setting", { key, value: v });
       }
@@ -177,8 +183,8 @@ export async function syncAllLocalHistoryIfMax(): Promise<void> {
   try {
     const rows = await invoke<
       { id: number; text: string; app_name: string; created_at: string }[]
-    >("get_history", { search: "" });
-    for (const row of rows.slice(0, 200)) {
+    >("get_history", { search: "", limit: 200, offset: 0 });
+    for (const row of rows) {
       await pushHistoryIfMax(row);
     }
   } catch (e) {

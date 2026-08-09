@@ -44,7 +44,7 @@ export default function InsightsPage() {
               </div>
             </div>
             <div
-              className={`text-xl font-semibold tabular-nums tracking-tight ${
+              className={`text-3xl font-semibold tabular-nums tracking-tight ${
                 !plan.can_dictate
                   ? "text-[var(--ms-orange)]"
                   : "text-[var(--ms-turquoise)]"
@@ -54,11 +54,11 @@ export default function InsightsPage() {
             </div>
           </div>
           <div
-            className="h-1.5 rounded-full overflow-hidden"
+            className="h-3 rounded-full overflow-hidden"
             style={{ background: "var(--ms-fill-track)" }}
           >
             <div
-              className={`h-full rounded-full transition-all ${
+              className={`h-full rounded-full transition-[width] duration-150 ease-out ${
                 !plan.can_dictate
                   ? "bg-[var(--ms-orange)]"
                   : "bg-[var(--ms-turquoise)]"

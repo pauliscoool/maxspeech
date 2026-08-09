@@ -24,6 +24,131 @@ impl Default for DeepgramConfig {
     }
 }
 
+/// Languages included in Deepgram Nova-3 `language=multi` code-switching.
+const MULTI_CODES: &[&str] = &[
+    "en", "es", "fr", "de", "hi", "ru", "pt", "ja", "it", "nl",
+];
+
+const ALLOWED_CODES: &[&str] = &[
+    "en", "es", "zh", "hi", "ar", "fr", "pt", "ru", "de", "ja", "ko", "it", "tr", "vi",
+    "pl", "uk", "nl", "id", "th", "bg",
+];
+
+/// Normalize / dedupe selected language codes (max 5).
+pub fn normalize_languages(languages: &[String]) -> Vec<String> {
+    let mut unique = Vec::new();
+    for s in languages {
+        let code = s.trim().to_lowercase();
+        if ALLOWED_CODES.contains(&code.as_str()) && !unique.contains(&code) {
+            unique.push(code);
+        }
+        if unique.len() >= 5 {
+            break;
+        }
+    }
+    if unique.is_empty() {
+        unique.push("en".to_string());
+    }
+    unique
+}
+
+/// Languages to actually send to Deepgram for this session.
+///
+/// When multilingual is off, always one code. If a stale multi-select remains
+/// (common after disabling multi / free-tier gating), prefer English when it is
+/// in the list — otherwise English speech gets forced through e.g. `language=ru`
+/// and comes back as total gibberish.
+///
+/// When multilingual is on, English is sorted first (UX + heal order only;
+/// Deepgram `language=multi` does not take a preference list).
+pub fn effective_languages(multilingual: bool, languages: &[String]) -> Vec<String> {
+    let mut unique = normalize_languages(languages);
+    if multilingual && unique.len() >= 2 {
+        if let Some(idx) = unique.iter().position(|c| c == "en") {
+            let en = unique.remove(idx);
+            unique.insert(0, en);
+        }
+        return unique;
+    }
+    if unique.len() == 1 {
+        return unique;
+    }
+    if let Some(en) = unique.iter().find(|c| c.as_str() == "en") {
+        return vec![en.clone()];
+    }
+    vec![unique[0].clone()]
+}
+
+/// Resolve Deepgram `language=` from settings (`stt_multilingual`, `stt_languages`).
+///
+/// When multilingual is on and ≥2 selected languages are in Nova-3's multi set,
+/// returns `"multi"` so code-switching (e.g. Russian↔English) works in one stream.
+pub fn resolve_language(multilingual: bool, languages: &[String]) -> String {
+    let unique = effective_languages(multilingual, languages);
+
+    if !multilingual || unique.len() == 1 {
+        return unique[0].clone();
+    }
+
+    let multi_langs: Vec<&str> = unique
+        .iter()
+        .filter(|c| MULTI_CODES.contains(&c.as_str()))
+        .map(|c| c.as_str())
+        .collect();
+
+    // True code-switching only when ≥2 selected langs are in Deepgram's multi set.
+    // Prefer multi even if extra non-multi langs were also picked (those simply
+    // aren't covered by the multi model; the multi-capable ones still code-switch).
+    if multi_langs.len() >= 2 {
+        "multi".to_string()
+    } else {
+        // Fall back to the first code-switch-capable pick, else the first selected.
+        multi_langs
+            .first()
+            .map(|s| (*s).to_string())
+            .unwrap_or_else(|| unique[0].clone())
+    }
+}
+
+/// Parse `stt_languages` JSON (or comma list) from settings.
+pub fn parse_languages_setting(raw: Option<&str>) -> Vec<String> {
+    let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return vec!["en".to_string()];
+    };
+    if let Ok(serde_json::Value::Array(arr)) = serde_json::from_str::<serde_json::Value>(raw) {
+        let mut out = Vec::new();
+        for v in arr {
+            if let Some(s) = v.as_str() {
+                let code = s.trim().to_lowercase();
+                if ALLOWED_CODES.contains(&code.as_str()) && !out.contains(&code) {
+                    out.push(code);
+                }
+            }
+            if out.len() >= 5 {
+                break;
+            }
+        }
+        if !out.is_empty() {
+            return out;
+        }
+    }
+    let mut out = Vec::new();
+    for part in raw.split(|c: char| c == ',' || c == '+' || c.is_whitespace()) {
+        let code = part.trim().to_lowercase();
+        if ALLOWED_CODES.contains(&code.as_str()) && !out.contains(&code) {
+            out.push(code);
+        }
+        if out.len() >= 5 {
+            break;
+        }
+    }
+    if out.is_empty() {
+        vec!["en".to_string()]
+    } else {
+        out
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct DgResponse {
     #[serde(rename = "type")]
@@ -55,13 +180,30 @@ type WsStream = tokio_tungstenite::WebSocketStream<
 fn build_url(config: &DeepgramConfig) -> String {
     // endpointing=400: default 10ms is too eager on quiet pauses / distant speech;
     // wait ~400ms of silence before speech_final so soft utterances stay intact.
+    // Multilingual code-switching prefers a shorter endpointing window (Deepgram docs).
+    // Deepgram suggests 100ms for code-switch; 100 was fragmenting English phrases
+    // into worse guesses ("build"→"blood"). 250 keeps switches responsive without
+    // chopping mid-word as aggressively.
+    let endpointing = if config.language == "multi" { 250 } else { 400 };
     let mut url = format!(
-        "wss://api.deepgram.com/v1/listen?model={}&language={}&punctuate=true&interim_results=true&smart_format=true&endpointing=400&encoding=linear16&sample_rate=16000&channels=1",
-        config.model, config.language
+        "wss://api.deepgram.com/v1/listen?model={}&language={}&punctuate=true&interim_results=true&smart_format=true&endpointing={}&encoding=linear16&sample_rate=16000&channels=1",
+        config.model, config.language, endpointing
     );
-    for kw in &config.keywords {
-        url.push_str(&format!("&keywords={}", urlenc(kw)));
+    // Nova-3 rejects legacy `keywords` (HTTP 400). Use `keyterm` instead.
+    // Cap to keep the handshake URL reasonable.
+    for kw in config.keywords.iter().take(50) {
+        let term = kw.trim();
+        if !term.is_empty() {
+            url.push_str(&format!("&keyterm={}", urlenc(term)));
+        }
     }
+    log::info!(
+        "Deepgram listen URL model={} language={} endpointing={} keyterms={}",
+        config.model,
+        config.language,
+        endpointing,
+        config.keywords.len().min(50)
+    );
     url
 }
 
@@ -194,4 +336,48 @@ fn urlenc(s: &str) -> String {
         }
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_en_ru_multilingual_is_multi() {
+        let langs = vec!["en".into(), "ru".into()];
+        assert_eq!(resolve_language(true, &langs), "multi");
+    }
+
+    #[test]
+    fn resolve_single_language_even_if_toggle_on() {
+        let langs = vec!["ru".into()];
+        assert_eq!(resolve_language(true, &langs), "ru");
+    }
+
+    #[test]
+    fn resolve_off_uses_first() {
+        let langs = vec!["ru".into(), "en".into()];
+        assert_eq!(resolve_language(false, &langs), "ru");
+    }
+
+    #[test]
+    fn resolve_multi_with_extra_non_multi_still_multi() {
+        // uk is not in Nova-3 multi set; en+ru still enable code-switching.
+        let langs = vec!["en".into(), "uk".into(), "ru".into()];
+        assert_eq!(resolve_language(true, &langs), "multi");
+    }
+
+    #[test]
+    fn monolingual_heals_stale_ru_en_list_to_english() {
+        // Bug: multi off + ["ru","en"] used to truncate to "ru" and destroy English dictation.
+        let langs = vec!["ru".into(), "en".into()];
+        assert_eq!(resolve_language(false, &langs), "en");
+        assert_eq!(effective_languages(false, &langs), vec!["en".to_string()]);
+    }
+
+    #[test]
+    fn monolingual_keeps_intentional_russian() {
+        let langs = vec!["ru".into()];
+        assert_eq!(resolve_language(false, &langs), "ru");
+    }
 }

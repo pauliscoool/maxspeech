@@ -1,0 +1,45 @@
+# Codemagic — Apple Silicon .dmg when GitHub Actions is unavailable.
+# Connect this repo at https://codemagic.io then start a build.
+#
+# workflows:
+#   mac-dmg:
+#     name: MaxSpeech macOS DMG
+#     ...
+
+workflows:
+  mac-dmg:
+    name: MaxSpeech macOS DMG
+    instance_type: mac_mini_m2
+    max_build_duration: 120
+    environment:
+      vars:
+        XCODE_WORKSPACE: ""
+      node: 22
+    scripts:
+      - name: Install Rust
+        script: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          source "$HOME/.cargo/env"
+          rustup target add aarch64-apple-darwin
+      - name: Install npm deps
+        script: |
+          npm ci
+      - name: Build DMG
+        script: |
+          source "$HOME/.cargo/env"
+          # Updater signing may be absent; bundle can still succeed.
+          set +e
+          npm run tauri -- build --target aarch64-apple-darwin
+          set -e
+          VER=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          SRC=$(ls src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg 2>/dev/null | head -1)
+          if [ -z "$SRC" ]; then
+            SRC=$(ls src-tauri/target/release/bundle/dmg/*.dmg 2>/dev/null | head -1)
+          fi
+          test -n "$SRC"
+          mkdir -p website/downloads
+          cp -f "$SRC" "website/downloads/MaxSpeech_${VER}_aarch64.dmg"
+          cp -f "$SRC" "$CM_BUILD_DIR/MaxSpeech_${VER}_aarch64.dmg"
+    artifacts:
+      - website/downloads/*.dmg
+      - "*.dmg"

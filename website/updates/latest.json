@@ -1,0 +1,11 @@
+{
+  "version": "0.1.2",
+  "notes": "Bigger, snappier dictation bar; faster hide animation; Settings update installs the latest release.",
+  "url": "https://maxspeech.vercel.app/downloads/MaxSpeech_0.1.2_x64-setup.exe",
+  "github": "https://github.com/pauliscoool/maxspeech/releases/latest",
+  "platforms": {
+    "windows": "https://maxspeech.vercel.app/downloads/MaxSpeech_0.1.2_x64-setup.exe",
+    "macos": "https://maxspeech.vercel.app/mac",
+    "linux": "https://maxspeech.vercel.app/downloads/MaxSpeech_0.1.1_amd64.AppImage"
+  }
+}

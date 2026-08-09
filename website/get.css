@@ -1,0 +1,104 @@
+.get-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem 1.25rem 3rem;
+}
+
+.get-shell {
+  position: relative;
+  z-index: 1;
+  width: min(100%, 34rem);
+  text-align: center;
+}
+
+.get-brand {
+  justify-content: center;
+  margin-bottom: 1.75rem;
+}
+
+.get-shell h1 {
+  font-family: Syne, sans-serif;
+  font-weight: 700;
+  font-size: clamp(1.75rem, 4vw, 2.35rem);
+  letter-spacing: -0.03em;
+  margin: 0 0 0.75rem;
+}
+
+.get-lede {
+  margin: 0 auto 1.5rem;
+  color: rgba(232, 242, 244, 0.78);
+  line-height: 1.5;
+  max-width: 28rem;
+}
+
+.get-soon {
+  color: rgba(251, 191, 36, 0.92);
+}
+
+.get-shell .btn-primary {
+  margin-bottom: 1.75rem;
+}
+
+.get-shell .btn-primary.is-disabled {
+  pointer-events: none;
+  opacity: 0.55;
+  box-shadow: none;
+  filter: grayscale(0.2);
+}
+
+.get-steps {
+  text-align: left;
+  margin: 0 auto 1.75rem;
+  padding: 1.15rem 1.15rem 1.15rem 2.1rem;
+  border-radius: 1rem;
+  background: rgba(8, 18, 22, 0.55);
+  border: 1px solid rgba(232, 242, 244, 0.08);
+  color: rgba(232, 242, 244, 0.86);
+  line-height: 1.55;
+  font-size: 0.95rem;
+}
+
+.get-steps li + li {
+  margin-top: 0.65rem;
+}
+
+.get-steps code,
+.get-steps kbd {
+  font-size: 0.86em;
+  padding: 0.1em 0.35em;
+  border-radius: 0.35em;
+  background: rgba(46, 211, 198, 0.12);
+  border: 1px solid rgba(46, 211, 198, 0.22);
+}
+
+.get-steps pre {
+  margin: 0.45rem 0 0;
+  padding: 0.65rem 0.75rem;
+  overflow-x: auto;
+  border-radius: 0.5rem;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(232, 242, 244, 0.08);
+  font-size: 0.82rem;
+}
+
+.get-steps pre code {
+  padding: 0;
+  border: 0;
+  background: none;
+}
+
+.get-alt {
+  margin: 0;
+  font-size: 0.9rem;
+  color: rgba(232, 242, 244, 0.5);
+}
+
+.get-alt a {
+  color: var(--turquoise);
+}
+
+.get-alt a:hover {
+  text-decoration: underline;
+}

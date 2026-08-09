@@ -4,42 +4,63 @@ use crate::store::Store;
 
 pub fn get_tone_for_app(app: &ForegroundApp, store: &Store) -> Option<String> {
     let profiles = store.get_app_profiles().unwrap_or_default();
+    let exe = app.exe.to_lowercase();
+    let title = app.title.to_lowercase();
+
+    // Prefer title-specific rules over bare-exe wildcards, then longer titles.
+    let mut best: Option<(usize, &str)> = None;
     for profile in &profiles {
         if !profile.enabled {
             continue;
         }
-        let exe_match = app
-            .exe
-            .to_lowercase()
-            .contains(&profile.exe_pattern.to_lowercase());
-        let title_match = profile.title_pattern.is_empty()
-            || app
-                .title
-                .to_lowercase()
-                .contains(&profile.title_pattern.to_lowercase());
-        if exe_match && title_match {
-            return Some(profile.tone.clone());
+        let pat_exe = profile.exe_pattern.to_lowercase();
+        if pat_exe.is_empty() || !exe.contains(&pat_exe) {
+            continue;
+        }
+        let pat_title = profile.title_pattern.to_lowercase();
+        let title_ok = pat_title.is_empty() || title.contains(&pat_title);
+        if !title_ok {
+            continue;
+        }
+        // Score: titled matches beat empty title; longer title beats shorter.
+        let score = if pat_title.is_empty() {
+            0
+        } else {
+            1_000 + pat_title.len()
+        };
+        match best {
+            Some((best_score, _)) if score <= best_score => {}
+            _ => best = Some((score, profile.tone.as_str())),
         }
     }
-    None
+    best.map(|(_, tone)| tone.to_string())
 }
 
 const SELF_CORRECTION_RULES: &str = "\
 CRITICAL — spoken self-corrections (highest priority): \
 The speaker often changes their mind mid-sentence. Detect phrases like: \
-'oh no I meant', 'I meant', 'I mean', 'wait actually', 'no wait', 'scratch that', \
+'oh no I meant', 'I meant', 'wait actually', 'no wait', 'scratch that', \
 'correction:', 'wait no', 'or rather', 'sorry I meant'. \
+Treat short 'I mean <replacement>' as a correction (e.g. a name). \
+Do NOT treat discourse filler 'I mean …' (e.g. 'I mean it can slip') as a correction. \
 Keep ONLY the final intended meaning. DELETE the mistaken word/phrase AND all \
-correction chatter. \
+correction chatter. When correcting a weekday/date, replace that weekday wherever \
+it appears earlier in the sentence — not only the last few words. \
+Never delete weekdays or phrases like 'through Tuesday' unless a clear correction \
+replaces them. \
 \
 Examples (input → output): \
 1) 'Would you like to go on a trip on Tuesday? Oh no I meant Monday' \
    → 'Would you like to go on a trip on Monday?' \
-2) 'Meet me at 3pm wait I meant 4pm' \
+2) 'for Tuesday would you like to go on a trip? Oh no I meant Monday' \
+   → 'for Monday would you like to go on a trip?' \
+3) 'Meet me at 3pm wait I meant 4pm' \
    → 'Meet me at 4pm' \
-3) 'Send it to Sarah I mean Sandra' \
+4) 'Send it to Sarah I mean Sandra' \
    → 'Send it to Sandra' \
-4) 'The meeting is tomorrow no wait Friday' \
+5) 'The deadline is through Tuesday I mean it can slip' \
+   → 'The deadline is through Tuesday I mean it can slip' (unchanged — discourse) \
+6) 'The meeting is tomorrow no wait Friday' \
    → 'The meeting is Friday' \
 Never leave both the mistake and the correction in the output.";
 
@@ -54,7 +75,17 @@ Grammarly-style cleanup (always apply): \
 - Do NOT add a greeting/sign-off the speaker did not say. \
 - Return ONLY the cleaned text, no commentary or quotes around it.";
 
-fn system_prompt_for_tone(tone: &str) -> String {
+const MULTILINGUAL_RULES: &str = "\
+CRITICAL — multilingual / code-switched dictation: \
+The transcript may mix languages in one utterance (e.g. Russian then English). \
+- Preserve EVERY language and script exactly as spoken. \
+- Do NOT translate between languages. \
+- Do NOT transliterate Cyrillic, CJK, Arabic, etc. into Latin letters. \
+- Do NOT drop words from a language you understand less well. \
+- Only lightly fix punctuation/spacing; leave mixed-language wording intact. \
+- English self-correction rules apply only to clearly English correction chatter.";
+
+fn system_prompt_for_tone(tone: &str, multilingual: bool) -> String {
     let base = match tone {
         "casual" => {
             "You are a Grammarly-like dictation assistant. Rewrite in a casual, terse chat style. \
@@ -78,7 +109,95 @@ fn system_prompt_for_tone(tone: &str) -> String {
              clarity while keeping the original meaning and style."
         }
     };
-    format!("{base}\n\n{GRAMMAR_RULES}\n\n{SELF_CORRECTION_RULES}")
+    if multilingual {
+        format!("{base}\n\n{GRAMMAR_RULES}\n\n{SELF_CORRECTION_RULES}\n\n{MULTILINGUAL_RULES}")
+    } else {
+        format!("{base}\n\n{GRAMMAR_RULES}\n\n{SELF_CORRECTION_RULES}")
+    }
+}
+
+/// True when the transcript likely contains non-Latin script (Cyrillic, CJK, Arabic, etc.).
+pub fn has_non_latin_script(text: &str) -> bool {
+    text.chars().any(|c| {
+        let n = c as u32;
+        // Cyrillic, Greek, Hebrew, Arabic, Devanagari, CJK, Hangul, Thai, etc.
+        (0x0400..=0x04FF).contains(&n)
+            || (0x0500..=0x052F).contains(&n)
+            || (0x0370..=0x03FF).contains(&n)
+            || (0x0590..=0x05FF).contains(&n)
+            || (0x0600..=0x06FF).contains(&n)
+            || (0x0900..=0x097F).contains(&n)
+            || (0x0E00..=0x0E7F).contains(&n)
+            || (0x3040..=0x30FF).contains(&n)
+            || (0x3400..=0x9FFF).contains(&n)
+            || (0xAC00..=0xD7AF).contains(&n)
+    })
+}
+
+const WEEKDAYS: &[&str] = &[
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
+    "mon",
+    "tue",
+    "tues",
+    "wed",
+    "thu",
+    "thur",
+    "thurs",
+    "fri",
+    "sat",
+    "sun",
+];
+
+fn bare_alpha(word: &str) -> String {
+    word.chars()
+        .filter(|c| c.is_alphabetic())
+        .collect::<String>()
+        .to_lowercase()
+}
+
+fn word_is_weekday(word: &str) -> bool {
+    WEEKDAYS.contains(&bare_alpha(word).as_str())
+}
+
+fn looks_like_discourse_filler(correction: &str) -> bool {
+    let words: Vec<&str> = correction.split_whitespace().collect();
+    if words.is_empty() {
+        return true;
+    }
+    // Real replacements are short (name, day, time). Long clauses after "I mean" are filler.
+    if words.len() > 3 {
+        return true;
+    }
+    let first = bare_alpha(words[0]);
+    matches!(
+        first.as_str(),
+        "it" | "that" | "because" | "we" | "you" | "i" | "the" | "this" | "there"
+            | "he" | "she" | "they" | "weve" | "im" | "its" | "thats"
+    )
+}
+
+fn apply_weekday_correction(words: &mut Vec<String>, corr_words: &[&str]) -> bool {
+    let Some(corr_day_i) = corr_words.iter().rposition(|w| word_is_weekday(w)) else {
+        return false;
+    };
+    let Some(mistaken_i) = words.iter().rposition(|w| word_is_weekday(w)) else {
+        return false;
+    };
+
+    // Preserve original casing style lightly: keep replacement text as spoken.
+    words[mistaken_i] = corr_words[corr_day_i].to_string();
+
+    // If correction includes a leading prep (on/for/through/this/next), and the
+    // mistaken day also has one, leave the existing prep alone — only the day swaps.
+    // If correction is just the day, we're done.
+    let _ = corr_day_i;
+    true
 }
 
 /// Local heuristic: fix "… Tuesday oh no I meant Monday" without needing an LLM.
@@ -149,6 +268,7 @@ pub fn local_self_correct(text: &str) -> String {
         return text.to_string();
     }
 
+    let marker_slice = &lower[idx..idx + mlen];
     let before = text[..idx].trim_end();
     let mut correction = text[idx + mlen..].trim();
     correction = correction.trim_end_matches(|c: char| matches!(c, '.' | '!' | '?' | ','));
@@ -158,27 +278,32 @@ pub fn local_self_correct(text: &str) -> String {
         return text.to_string();
     }
 
-    // Replace the last "content" word in `before` with the correction.
+    // "I mean it can slip" is discourse, not a word swap — leave the sentence alone.
+    if marker_slice.trim() == "i mean" && looks_like_discourse_filler(correction) {
+        return text.to_string();
+    }
+
     let (stem, trailing_punct) = strip_trailing_punct(before);
     let mut words: Vec<String> = stem.split_whitespace().map(|w| w.to_string()).collect();
     if words.is_empty() {
         return format!("{correction}{trailing_punct}");
     }
 
-    // If correction is multi-word, replace last N words; else replace last word.
     let corr_words: Vec<&str> = correction.split_whitespace().collect();
-    let n = corr_words.len().min(words.len());
-    words.truncate(words.len() - n);
-    for w in corr_words {
-        words.push(w.to_string());
+
+    // Weekday corrections: replace the last weekday earlier in the sentence
+    // (handles "for Tuesday … I meant Monday", not only end-position mistakes).
+    if !apply_weekday_correction(&mut words, &corr_words) {
+        // Fallback: replace the last N words with the correction.
+        let n = corr_words.len().min(words.len());
+        words.truncate(words.len() - n);
+        for w in corr_words {
+            words.push(w.to_string());
+        }
     }
 
     let mut out = words.join(" ");
     out.push_str(trailing_punct);
-    // Prefer a sentence-ending mark if the original had one after the mistake
-    if trailing_punct.is_empty() && before.ends_with(['.', '?', '!']) {
-        // already handled
-    }
     out
 }
 
@@ -205,12 +330,13 @@ fn llm_key() -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     secrets::resolve_llm_api_key().ok_or_else(|| "LLM API key not set".into())
 }
 
-pub async fn apply_tone(
+async fn apply_tone_ex(
     text: &str,
     tone: &str,
+    multilingual: bool,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let api_key = llm_key()?;
-    let system = system_prompt_for_tone(tone);
+    let system = system_prompt_for_tone(tone, multilingual);
     call_llm(&api_key, &system, text, 1024).await
 }
 
@@ -228,14 +354,14 @@ pub async fn rewrite_with_llm(
     call_llm(&api_key, &system, text, 1024).await
 }
 
-/// Stronger AI pass for longer dictations (up to ~2 minutes of speech).
-pub async fn enhance_long_dictation(
+async fn enhance_long_dictation_ex(
     text: &str,
     tone: &str,
+    multilingual: bool,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let api_key = llm_key()?;
 
-    let style = system_prompt_for_tone(tone);
+    let style = system_prompt_for_tone(tone, multilingual);
     let system = format!(
         "{style}\n\nThis is a longer dictation. Apply Grammarly-style grammar, punctuation, \
          and clarity fixes throughout. Remove filler (um, uh, like). Break into clear paragraphs \
@@ -245,35 +371,46 @@ pub async fn enhance_long_dictation(
     call_llm(&api_key, &system, text, 4096).await
 }
 
-/// Dedicated pass whose only job is cleanup + self-corrections.
-pub async fn cleanup_self_corrections(
+async fn cleanup_self_corrections_ex(
     text: &str,
+    multilingual: bool,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let api_key = llm_key()?;
 
+    let multi = if multilingual {
+        format!(" {MULTILINGUAL_RULES}")
+    } else {
+        String::new()
+    };
     let system = format!(
         "You are a Grammarly-like cleanup pass for spoken dictation. \
-         {GRAMMAR_RULES} {SELF_CORRECTION_RULES} \
+         {GRAMMAR_RULES} {SELF_CORRECTION_RULES}{multi} \
          Only return the cleaned text, nothing else."
     );
     call_llm(&api_key, &system, text, 2048).await
 }
 
-/// Full enhance path used by the dictation pipeline.
-pub async fn enhance_dictation(
+/// Enhance path used by the dictation pipeline (preserves code-switched scripts).
+pub async fn enhance_dictation_ex(
     text: &str,
     tone: &str,
     long: bool,
+    multilingual: bool,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    // Local pass first so corrections work even if the API call fails
-    let local = local_self_correct(text);
-    if long {
-        enhance_long_dictation(&local, tone).await
-    } else if tone == "default" {
-        // Default = cleanup + self-corrections (not a heavy rewrite)
-        cleanup_self_corrections(&local).await
+    // Local English self-correction can mangle mixed-script text — skip it when
+    // the transcript already contains non-Latin characters.
+    let local = if multilingual || has_non_latin_script(text) {
+        text.to_string()
     } else {
-        apply_tone(&local, tone).await
+        local_self_correct(text)
+    };
+    let multi = multilingual || has_non_latin_script(&local);
+    if long {
+        enhance_long_dictation_ex(&local, tone, multi).await
+    } else if tone == "default" {
+        cleanup_self_corrections_ex(&local, multi).await
+    } else {
+        apply_tone_ex(&local, tone, multi).await
     }
 }
 
@@ -338,6 +475,32 @@ mod tests {
         assert!(out.to_lowercase().contains("monday"), "{out}");
         assert!(!out.to_lowercase().contains("tuesday"), "{out}");
         assert!(!out.to_lowercase().contains("meant"), "{out}");
+    }
+
+    #[test]
+    fn corrects_early_tuesday_to_monday() {
+        let out = local_self_correct(
+            "for Tuesday would you like to go on a trip? Oh no I meant Monday",
+        );
+        assert!(out.to_lowercase().contains("monday"), "{out}");
+        assert!(!out.to_lowercase().contains("tuesday"), "{out}");
+        assert!(!out.to_lowercase().contains("meant"), "{out}");
+    }
+
+    #[test]
+    fn corrects_thursday_to_friday() {
+        let out = local_self_correct("Let's meet through Thursday I meant Friday");
+        assert!(out.to_lowercase().contains("friday"), "{out}");
+        assert!(!out.to_lowercase().contains("thursday"), "{out}");
+        assert!(out.to_lowercase().contains("through"), "{out}");
+    }
+
+    #[test]
+    fn keeps_through_tuesday_when_i_mean_is_discourse() {
+        let out =
+            local_self_correct("The deadline is through Tuesday I mean it can slip");
+        assert!(out.to_lowercase().contains("through tuesday"), "{out}");
+        assert!(out.to_lowercase().contains("i mean"), "{out}");
     }
 
     #[test]

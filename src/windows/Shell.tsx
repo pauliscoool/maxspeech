@@ -98,13 +98,24 @@ export default function Shell({ authUser }: { authUser: AuthUser | null }) {
 
   useEffect(() => {
     let cancelled = false;
-    checkForUpdate()
-      .then((info) => {
-        if (!cancelled) setUpdateInfo(info);
-      })
-      .catch(() => {});
+    const run = () => {
+      checkForUpdate()
+        .then((info) => {
+          if (!cancelled) setUpdateInfo(info);
+        })
+        .catch(() => {});
+    };
+    run();
+    // Re-check periodically and when the window becomes visible again.
+    const timer = window.setInterval(run, 6 * 60 * 60 * 1000);
+    const onVis = () => {
+      if (document.visibilityState === "visible") run();
+    };
+    document.addEventListener("visibilitychange", onVis);
     return () => {
       cancelled = true;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVis);
     };
   }, []);
 
@@ -172,13 +183,48 @@ export default function Shell({ authUser }: { authUser: AuthUser | null }) {
       await installAvailableUpdate((pct) => setUpdatePct(pct));
     } catch (e) {
       console.error(e);
+      // Manifest fallback opens the download in the browser.
       setUpdating(false);
       setUpdatePct(null);
     }
   }
 
   return (
-    <div className="flex h-screen bg-[var(--ms-bg)] text-[var(--ms-text)] overflow-hidden">
+    <div className="flex h-screen bg-[var(--ms-bg)] text-[var(--ms-text)] overflow-hidden flex-col">
+      {updateInfo && (
+        <div
+          className="shrink-0 px-4 py-2.5 flex items-center justify-between gap-3"
+          style={{
+            background: "var(--ms-turquoise-glow)",
+            borderBottom: "1px solid var(--ms-hairline)",
+          }}
+        >
+          <div className="min-w-0">
+            <div className="text-sm font-medium text-[var(--ms-turquoise)]">
+              Update available — v{updateInfo.version}
+            </div>
+            <div className="text-xs text-[var(--ms-text-dim)] truncate">
+              {updateInfo.source === "tauri"
+                ? "Install in-app, then MaxSpeech will restart"
+                : "Downloads and installs the latest release"}
+            </div>
+          </div>
+          <button
+            onClick={applyUpdate}
+            disabled={updating}
+            className="btn-primary px-3.5 py-1.5 text-xs shrink-0 disabled:opacity-70"
+          >
+            {updating
+              ? updatePct != null
+                ? `${updatePct}%`
+                : "Working…"
+              : updateInfo.source === "tauri"
+                ? "Update now"
+                : "Download"}
+          </button>
+        </div>
+      )}
+      <div className="flex flex-1 min-h-0 overflow-hidden">
       <aside
         className="w-[168px] shrink-0 bg-[var(--ms-bg-soft)] flex flex-col"
         style={{ borderRight: "1px solid var(--ms-hairline)" }}
@@ -443,6 +489,7 @@ export default function Shell({ authUser }: { authUser: AuthUser | null }) {
 
         </aside>
       )}
+      </div>
     </div>
   );
 }

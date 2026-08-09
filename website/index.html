@@ -55,20 +55,38 @@
               cleaned up and ready to send.
             </p>
             <div class="cta-row">
-              <a
-                class="btn-primary"
-                id="download"
-                href="/downloads/MaxSpeech_0.1.0_x64-setup.exe"
-                download
-              >
-                Download for Windows
-              </a>
-              <p class="meta">v0.1.0 · NSIS · macOS DMG &amp; Linux builds on GitHub Releases</p>
-              <p class="platform-soon">
-                <a href="https://github.com/pauliscoool/maxspeech/releases/latest">Mac &amp; Linux builds</a>
-                · Windows installer below
+              <div class="cta-downloads">
+                <a class="btn-primary" id="cta-primary" href="/windows">Download for Windows</a>
+                <a class="btn-primary btn-secondary-dl" href="/windows">Windows</a>
+                <a class="btn-primary btn-secondary-dl" href="/mac">Mac</a>
+                <a class="btn-primary btn-secondary-dl" href="/linux">Linux</a>
+              </div>
+              <p class="meta" id="cta-meta">
+                Windows · Mac (Apple Silicon) · Linux
               </p>
             </div>
+            <script>
+              (function () {
+                var p = (navigator.platform || "").toLowerCase();
+                var ua = (navigator.userAgent || "").toLowerCase();
+                var primary = document.getElementById("cta-primary");
+                var meta = document.getElementById("cta-meta");
+                if (!primary) return;
+                if (p.includes("mac") || ua.includes("mac")) {
+                  primary.href = "/mac";
+                  primary.textContent = "Download for Mac";
+                } else if (p.includes("linux") || ua.includes("linux")) {
+                  primary.href = "/linux";
+                  primary.textContent = "Download for Linux";
+                } else {
+                  primary.href = "/windows";
+                  primary.textContent = "Download for Windows";
+                }
+                if (meta) {
+                  meta.textContent = "Send friends: /windows · /mac · /linux";
+                }
+              })();
+            </script>
           </div>
 
           <div class="hero-flow-stage" id="hero-flow-stage" aria-hidden="true">
