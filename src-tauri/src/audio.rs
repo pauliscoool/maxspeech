@@ -6,29 +6,29 @@ use std::sync::{Arc, Mutex};
 use tauri::Emitter;
 
 const TARGET_RATE: u32 = 16000;
-const BAR_COUNT: usize = 29;
+const BAR_COUNT: usize = 20;
 
-// Visual meter only.
-const NOISE_GATE: f32 = 0.003;
-const LEVEL_GAIN: f32 = 7.0;
+// Visual meter only — slight gain so bars jump cleanly without looking clipped.
+const NOISE_GATE: f32 = 0.0019;
+const LEVEL_GAIN: f32 = 7.9;
 
-// Soft AGC for quiet mics. Keep boost modest — over-boosting makes Deepgram
-// hear different words ("build"→"blood") and pulls up distant background talk.
-const AGC_TARGET_RMS: f32 = 0.09;
-const AGC_MAX_GAIN: f32 = 1.7;
-const AGC_NOISE_FLOOR: f32 = 0.01;
-const AGC_ATTACK: f32 = 0.14;
-const AGC_RELEASE: f32 = 0.1;
+// Modest AGC — ~5% less aggressive than prior so quiet speech lands cleaner
+// without boosting call / room voices as hard.
+const AGC_PREAMP: f32 = 1.14;
+const AGC_TARGET_RMS: f32 = 0.0855;
+const AGC_MAX_GAIN: f32 = 2.28;
+const AGC_NOISE_FLOOR: f32 = 0.0019;
+const AGC_ATTACK: f32 = 0.17;
+const AGC_RELEASE: f32 = 0.085;
 
-// STT noise gate: mute frames well below the current close-talker level so
-// background conversations aren't transcribed. Uses absolute floor + relative
-// threshold vs a slow peak hold (closest / loudest speaker wins).
-const STT_GATE_FLOOR_OPEN: f32 = 0.01;
-const STT_GATE_FLOOR_CLOSE: f32 = 0.006;
-const STT_GATE_REL_OPEN: f32 = 0.38; // open at ≥38% of recent peak
-const STT_GATE_REL_CLOSE: f32 = 0.22;
-const STT_GATE_CLOSED_GAIN: f32 = 0.0;
-const STT_PEAK_DECAY: f32 = 0.995; // ~slow forget of prior loudness
+/// Near-field gate for STT: open for the loud close talker, mute quieter
+/// background (other people on a call, room chatter). ~5% easier open so
+/// close speech isn't clipped while distant talk still stays out.
+const STT_GATE_FLOOR_OPEN: f32 = 0.0133;
+const STT_GATE_FLOOR_CLOSE: f32 = 0.00665;
+const STT_GATE_REL_OPEN: f32 = 0.304;
+const STT_GATE_REL_CLOSE: f32 = 0.152;
+const STT_GATE_PEAK_DECAY: f32 = 0.992;
 
 /// Empty / "default" means follow the OS default input device.
 pub const MIC_DEVICE_DEFAULT: &str = "default";
@@ -90,7 +90,7 @@ impl AudioCapture {
             preferred_device
         );
 
-        let chunk_size = (TARGET_RATE as usize) / 10; // 100ms at 16kHz
+        let chunk_size = (TARGET_RATE as usize) / 20; // 50ms at 16kHz — snappier start/end
         let buffer: Arc<Mutex<Vec<i16>>> = Arc::new(Mutex::new(Vec::with_capacity(chunk_size)));
         let buffer_clone = buffer.clone();
         let resample_state = Arc::new(Mutex::new(0.0f64));
@@ -99,7 +99,7 @@ impl AudioCapture {
         let agc_gain_clone = agc_gain.clone();
         let gate_open = Arc::new(Mutex::new(false));
         let gate_open_clone = gate_open.clone();
-        let gate_peak = Arc::new(Mutex::new(0.02f32));
+        let gate_peak = Arc::new(Mutex::new(0.0f32));
         let gate_peak_clone = gate_peak.clone();
         let ratio = native_rate as f64 / TARGET_RATE as f64;
 
@@ -359,21 +359,13 @@ fn process_f32(
         return;
     }
 
-    // Gate first (drop distant/background), then gentle AGC on close speech only.
-    let gated = apply_stt_noise_gate(&mono, gate_open, gate_peak);
-    let open = *gate_open.lock().unwrap();
-    let gained = if open {
-        apply_soft_agc(&gated, agc_gain)
-    } else {
-        // Don't let AGC climb while the room is quiet / distant talkers are speaking.
-        if let Ok(mut g) = agc_gain.lock() {
-            *g = (*g * 0.92).max(1.0);
-        }
-        gated
-    };
+    // Gate quieter room / call voices before AGC so gain can't lift them up.
+    let gated = apply_near_field_gate(&mono, gate_open, gate_peak);
+    let gained = apply_soft_agc(&gated, agc_gain);
 
     let frame = FRAME.fetch_add(1, Ordering::Relaxed);
-    let bars = compute_bars(&gained, BAR_COUNT, frame);
+    // Meter from pre-AGC gated signal so bars reflect what STT hears.
+    let bars = compute_bars(&gated, BAR_COUNT, frame);
     let _ = app.emit("audio-level", bars);
 
     let resampled = if (ratio - 1.0).abs() < 0.001 {
@@ -393,8 +385,56 @@ fn process_f32(
     }
 }
 
-/// Downmix to mono, preferring the loudest channel when it clearly dominates
-/// (closest talker on stereo / array mics). Otherwise average to reject noise spikes.
+/// Mute frames that are soft relative to the user's recent speech peak.
+/// Close talkers open the gate; quieter background (call speakers, room) stays out.
+fn apply_near_field_gate(
+    samples: &[f32],
+    gate_open: &Arc<Mutex<bool>>,
+    gate_peak: &Arc<Mutex<f32>>,
+) -> Vec<f32> {
+    let rms = (samples.iter().map(|s| s * s).sum::<f32>() / samples.len().max(1) as f32).sqrt();
+    let peak = samples
+        .iter()
+        .copied()
+        .map(f32::abs)
+        .fold(0.0f32, f32::max);
+    let level = rms * 0.6 + peak * 0.4;
+
+    let mut open = gate_open.lock().unwrap();
+    let mut speech_peak = gate_peak.lock().unwrap();
+
+    if level > *speech_peak {
+        *speech_peak = level;
+    } else {
+        *speech_peak *= STT_GATE_PEAK_DECAY;
+    }
+
+    let open_thresh = STT_GATE_FLOOR_OPEN.max(*speech_peak * STT_GATE_REL_OPEN);
+    let close_thresh = STT_GATE_FLOOR_CLOSE.max(*speech_peak * STT_GATE_REL_CLOSE);
+
+    if *open {
+        if level < close_thresh {
+            *open = false;
+        }
+    } else if level >= open_thresh {
+        *open = true;
+    }
+
+    let pass = *open;
+    drop(open);
+    drop(speech_peak);
+
+    if pass {
+        samples.to_vec()
+    } else {
+        // Hard mute for STT — do not leak quiet background as "speech".
+        vec![0.0; samples.len()]
+    }
+}
+
+/// Downmix to mono.
+/// - Stereo headsets: pick the louder channel (avg washes speech with a dead side).
+/// - Mic arrays (3+ ch): average — loudest-channel often picks noise on Intel SST arrays.
 fn to_mono(data: &[f32], channels: u16) -> Vec<f32> {
     let ch = channels.max(1) as usize;
     if ch == 1 {
@@ -403,6 +443,18 @@ fn to_mono(data: &[f32], channels: u16) -> Vec<f32> {
     let frames = data.len() / ch;
     if frames == 0 {
         return Vec::new();
+    }
+
+    if ch >= 3 {
+        return (0..frames)
+            .map(|frame| {
+                let mut sum = 0.0f32;
+                for c in 0..ch {
+                    sum += data[frame * ch + c];
+                }
+                sum / ch as f32
+            })
+            .collect();
     }
 
     let mut energies = vec![0.0f32; ch];
@@ -418,67 +470,15 @@ fn to_mono(data: &[f32], channels: u16) -> Vec<f32> {
         .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
         .map(|(i, _)| i)
         .unwrap_or(0);
-    let best_e = energies[best];
-    let mean_e = energies.iter().sum::<f32>() / ch as f32;
 
-    // Clear winner (~closest / on-axis) → take that channel. Otherwise average.
-    let use_best = best_e > mean_e * 1.55 && best_e > 1e-8;
-    if use_best || ch == 2 {
-        return (0..frames).map(|frame| data[frame * ch + best]).collect();
-    }
-
-    (0..frames)
-        .map(|frame| {
-            let mut sum = 0.0f32;
-            for c in 0..ch {
-                sum += data[frame * ch + c];
-            }
-            sum / ch as f32
-        })
-        .collect()
-}
-
-/// Hysteresis gate vs absolute floor + recent peak (closest/loudest speaker).
-fn apply_stt_noise_gate(
-    samples: &[f32],
-    gate_open: &Arc<Mutex<bool>>,
-    gate_peak: &Arc<Mutex<f32>>,
-) -> Vec<f32> {
-    let rms = (samples.iter().map(|s| s * s).sum::<f32>() / samples.len().max(1) as f32).sqrt();
-
-    let mut peak = gate_peak.lock().unwrap();
-    if rms > *peak {
-        *peak = rms;
-    } else {
-        *peak = (*peak * STT_PEAK_DECAY).max(STT_GATE_FLOOR_OPEN);
-    }
-    let peak_now = *peak;
-    drop(peak);
-
-    let open_thr = STT_GATE_FLOOR_OPEN.max(peak_now * STT_GATE_REL_OPEN);
-    let close_thr = STT_GATE_FLOOR_CLOSE.max(peak_now * STT_GATE_REL_CLOSE);
-
-    let mut open = gate_open.lock().unwrap();
-    if *open {
-        if rms < close_thr {
-            *open = false;
-        }
-    } else if rms >= open_thr {
-        *open = true;
-    }
-    let pass = *open;
-    drop(open);
-
-    if pass {
-        samples.to_vec()
-    } else {
-        samples.iter().map(|&s| s * STT_GATE_CLOSED_GAIN).collect()
-    }
+    (0..frames).map(|frame| data[frame * ch + best]).collect()
 }
 
 fn apply_soft_agc(samples: &[f32], gain_state: &Arc<Mutex<f32>>) -> Vec<f32> {
-    let rms = (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt();
-    let peak = samples
+    // Mild fixed preamp so quiet / distant laptop mics still reach Deepgram.
+    let boosted: Vec<f32> = samples.iter().map(|&s| s * AGC_PREAMP).collect();
+    let rms = (boosted.iter().map(|s| s * s).sum::<f32>() / boosted.len() as f32).sqrt();
+    let peak = boosted
         .iter()
         .copied()
         .map(f32::abs)
@@ -489,7 +489,7 @@ fn apply_soft_agc(samples: &[f32], gain_state: &Arc<Mutex<f32>>) -> Vec<f32> {
     } else {
         let from_rms = (AGC_TARGET_RMS / rms).clamp(1.0, AGC_MAX_GAIN);
         let peak_cap = if peak > 1e-6 {
-            (0.92 / peak).clamp(1.0, AGC_MAX_GAIN)
+            (0.95 / peak).clamp(1.0, AGC_MAX_GAIN)
         } else {
             AGC_MAX_GAIN
         };
@@ -502,7 +502,7 @@ fn apply_soft_agc(samples: &[f32], gain_state: &Arc<Mutex<f32>>) -> Vec<f32> {
     let gain = *g;
     drop(g);
 
-    samples
+    boosted
         .iter()
         .map(|&s| {
             let x = s * gain;
@@ -580,7 +580,8 @@ fn compute_bars(samples: &[f32], n: usize, frame: u64) -> Vec<f32> {
         let jitter = 0.12 * (phase.sin() * 0.5 + 0.5);
 
         let gated = ((mixed - NOISE_GATE * 0.5).max(0.0) * LEVEL_GAIN).clamp(0.0, 1.0);
-        let level = (gated.powf(0.72) * mid + jitter * gated).clamp(0.08, 1.0);
+        // Slightly softer curve — peaks jump, but don't slam the top as hard.
+        let level = (gated.powf(0.68) * mid + jitter * gated).clamp(0.08, 1.0);
         bars.push(level);
     }
     bars

@@ -9,6 +9,17 @@ import { applyTheme, loadAndApplyTheme } from "./lib/theme";
 import { getSessionUser, onAuthChange, type AuthUser } from "./lib/auth";
 import { pullCloudSettings } from "./lib/cloudSync";
 
+/** Keep Rust hotkey gate in sync with the login screen. */
+async function syncDictationAuth(user: AuthUser | null) {
+  try {
+    const { lockDictation, unlockDictation } = await import("./lib/auth");
+    if (user) await unlockDictation(user.email);
+    else await lockDictation();
+  } catch {
+    /* ignore outside Tauri */
+  }
+}
+
 type View = "overlay" | "shell" | "onboarding";
 
 function initialView(): View {
@@ -28,10 +39,17 @@ export default function App() {
   const [authReady, setAuthReady] = useState(false);
 
   useEffect(() => {
-    const label = getCurrentWindow().label;
+    let label = "";
+    try {
+      label = getCurrentWindow().label;
+    } catch {
+      setAuthReady(true);
+      return;
+    }
     if (label === "overlay") {
       document.documentElement.setAttribute("data-window", "overlay");
       applyTheme("dark");
+      // Fully transparent chrome — only the pill/toast paints pixels.
       const clear = [0, 0, 0, 0] as [number, number, number, number];
       void getCurrentWindow()
         .setBackgroundColor(clear)
@@ -50,6 +68,14 @@ export default function App() {
       document.documentElement.setAttribute("data-window", "shell");
       setView("shell");
     }
+    // Opaque black — prevents WebView2 white flash / blank strip under DWM.
+    const opaque = [0, 0, 0, 255] as [number, number, number, number];
+    void getCurrentWindow()
+      .setBackgroundColor(opaque)
+      .catch(() => {});
+    void getCurrentWebview()
+      .setBackgroundColor(opaque)
+      .catch(() => {});
     void loadAndApplyTheme();
 
     let cancelled = false;
@@ -58,9 +84,13 @@ export default function App() {
         const user = await getSessionUser();
         if (cancelled) return;
         setAuthUser(user);
+        await syncDictationAuth(user);
         if (user) await pullCloudSettings();
       } catch {
-        if (!cancelled) setAuthUser(null);
+        if (!cancelled) {
+          setAuthUser(null);
+          await syncDictationAuth(null);
+        }
       } finally {
         if (!cancelled) setAuthReady(true);
       }
@@ -69,6 +99,7 @@ export default function App() {
     const unsub = onAuthChange((u) => {
       setAuthUser(u);
       setAuthReady(true);
+      void syncDictationAuth(u);
     });
     return () => {
       cancelled = true;

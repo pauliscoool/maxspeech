@@ -20,18 +20,21 @@ interface EnhanceEvent {
   enhanced: string;
 }
 
-/** Same bar density as before — not compressed into fewer fat sticks. */
-const BAR_COUNT = 29;
+/** Sized to actually fit inside the narrower pill without clipping/overflow
+ *  against the status label — that mismatch was causing the "weird" layout. */
+const BAR_COUNT = 20;
 const BAR_MAX_PX = 17;
 const BAR_WIDTH_PX = 2;
+const BAR_GAP_PX = 1.8;
 /** Old pill was 218×38. ~20% narrower sides, ~5% less height — not taller. */
 const OVERLAY_W = 174;
 const OVERLAY_H = 36;
-const PILL_OUT_MS = 90;
+const PILL_OUT_MS = 100;
+const CLEAR_BG = [0, 0, 0, 0] as [number, number, number, number];
 const TOAST_W = 220;
 const TOAST_H = 90;
-const TOAST_MS = 1600;
-const TOAST_OUT_MS = 120;
+const TOAST_MS = 1800;
+const TOAST_OUT_MS = 160;
 const LIMIT_W = 292;
 const LIMIT_H = 128;
 const LIMIT_MS = 10000;
@@ -65,7 +68,9 @@ export default function Overlay() {
   }
 
   useEffect(() => {
-    // Warm path: stay visible + click-through while idle so the first hotkey paints instantly.
+    // Warm path: transparent click-through shell stays shown at bottom-center.
+    void ensureScreen();
+    void clearOverlayChrome();
     void resizeForState("idle");
     invoke<string>("get_setting", { key: "show_live_transcript" })
       .then((v) => setShowLive(v !== "false"))
@@ -82,7 +87,7 @@ export default function Overlay() {
     listening.current = true;
     let t0 = performance.now();
     let lastTick = 0;
-    const FRAME_MS = 1000 / 60;
+    const FRAME_MS = 1000 / 30;
     const tick = (now: number) => {
       if (!listening.current) return;
       if (now - lastTick < FRAME_MS) {
@@ -95,11 +100,13 @@ export default function Overlay() {
         smoothed.current.reduce((a, b) => a + b, 0) / smoothed.current.length;
       if (avg < 0.28) {
         const next = smoothed.current.map((v, i) => {
+          // Slow, gentle idle wave — not twitchy.
           const wave =
             0.14 +
-            0.28 * (0.5 + 0.5 * Math.sin(t * 9.5 + i * 0.62)) *
-              (0.55 + 0.45 * Math.sin(t * 4.1 + i * 0.85));
-          return Math.max(v, wave);
+            0.22 * (0.5 + 0.5 * Math.sin(t * 3.6 + i * 0.48)) *
+              (0.55 + 0.45 * Math.sin(t * 1.7 + i * 0.72));
+          // Ease toward the wave instead of snapping up.
+          return v + (Math.max(v, wave) - v) * 0.22;
         });
         smoothed.current = next;
         setLevels([...next]);
@@ -192,12 +199,16 @@ export default function Overlay() {
         void resizeForState("error");
         clearErrorSoon();
       } else if (next === "listening" || next === "processing") {
+        // Cancel any leave animation from a prior session so the pill snaps back.
         setToast(null);
         setToastLeaving(false);
         setPillLeaving(false);
         toastActive.current = false;
         if (toastTimer.current) window.clearTimeout(toastTimer.current);
-        if (pillOutTimer.current) window.clearTimeout(pillOutTimer.current);
+        if (pillOutTimer.current) {
+          window.clearTimeout(pillOutTimer.current);
+          pillOutTimer.current = null;
+        }
         if (limitTimer.current) window.clearTimeout(limitTimer.current);
         if (errorTimer.current) window.clearTimeout(errorTimer.current);
         setError("");
@@ -250,10 +261,10 @@ export default function Overlay() {
                   Math.round((i / Math.max(1, BAR_COUNT - 1)) * Math.max(0, incoming.length - 1))
                 ] ?? 0.08,
               );
-        const target = Math.max(0.08, Math.min(1, src));
+        const target = Math.max(0.06, Math.min(1, src));
         const prev = smoothed.current[i] ?? 0.14;
-        // Snappy rise / quick fall so the pill doesn't feel laggy.
-        const alpha = target > prev ? 0.9 : 0.55;
+        // Responsive enough to show speech, still smoother than raw peaks.
+        const alpha = target > prev ? 0.48 : 0.26;
         const v = prev + (target - prev) * alpha;
         smoothed.current[i] = v;
         return v;
@@ -368,21 +379,21 @@ export default function Overlay() {
         >
           {!showLimit && (
             <div
-              className="flex items-end justify-center flex-1 min-w-[88px]"
-              style={{ gap: "1.5px", height: `${BAR_MAX_PX}px` }}
+              className="flex items-end justify-center flex-1 min-w-0"
+              style={{ gap: `${BAR_GAP_PX}px`, height: `${BAR_MAX_PX}px` }}
             >
               {levels.map((level, i) => {
                 const mid =
                   1 -
                   (Math.abs(i - (BAR_COUNT - 1) / 2) / ((BAR_COUNT - 1) / 2)) * 0.18;
-                const px = Math.max(2, Math.round(level * mid * BAR_MAX_PX));
+                const px = Math.max(2.5, level * mid * BAR_MAX_PX);
                 const isOrange = i % 6 === 3;
                 return (
                   <div
                     key={i}
                     className="liquid-glass-bar shrink-0 origin-bottom"
                     style={{
-                      height: `${px}px`,
+                      height: `${px.toFixed(2)}px`,
                       width: `${BAR_WIDTH_PX}px`,
                       ["--bar-color" as string]: isOrange
                         ? "var(--ms-orange)"
@@ -399,7 +410,7 @@ export default function Overlay() {
             className={`font-medium truncate ${
               showLimit
                 ? "text-[10px] text-white/90 w-full text-center"
-                : "text-[8px] text-white/85 max-w-[72px]"
+                : "text-[8px] text-white/85 max-w-[64px]"
             }`}
           >
             {label}
@@ -415,42 +426,76 @@ function truncate(s: string, n: number) {
   return t.length <= n ? t : t.slice(0, n - 1) + "…";
 }
 
+/** Cached monitor size so hotkey resize doesn't wait on currentMonitor every time. */
+let cachedScreen: { w: number; h: number } | null = null;
+
+async function clearOverlayChrome() {
+  const win = getCurrentWindow();
+  try {
+    await win.setBackgroundColor(CLEAR_BG);
+  } catch {
+    /* ignore */
+  }
+  try {
+    const { getCurrentWebview } = await import("@tauri-apps/api/webview");
+    await getCurrentWebview().setBackgroundColor(CLEAR_BG);
+  } catch {
+    /* ignore */
+  }
+}
+
+async function ensureScreen(): Promise<{ w: number; h: number } | null> {
+  if (cachedScreen) return cachedScreen;
+  const monitor = await currentMonitor();
+  if (!monitor) return null;
+  const scale = monitor.scaleFactor;
+  cachedScreen = {
+    w: monitor.size.width / scale,
+    h: monitor.size.height / scale,
+  };
+  return cachedScreen;
+}
+
 async function positionBottomCenter(w: number, h: number) {
   try {
     const win = getCurrentWindow();
-    const monitor = await currentMonitor();
-    if (!monitor) return;
-    const scale = monitor.scaleFactor;
-    const screenW = monitor.size.width / scale;
-    const screenH = monitor.size.height / scale;
-    const clear = [0, 0, 0, 0] as [number, number, number, number];
-    await win.setBackgroundColor(clear).catch(() => {});
-    await win.setSize(new LogicalSize(w, h));
-    await win.setPosition(
-      new LogicalPosition((screenW - w) / 2, screenH - h - 48),
-    );
-    await win.setAlwaysOnTop(true);
+    const screen = await ensureScreen();
+    if (!screen) return;
+    // Fire size/position/always-on-top together — don't serialize chrome clears.
+    void clearOverlayChrome();
+    await Promise.all([
+      win.setSize(new LogicalSize(w, h)),
+      win.setPosition(
+        new LogicalPosition((screen.w - w) / 2, screen.h - h - 48),
+      ),
+      win.setAlwaysOnTop(true),
+    ]);
   } catch (e) {
     console.error("Failed to position overlay", e);
   }
 }
 
-/** Keep the overlay WebView shown (never hide) so Windows doesn't cold-wake it on hotkey. */
+/** Keep the overlay WebView shown (never hide) so Windows doesn't cold-wake it on hotkey.
+ *  Idle parks off-screen — avoids a visible strip if DWM fails to composite alpha. */
 async function resizeForState(state: DictationState, withToast = false) {
   try {
     const win = getCurrentWindow();
-    const clear = [0, 0, 0, 0] as [number, number, number, number];
-    await win.setBackgroundColor(clear).catch(() => {});
-    // Idle = transparent click-through shell at bottom-center (keeps WebView warm).
+    void clearOverlayChrome();
     if (state === "idle" && !withToast) {
-      await positionBottomCenter(OVERLAY_W, OVERLAY_H);
-      await win.setIgnoreCursorEvents(true).catch(() => {});
-      await win.show();
+      await Promise.all([
+        win.setIgnoreCursorEvents(true).catch(() => {}),
+        win.setSize(new LogicalSize(1, 1)),
+        win.setPosition(new LogicalPosition(-40_000, -40_000)),
+        win.show(),
+      ]);
       return;
     }
     const needsClicks = state === "limit" || withToast;
-    await win.setIgnoreCursorEvents(!needsClicks).catch(() => {});
-    await win.show();
+    // Place + show immediately — Rust also snaps here on hotkey for consistency.
+    await Promise.all([
+      win.setIgnoreCursorEvents(!needsClicks).catch(() => {}),
+      win.show(),
+    ]);
     if (state === "limit") {
       await positionBottomCenter(LIMIT_W, LIMIT_H);
     } else if (withToast) {

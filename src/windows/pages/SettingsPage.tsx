@@ -80,6 +80,9 @@ export default function SettingsPage({
   const [showLive, setShowLive] = useState(true);
   const [aiEnhance, setAiEnhance] = useState(true);
   const [soundCue, setSoundCue] = useState(false);
+  const [soundCueVolume, setSoundCueVolume] = useState<"soft" | "medium" | "loud">(
+    "medium",
+  );
   const [insertSpace, setInsertSpace] = useState(true);
   const [hotkey, setHotkey] = useState(defaultHotkey());
   const [hotkeyMode, setHotkeyMode] = useState<"hold" | "toggle">("hold");
@@ -208,6 +211,11 @@ export default function SettingsPage({
       setAiEnhance(enhance !== "false");
       const sound = await invoke<string>("get_setting", { key: "sound_cue" });
       setSoundCue(sound === "true");
+      const soundVol = await invoke<string>("get_setting", { key: "sound_cue_volume" });
+      const volNorm = (soundVol || "medium").toLowerCase();
+      setSoundCueVolume(
+        volNorm === "soft" || volNorm === "loud" ? volNorm : "medium",
+      );
       const space = await invoke<string>("get_setting", { key: "trailing_space" });
       setInsertSpace(space !== "false");
       const theme = await invoke<string>("get_setting", { key: "ui_theme" });
@@ -880,12 +888,57 @@ export default function SettingsPage({
             checked={insertSpace}
             onChange={() => toggleBool("trailing_space", insertSpace, setInsertSpace)}
           />
-          <SettingsToggle
-            title="Start / stop sound"
-            desc="Soft cue when dictation starts and stops"
-            checked={soundCue}
-            onChange={() => toggleBool("sound_cue", soundCue, setSoundCue)}
-          />
+          <div className="settings-row">
+            <div className="settings-row-text">
+              <div className="settings-row-title">Start / stop sound</div>
+              <div className="settings-row-desc">
+                Custom liquid-glass chime when dictation starts and stops
+              </div>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              {soundCue ? (
+                <select
+                  className="sound-cue-volume"
+                  value={soundCueVolume}
+                  aria-label="Sound cue volume"
+                  onChange={(e) => {
+                    const next = e.target.value as "soft" | "medium" | "loud";
+                    setSoundCueVolume(next);
+                    void invoke("set_setting", {
+                      key: "sound_cue_volume",
+                      value: next,
+                    }).then(() => {
+                      void pushCloudSettings();
+                      void invoke("preview_sound_cue", { volume: next });
+                    });
+                  }}
+                >
+                  <option value="soft">Soft</option>
+                  <option value="medium">Medium</option>
+                  <option value="loud">Loud</option>
+                </select>
+              ) : null}
+              <Toggle
+                checked={soundCue}
+                onChange={() => {
+                  const next = !soundCue;
+                  setSoundCue(next);
+                  void invoke("set_setting", {
+                    key: "sound_cue",
+                    value: next ? "true" : "false",
+                  }).then(() => {
+                    void pushCloudSettings();
+                    if (next) {
+                      void invoke("preview_sound_cue", {
+                        volume: soundCueVolume,
+                      });
+                    }
+                  });
+                }}
+                label="Start / stop sound"
+              />
+            </div>
+          </div>
           <SettingsToggle
             title="Multilingual"
             desc={

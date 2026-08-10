@@ -1,5 +1,12 @@
 {
   "cleanUrls": true,
+  "redirects": [
+    {
+      "source": "/downloads/MaxSpeech_:version(\\d+\\.\\d+\\.\\d+)_x64-setup.exe",
+      "destination": "/downloads/MaxSpeech_x64-setup.exe",
+      "permanent": false
+    }
+  ],
   "headers": [
     {
       "source": "/downloads/(.*\\.exe)",

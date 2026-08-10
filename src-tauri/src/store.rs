@@ -575,6 +575,8 @@ impl Store {
         for key in [
             "user_name",
             "plan_tier",
+            "account_email",
+            "dictation_unlocked",
             "deepgram_api_key",
             "llm_api_key",
             "api_key",

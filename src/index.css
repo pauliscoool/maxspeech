@@ -155,30 +155,36 @@
 html, body, #root {
   height: 100%;
   margin: 0;
+  background: var(--ms-bg);
+  background-color: var(--ms-bg);
 }
 
 body {
   font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
-  /* Transparent by default (WebView2 otherwise paints white behind the pill). */
-  background: transparent;
+  background: var(--ms-bg);
   color: var(--ms-text);
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
   font-size: 14.5px; /* ~15% tighter feel with smaller window */
   transition: background-color 0.2s ease, color 0.2s ease;
 }
 
-/* Only paint solid chrome for main windows — never the overlay. */
-html[data-window="shell"] body,
-html[data-window="onboarding"] body {
-  background: var(--ms-bg) !important;
-}
-
-/* Overlay window: fully clear chrome so only the pill/toast shows */
+/* Overlay: fully clear chrome so only the pill/toast shows. */
 html[data-window="overlay"],
 html[data-window="overlay"] body,
 html[data-window="overlay"] #root {
   background: transparent !important;
   background-color: transparent !important;
+}
+html[data-window="overlay"] body {
+  transition: none !important;
+}
+
+/* Solid chrome for main windows — never the overlay. */
+html[data-window="shell"] body,
+html[data-window="onboarding"] body {
+  background: var(--ms-bg) !important;
 }
 
 .page-enter {
@@ -220,16 +226,17 @@ html[data-window="overlay"] #root {
   border: none;
   background: linear-gradient(
     180deg,
-    rgba(255, 255, 255, 0.55) 0%,
-    var(--bar-hi, #99f6e4) 28%,
+    rgba(255, 255, 255, 0.5) 0%,
+    var(--bar-hi, #99f6e4) 30%,
     var(--bar-color, var(--ms-turquoise)) 100%
   );
+  /* Soft edges via rounded caps + glow — never filter:blur (blurs the whole UI). */
   box-shadow:
-    0 0 10px color-mix(in srgb, var(--bar-color, var(--ms-turquoise)) 45%, transparent),
-    inset 0 1px 0 rgba(255, 255, 255, 0.45),
-    inset 0 -2px 4px rgba(0, 0, 0, 0.2);
-  transition: height 20ms linear;
-  opacity: 0.98;
+    0 0 6px color-mix(in srgb, var(--bar-color, var(--ms-turquoise)) 40%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.4),
+    inset 0 -1px 3px rgba(0, 0, 0, 0.18);
+  transition: height 90ms cubic-bezier(0.33, 1, 0.68, 1);
+  opacity: 0.96;
   will-change: height;
 }
 
@@ -383,13 +390,13 @@ html[data-window="overlay"] #root {
 }
 
 .liquid-glass-pill--out {
-  animation: overlayPillOut 0.08s ease-in both;
+  animation: overlayPillOut 0.1s cubic-bezier(0.4, 0, 0.2, 1) both;
 }
 
 @keyframes overlayPillIn {
   from {
     opacity: 0;
-    transform: translateY(8px) scale(0.96);
+    transform: translateY(6px) scale(0.98);
   }
   to {
     opacity: 1;
@@ -404,7 +411,7 @@ html[data-window="overlay"] #root {
   }
   to {
     opacity: 0;
-    transform: translateY(7px) scale(0.96);
+    transform: translateY(5px) scale(0.98);
   }
 }
 
@@ -521,11 +528,11 @@ html[data-window="overlay"] #root {
 }
 
 .enhance-toast--in {
-  animation: enhanceToastIn 0.22s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: enhanceToastIn 0.3s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
 .enhance-toast--out {
-  animation: enhanceToastOut 0.14s ease-in both;
+  animation: enhanceToastOut 0.22s cubic-bezier(0.4, 0, 0.2, 1) both;
 }
 
 @keyframes enhanceToastIn {
@@ -694,6 +701,33 @@ html[data-window="overlay"] #root {
 .settings-row-stack {
   flex-direction: column;
   align-items: stretch;
+}
+
+.sound-cue-volume {
+  appearance: none;
+  -webkit-appearance: none;
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: var(--ms-text);
+  background: var(--ms-fill-muted);
+  border: 1px solid color-mix(in srgb, var(--ms-turquoise) 28%, transparent);
+  border-radius: 999px;
+  padding: 0.28rem 1.55rem 0.28rem 0.7rem;
+  cursor: pointer;
+  outline: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--ms-text-dim) 50%),
+    linear-gradient(135deg, var(--ms-text-dim) 50%, transparent 50%);
+  background-position: calc(100% - 12px) 55%, calc(100% - 7px) 55%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+
+.sound-cue-volume:hover {
+  border-color: color-mix(in srgb, var(--ms-turquoise) 55%, transparent);
+}
+
+.sound-cue-volume:focus-visible {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ms-turquoise) 35%, transparent);
 }
 
 .mic-device-list {

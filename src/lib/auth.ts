@@ -58,7 +58,7 @@ function clearLocalUser(): void {
 export async function signInLocal(): Promise<AuthUser> {
   clearLocalUser();
   writeLocalUser(LOCAL_USER);
-  await persistAccountEmail(LOCAL_USER.email);
+  await unlockDictation(LOCAL_USER.email);
   return LOCAL_USER;
 }
 
@@ -72,7 +72,7 @@ export async function getSessionUser(): Promise<AuthUser | null> {
       u.email ?? "",
       (u.user_metadata?.username as string | undefined) ?? null,
     );
-    await persistAccountEmail(profile.email);
+    await unlockDictation(profile.email);
     return {
       id: profile.id,
       email: profile.email,
@@ -83,9 +83,10 @@ export async function getSessionUser(): Promise<AuthUser | null> {
 
   const local = readLocalUser();
   if (local) {
-    await persistAccountEmail(local.email);
+    await unlockDictation(local.email);
     return local;
   }
+  await lockDictation();
   return null;
 }
 
@@ -171,7 +172,7 @@ export async function signUp(
   }
 
   const profile = await ensureProfile(data.user.id, cleanEmail, cleanUser);
-  await persistAccountEmail(profile.email);
+  await unlockDictation(profile.email);
   await pushCloudSettings();
   return {
     user: {
@@ -207,7 +208,7 @@ export async function signIn(
     data.user.email ?? email,
     (data.user.user_metadata?.username as string | undefined) ?? null,
   );
-  await persistAccountEmail(profile.email);
+  await unlockDictation(profile.email);
   await pullCloudSettings();
   return {
     id: profile.id,
@@ -219,12 +220,7 @@ export async function signIn(
 
 export async function signOut(): Promise<void> {
   clearLocalUser();
-  try {
-    const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("set_setting", { key: "account_email", value: "" });
-  } catch {
-    /* ignore */
-  }
+  await lockDictation();
   await supabase.auth.signOut();
 }
 
@@ -237,6 +233,27 @@ async function persistAccountEmail(email: string): Promise<void> {
     });
   } catch {
     /* ignore when not in Tauri */
+  }
+}
+
+/** Unlock (or lock) the Rust hotkey gate. Login screen must call lockDictation(). */
+export async function unlockDictation(email: string): Promise<void> {
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await persistAccountEmail(email);
+    await invoke("set_setting", { key: "dictation_unlocked", value: "true" });
+  } catch {
+    /* ignore */
+  }
+}
+
+export async function lockDictation(): Promise<void> {
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("set_setting", { key: "dictation_unlocked", value: "false" });
+    await invoke("set_setting", { key: "account_email", value: "" });
+  } catch {
+    /* ignore */
   }
 }
 
@@ -255,7 +272,13 @@ export function onAuthChange(cb: (user: AuthUser | null) => void): () => void {
     void (async () => {
       if (!session?.user) {
         const local = readLocalUser();
-        cb(local);
+        if (local) {
+          await unlockDictation(local.email);
+          cb(local);
+        } else {
+          await lockDictation();
+          cb(null);
+        }
         return;
       }
       try {
@@ -265,7 +288,7 @@ export function onAuthChange(cb: (user: AuthUser | null) => void): () => void {
           session.user.email ?? "",
           (session.user.user_metadata?.username as string | undefined) ?? null,
         );
-        await persistAccountEmail(profile.email);
+        await unlockDictation(profile.email);
         cb({
           id: profile.id,
           email: profile.email,
@@ -273,7 +296,14 @@ export function onAuthChange(cb: (user: AuthUser | null) => void): () => void {
           planTier: profile.plan_tier,
         });
       } catch {
-        cb(readLocalUser());
+        const local = readLocalUser();
+        if (local) {
+          await unlockDictation(local.email);
+          cb(local);
+        } else {
+          await lockDictation();
+          cb(null);
+        }
       }
     })();
   });

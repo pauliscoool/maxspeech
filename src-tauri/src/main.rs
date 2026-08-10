@@ -9,6 +9,7 @@ mod plan;
 mod profiles;
 mod recording;
 mod secrets;
+mod sound;
 mod store;
 mod stt;
 
@@ -378,6 +379,21 @@ async fn open_settings_page(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Preview the custom dictation cue at the given volume (or saved setting).
+#[tauri::command]
+async fn preview_sound_cue(app: tauri::AppHandle, volume: Option<String>) -> Result<(), String> {
+    let store = app.state::<Store>();
+    let label = volume.or_else(|| {
+        store
+            .get_setting("sound_cue_volume")
+            .ok()
+            .flatten()
+    });
+    let vol = sound::volume_from_setting(label.as_deref());
+    sound::play_cue(sound::CueKind::Start, vol);
+    Ok(())
+}
+
 /// Download the latest installer from `url`, emit progress, then launch it.
 /// Used when the signed Tauri updater isn't available yet.
 #[tauri::command]
@@ -604,6 +620,7 @@ fn main() {
             get_plan_status,
             set_plan_tier,
             open_settings_page,
+            preview_sound_cue,
             download_and_run_installer,
             remake_dictation,
         ])
@@ -699,19 +716,26 @@ fn main() {
 
 fn open_window(app: &tauri::AppHandle, label: &str, title: &str, width: u32, height: u32) {
     if let Some(w) = app.get_webview_window(label) {
+        // Keep main chrome opaque — transparent shells look soft/blurry under DWM.
+        if label != "overlay" {
+            let _ = w.set_background_color(Some(tauri::window::Color(0, 0, 0, 255)));
+        }
         let _ = w.show();
         let _ = w.set_focus();
         return;
     }
-    let _ = WebviewWindowBuilder::new(app, label, WebviewUrl::default())
+    let mut builder = WebviewWindowBuilder::new(app, label, WebviewUrl::default())
         .title(title)
         .inner_size(width as f64, height as f64)
-        .center()
-        .build();
+        .center();
+    if label != "overlay" {
+        builder = builder.background_color(tauri::window::Color(0, 0, 0, 255));
+    }
+    let _ = builder.build();
 }
 
 fn clear_overlay_background(w: &tauri::WebviewWindow) {
-    // WebView2 defaults to opaque white — force alpha 0 on both layers.
+    // WebView2 defaults to opaque white — force alpha 0 so only the pill shows.
     let clear = tauri::window::Color(0, 0, 0, 0);
     let _ = w.set_background_color(Some(clear));
 }
@@ -721,21 +745,16 @@ fn position_overlay(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("overlay") {
         clear_overlay_background(&w);
         let _ = w.set_shadow(false);
+        // Park off-screen but keep shown — hide() cold-wakes WebView2 on hotkey.
         let _ = w.set_size(Size::Logical(LogicalSize {
-            width: 174.0,
-            height: 36.0,
+            width: 1.0,
+            height: 1.0,
         }));
-        if let Ok(Some(monitor)) = w.current_monitor() {
-            let scale = monitor.scale_factor();
-            let size = monitor.size();
-            let screen_w = size.width as f64 / scale;
-            let screen_h = size.height as f64 / scale;
-            let x = (screen_w - 174.0) / 2.0;
-            let y = screen_h - 36.0 - 48.0;
-            let _ = w.set_position(Position::Logical(LogicalPosition { x, y }));
-        }
+        let _ = w.set_position(Position::Logical(LogicalPosition {
+            x: -40_000.0,
+            y: -40_000.0,
+        }));
         let _ = w.set_always_on_top(true);
-        // Stay shown + click-through so WebView2 stays warm for instant hotkey paint.
         let _ = w.set_ignore_cursor_events(true);
         let _ = w.show();
 

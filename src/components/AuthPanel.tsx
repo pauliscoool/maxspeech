@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { signIn, signInLocal, signUp, type AuthUser } from "../lib/auth";
+import { useState, useEffect } from "react";
+import { signIn, signInLocal, signUp, lockDictation, type AuthUser } from "../lib/auth";
 
 export default function AuthPanel({
   onAuthed,
@@ -13,6 +13,11 @@ export default function AuthPanel({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [info, setInfo] = useState("");
+
+  // Login screen visible → hotkey must not dictate.
+  useEffect(() => {
+    void lockDictation();
+  }, []);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();

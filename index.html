@@ -4,13 +4,35 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>MaxSpeech</title>
+    <script>
+      // Sync before first paint — overlay URL is index.html?window=overlay so
+      // chrome is transparent before React mounts.
+      (function () {
+        try {
+          var w = new URLSearchParams(location.search).get("window");
+          if (w === "overlay" || /overlay/i.test(document.title)) {
+            document.documentElement.setAttribute("data-window", "overlay");
+          }
+        } catch (_) {}
+      })();
+    </script>
     <style>
-      /* First-paint safety: never let WebView2 show its default white page fill */
+      /* First paint: shell must be opaque or Windows DWM soft-blurs the whole window. */
       html, body, #root {
-        background: transparent !important;
-        background-color: transparent !important;
         margin: 0;
         height: 100%;
+        background: #000000;
+        background-color: #000000;
+      }
+      /* Overlay: fully transparent chrome — only the pill/toast is visible. */
+      html[data-window="overlay"],
+      html[data-window="overlay"] body,
+      html[data-window="overlay"] #root {
+        background: transparent !important;
+        background-color: transparent !important;
+      }
+      html[data-window="overlay"] body {
+        transition: none !important;
       }
     </style>
   </head>

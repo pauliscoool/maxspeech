@@ -17,17 +17,27 @@ $tauriExit = $LASTEXITCODE
 
 $nsis = Join-Path $root "src-tauri\target\release\bundle\nsis\MaxSpeech_${ver}_x64-setup.exe"
 $webDl = Join-Path $root "website\downloads\MaxSpeech_${ver}_x64-setup.exe"
+# Stable, version-less filename — windows.html and latest.json always point here so
+# every old link (and the update button) resolves to whatever was built last, never
+# a stale pinned version.
+$webDlStable = Join-Path $root "website\downloads\MaxSpeech_x64-setup.exe"
 if (-not (Test-Path $nsis)) {
   Write-Error "Installer not found at $nsis (tauri exit=$tauriExit)"
 }
 New-Item -ItemType Directory -Force -Path (Split-Path $webDl) | Out-Null
 Copy-Item -Force $nsis $webDl
+Copy-Item -Force $nsis $webDlStable
 
 $manifest = @{
   version = $ver
   notes   = "MaxSpeech $ver"
-  url     = "https://maxspeech.vercel.app/downloads/MaxSpeech_${ver}_x64-setup.exe"
+  url     = "https://maxspeech.vercel.app/downloads/MaxSpeech_x64-setup.exe"
   github  = "https://github.com/pauliscoool/maxspeech/releases/latest"
+  platforms = @{
+    windows = "https://maxspeech.vercel.app/downloads/MaxSpeech_x64-setup.exe"
+    macos   = "https://maxspeech.vercel.app/mac"
+    linux   = "https://maxspeech.vercel.app/downloads/MaxSpeech_0.1.1_amd64.AppImage"
+  }
 } | ConvertTo-Json
 $manifestDir = Join-Path $root "website\updates"
 New-Item -ItemType Directory -Force -Path $manifestDir | Out-Null
@@ -36,8 +46,11 @@ Set-Content -Path (Join-Path $manifestDir "latest.json") -Value $manifest -Encod
 Write-Host ""
 Write-Host "Installer ready:" -ForegroundColor Green
 Write-Host "  $nsis"
-Write-Host "  $webDl"
+Write-Host "  $webDl (archived, old link)"
+Write-Host "  $webDlStable (canonical — windows.html + latest.json point here)"
 Write-Host "  website\updates\latest.json"
+Write-Host ""
+Write-Host "Next: from website/, run 'vercel deploy --prod -y' then 'vercel alias set <url> maxspeech.vercel.app'." -ForegroundColor Cyan
 if ($tauriExit -ne 0) {
   Write-Host "Note: tauri exited $tauriExit (often updater signing). Installer above is still usable." -ForegroundColor Yellow
 }

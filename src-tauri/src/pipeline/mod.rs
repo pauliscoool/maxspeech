@@ -48,15 +48,60 @@ impl Default for PipelineState {
     }
 }
 
+fn focus_login_ui(app: &tauri::AppHandle) {
+    for label in ["settings", "onboarding", "main"] {
+        if let Some(w) = app.get_webview_window(label) {
+            let _ = w.show();
+            let _ = w.set_focus();
+            return;
+        }
+    }
+}
+
 fn show_overlay_fast(app: &tauri::AppHandle) {
+    use tauri::{LogicalPosition, LogicalSize, Position, Size};
     if let Some(w) = app.get_webview_window("overlay") {
-        // Kill WebView2's default white fill before the window becomes visible.
+        // Transparent chrome — only the React pill paints pixels.
         let _ = w.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
         let _ = w.set_shadow(false);
         let _ = w.set_ignore_cursor_events(true);
-        let _ = w.show();
+        // Keep size/position ready so the first hotkey doesn't wait on JS layout.
+        let _ = w.set_size(Size::Logical(LogicalSize {
+            width: 174.0,
+            height: 36.0,
+        }));
+        if let Ok(Some(monitor)) = w.current_monitor() {
+            let scale = monitor.scale_factor();
+            let size = monitor.size();
+            let screen_w = size.width as f64 / scale;
+            let screen_h = size.height as f64 / scale;
+            let x = (screen_w - 174.0) / 2.0;
+            let y = screen_h - 36.0 - 48.0;
+            let _ = w.set_position(Position::Logical(LogicalPosition { x, y }));
+        }
         let _ = w.set_always_on_top(true);
+        let _ = w.show();
     }
+}
+
+fn is_signed_in(store: &Store) -> bool {
+    // Must be explicitly unlocked by the UI after a real login / Continue locally.
+    // Stale account_email alone must not allow hotkey dictation on the login screen.
+    let unlocked = store
+        .get_setting("dictation_unlocked")
+        .ok()
+        .flatten()
+        .map(|v| v == "true")
+        .unwrap_or(false);
+    if !unlocked {
+        return false;
+    }
+    store
+        .get_setting("account_email")
+        .ok()
+        .flatten()
+        .map(|e| !e.trim().is_empty())
+        .unwrap_or(false)
 }
 
 pub fn start_dictation(app: &tauri::AppHandle) {
@@ -69,9 +114,25 @@ pub fn start_dictation(app: &tauri::AppHandle) {
         *active = true;
     }
 
+    // Require sign-in (cloud or Continue locally) before any mic / STT work.
+    if !app
+        .try_state::<Store>()
+        .map(|s| is_signed_in(&s))
+        .unwrap_or(false)
+    {
+        *state.active.lock().unwrap() = false;
+        let _ = app.emit("dictation-error", "Sign in to use dictation");
+        let _ = app.emit("dictation-state", "error");
+        show_overlay_fast(app);
+        // Bring the login UI forward so the hotkey isn't a silent no-op.
+        focus_login_ui(app);
+        return;
+    }
+
     // Paint the listening pill immediately — before SQLite / mic / Deepgram work.
     let _ = app.emit("dictation-state", "listening");
     show_overlay_fast(app);
+    play_sound_cue(app, crate::sound::CueKind::Start);
 
     // Weekly word limit: hard stop when plan quota is exhausted (Mon 00:00 UTC reset).
     let plan_status = app
@@ -282,11 +343,11 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                 let state = app_handle.state::<PipelineState>();
                 *state.session_pcm.lock().unwrap() = None;
             }
-            let _ = app_handle.emit("dictation-state", "idle");
+            emit_state_if_current(&app_handle, paste_token, "idle");
             return;
         }
 
-        let _ = app_handle.emit("dictation-state", "processing");
+        emit_state_if_current(&app_handle, paste_token, "processing");
 
         let fg = context::get_foreground_app();
         let app_name = fg
@@ -302,7 +363,7 @@ pub fn start_dictation(app: &tauri::AppHandle) {
             };
             if !still_current {
                 log::info!("Skipping command inject for stale paste={paste_token}");
-                let _ = app_handle.emit("dictation-state", "idle");
+                // Do not emit idle — a newer listening session may already own the UI.
                 return;
             }
             match cmd_result {
@@ -425,7 +486,7 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                 log::info!(
                     "Skipping paste for stale session paste={paste_token} (newer dictation started)"
                 );
-                let _ = app_handle.emit("dictation-state", "idle");
+                // Do not emit idle — that would hide the newer session's listening pill.
                 return;
             }
 
@@ -479,17 +540,52 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                 );
             }
 
-            let _ = app_handle.emit("dictation-state", "done");
+            emit_state_if_current(&app_handle, paste_token, "done");
             let dismiss_ms = if show_enhance_toast { 3200 } else { 2000 };
             tokio::time::sleep(tokio::time::Duration::from_millis(dismiss_ms)).await;
-            let _ = app_handle.emit("dictation-state", "idle");
+            emit_state_if_current(&app_handle, paste_token, "idle");
             return;
         }
 
-        let _ = app_handle.emit("dictation-state", "done");
+        emit_state_if_current(&app_handle, paste_token, "done");
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-        let _ = app_handle.emit("dictation-state", "idle");
+        emit_state_if_current(&app_handle, paste_token, "idle");
     });
+}
+
+/// Only the current paste epoch may drive overlay state — prevents a finishing
+/// session from flipping a newer listening UI to idle (hotkey "stuck" feel).
+fn emit_state_if_current(app: &tauri::AppHandle, paste_token: u64, state: &str) {
+    let pipeline = app.state::<PipelineState>();
+    let current = *pipeline.paste_epoch.lock().unwrap();
+    if current == paste_token {
+        let _ = app.emit("dictation-state", state);
+    } else {
+        log::debug!("Skip stale dictation-state '{state}' paste={paste_token} current={current}");
+    }
+}
+
+fn play_sound_cue(app: &tauri::AppHandle, kind: crate::sound::CueKind) {
+    let Some(store) = app.try_state::<Store>() else {
+        return;
+    };
+    let enabled = store
+        .get_setting("sound_cue")
+        .ok()
+        .flatten()
+        .map(|v| v == "true")
+        .unwrap_or(false);
+    if !enabled {
+        return;
+    }
+    let vol = crate::sound::volume_from_setting(
+        store
+            .get_setting("sound_cue_volume")
+            .ok()
+            .flatten()
+            .as_deref(),
+    );
+    crate::sound::play_cue(kind, vol);
 }
 
 pub fn stop_dictation(app: &tauri::AppHandle) {
@@ -500,6 +596,7 @@ pub fn stop_dictation(app: &tauri::AppHandle) {
     }
     *active = false;
     drop(active);
+    play_sound_cue(app, crate::sound::CueKind::Stop);
 
     let elapsed = state
         .started_at
@@ -507,22 +604,32 @@ pub fn stop_dictation(app: &tauri::AppHandle) {
         .unwrap()
         .map(|t| t.elapsed().as_secs_f64());
     *state.started_at.lock().unwrap() = None;
-    {
+    let stop_gen = {
         let mut gen = state.session_gen.lock().unwrap();
         *gen = gen.wrapping_add(1);
-    }
+        *gen
+    };
 
-    state.audio_capture.lock().unwrap().stop();
-    // session_pcm is taken when history is saved (or cleared on empty transcript).
-
-    if let Some(tx) = state.stop_tx.lock().unwrap().take() {
-        let _ = tx.try_send(());
-    }
+    // Keep the mic open briefly so the last syllables aren't chopped when the
+    // hotkey is released mid-word. Then signal Deepgram CloseStream.
+    let stop_tx = state.stop_tx.lock().unwrap().take();
+    let app_trail = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(350)).await;
+        let state = app_trail.state::<PipelineState>();
+        // Don't tear down a newer session that started during the trail.
+        if !*state.active.lock().unwrap() && *state.session_gen.lock().unwrap() == stop_gen {
+            state.audio_capture.lock().unwrap().stop();
+        }
+        if let Some(tx) = stop_tx {
+            let _ = tx.try_send(());
+        }
+    });
 
     if let Some(secs) = elapsed {
-        log::info!("Dictation stopped after {secs:.1}s");
+        log::info!("Dictation stopped after {secs:.1}s (350ms trail)");
     } else {
-        log::info!("Dictation stopped");
+        log::info!("Dictation stopped (350ms trail)");
     }
 }
 

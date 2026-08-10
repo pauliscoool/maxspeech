@@ -10,8 +10,9 @@ use crate::secrets;
 static LAST_GOOD_KEY: Mutex<Option<String>> = Mutex::new(None);
 
 /// High-value English terms that ASR often mangles; merged with the user dictionary as keyterms.
+/// NOTE: deliberately does NOT include "MaxSpeech" — boosting the app's own name
+/// biases ASR toward hearing it for near-homophones (e.g. "Maximus Dev" → "MaxSpeech").
 const BUILTIN_KEYTERMS: &[&str] = &[
-    "MaxSpeech",
     "Deepgram",
     "Supabase",
     "Tauri",
@@ -246,13 +247,10 @@ type WsStream = tokio_tungstenite::WebSocketStream<
 >;
 
 fn build_url(config: &DeepgramConfig) -> String {
-    // endpointing=400: default 10ms is too eager on quiet pauses / distant speech;
-    // wait ~400ms of silence before speech_final so soft utterances stay intact.
-    // Multilingual code-switching prefers a shorter endpointing window (Deepgram docs).
-    // Deepgram suggests 100ms for code-switch; 100 was fragmenting English phrases
-    // into worse guesses ("build"→"blood"). 250 keeps switches responsive without
-    // chopping mid-word as aggressively.
-    let endpointing = if config.language == "multi" { 250 } else { 400 };
+    // endpointing: wait for a short silence before speech_final.
+    // Keep this moderate — too low chops quiet ends; too high feels laggy.
+    // Quiet speakers benefit from a slightly longer window so soft endings land.
+    let endpointing = if config.language == "multi" { 300 } else { 500 };
     let mut url = format!(
         "wss://api.deepgram.com/v1/listen?model={}&language={}&punctuate=true&interim_results=true&smart_format=true&numerals=true&endpointing={}&encoding=linear16&sample_rate=16000&channels=1",
         config.model, config.language, endpointing
@@ -400,6 +398,27 @@ pub async fn stream_audio(
                     }
                 }
                 _ = stop_rx.recv() => {
+                    // Drain trailing PCM (hotkey-release trail + in-flight chunks)
+                    // before CloseStream so Deepgram still hears word endings.
+                    loop {
+                        match tokio::time::timeout(
+                            std::time::Duration::from_millis(100),
+                            audio_rx.recv(),
+                        )
+                        .await
+                        {
+                            Ok(Some(audio_chunk)) => {
+                                let bytes: Vec<u8> = audio_chunk
+                                    .iter()
+                                    .flat_map(|&s| s.to_le_bytes())
+                                    .collect();
+                                if write.send(Message::Binary(bytes.into())).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Ok(None) | Err(_) => break,
+                        }
+                    }
                     let _ = write.send(Message::Text(r#"{"type":"CloseStream"}"#.into())).await;
                     break;
                 }

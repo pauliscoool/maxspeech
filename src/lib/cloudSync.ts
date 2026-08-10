@@ -8,6 +8,7 @@ export const SYNC_SETTING_KEYS = [
   "ai_enhance",
   "trailing_space",
   "sound_cue",
+  "sound_cue_volume",
   "ui_theme",
   "plan_tier",
   "stt_multilingual",

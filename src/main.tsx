@@ -7,7 +7,8 @@ import "./index.css";
 // Mark window role before first paint so CSS can keep overlay clear
 // and paint solid chrome only for shell/onboarding.
 try {
-  const label = getCurrentWindow().label;
+  const fromQuery = new URLSearchParams(window.location.search).get("window");
+  const label = fromQuery || getCurrentWindow().label;
   if (label === "overlay") {
     document.documentElement.setAttribute("data-window", "overlay");
   } else if (label === "onboarding") {
