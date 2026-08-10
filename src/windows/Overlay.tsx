@@ -30,7 +30,7 @@ const BAR_GAP_PX = 1.8;
 const OVERLAY_W = 174;
 const OVERLAY_H = 36;
 const PILL_OUT_MS = 100;
-const CLEAR_BG = [0, 0, 0, 0] as [number, number, number, number];
+const CLEAR_BG = [18, 18, 18, 0] as [number, number, number, number];
 const TOAST_W = 220;
 const TOAST_H = 90;
 const TOAST_MS = 1800;
@@ -60,10 +60,11 @@ export default function Overlay() {
 
   function hidePillSoon() {
     if (pillOutTimer.current) window.clearTimeout(pillOutTimer.current);
+    // Park off-screen first so any leave fade never reveals WebView2 chrome.
+    void resizeForState("idle");
     setPillLeaving(true);
     pillOutTimer.current = window.setTimeout(() => {
       setPillLeaving(false);
-      void resizeForState("idle");
     }, PILL_OUT_MS);
   }
 
@@ -158,9 +159,9 @@ export default function Overlay() {
     setError("");
     void resizeForState("idle");
     try {
-      await invoke("open_settings_page");
+      await invoke("open_plans_modal");
     } catch (e) {
-      console.error("Failed to open settings", e);
+      console.error("Failed to open plans", e);
     }
   }
 
@@ -283,17 +284,18 @@ export default function Overlay() {
 
   const showToast = !!toast;
   const showLimit = state === "limit";
+  // Keep the pill mounted even while idle (parked off-screen). Unmounting left
+  // an empty transparent root; Rust show_overlay_fast could reveal WebView2
+  // white for a frame before React remounted the charcoal pill.
   const showPill =
-    showLimit ||
-    state === "listening" ||
-    state === "processing" ||
-    state === "done" ||
-    state === "error" ||
-    pillLeaving;
-
-  if (state === "idle" && !showToast && !pillLeaving) {
-    return <div className="overlay-root" />;
-  }
+    !showToast &&
+    (showLimit ||
+      state === "listening" ||
+      state === "processing" ||
+      state === "done" ||
+      state === "error" ||
+      state === "idle" ||
+      pillLeaving);
 
   const statusLabel =
     state === "listening"
@@ -306,7 +308,9 @@ export default function Overlay() {
             ? "Weekly limit reached"
             : state === "error"
               ? "Error"
-              : "";
+              : state === "idle"
+                ? "Listening…"
+                : "";
 
   const label =
     state === "limit"
@@ -316,6 +320,14 @@ export default function Overlay() {
   const snippet = toast
     ? truncate(toast.original, 36) + " → " + truncate(toast.enhanced, 36)
     : "";
+
+  const pillActive =
+    state === "listening" ||
+    state === "processing" ||
+    state === "done" ||
+    state === "error" ||
+    showLimit ||
+    pillLeaving;
 
   return (
     <div
@@ -341,7 +353,7 @@ export default function Overlay() {
           </div>
           <div className="min-w-0 flex-1 text-left">
             <div className="enhance-toast-title">Subscribe to a higher tier</div>
-            <div className="enhance-toast-sub">Open Settings to upgrade your plan</div>
+            <div className="enhance-toast-sub">Tap to choose a plan</div>
           </div>
         </button>
       )}
@@ -370,12 +382,18 @@ export default function Overlay() {
         </div>
       )}
 
-      {!showToast && showPill && (
+      {showPill && (
         <div
           data-tauri-drag-region
           className={`liquid-glass-pill flex items-center gap-1.5 px-2.5 py-1 rounded-full select-none ${
             showLimit ? "liquid-glass-pill--limit" : "w-full h-full"
-          } ${pillLeaving ? "liquid-glass-pill--out" : "liquid-glass-pill--in"}`}
+          } ${
+            pillLeaving
+              ? "liquid-glass-pill--out"
+              : pillActive && state !== "idle"
+                ? "liquid-glass-pill--in"
+                : ""
+          }`}
         >
           {!showLimit && (
             <div
@@ -461,8 +479,8 @@ async function positionBottomCenter(w: number, h: number) {
     const win = getCurrentWindow();
     const screen = await ensureScreen();
     if (!screen) return;
-    // Fire size/position/always-on-top together — don't serialize chrome clears.
-    void clearOverlayChrome();
+    // Await chrome clear before paint — fire-and-forget left WebView2 white up.
+    await clearOverlayChrome();
     await Promise.all([
       win.setSize(new LogicalSize(w, h)),
       win.setPosition(
@@ -470,6 +488,8 @@ async function positionBottomCenter(w: number, h: number) {
       ),
       win.setAlwaysOnTop(true),
     ]);
+    // Clear any leftover GDI region; CSS border-radius draws the smooth pill.
+    void invoke("set_overlay_pill_clip", { apply: false }).catch(() => {});
   } catch (e) {
     console.error("Failed to position overlay", e);
   }
@@ -480,22 +500,20 @@ async function positionBottomCenter(w: number, h: number) {
 async function resizeForState(state: DictationState, withToast = false) {
   try {
     const win = getCurrentWindow();
-    void clearOverlayChrome();
+    await clearOverlayChrome();
     if (state === "idle" && !withToast) {
+      void invoke("set_overlay_pill_clip", { apply: false }).catch(() => {});
       await Promise.all([
         win.setIgnoreCursorEvents(true).catch(() => {}),
         win.setSize(new LogicalSize(1, 1)),
         win.setPosition(new LogicalPosition(-40_000, -40_000)),
         win.show(),
       ]);
+      await clearOverlayChrome();
       return;
     }
     const needsClicks = state === "limit" || withToast;
-    // Place + show immediately — Rust also snaps here on hotkey for consistency.
-    await Promise.all([
-      win.setIgnoreCursorEvents(!needsClicks).catch(() => {}),
-      win.show(),
-    ]);
+    // Geometry first while chrome is cleared; show only after size is ready.
     if (state === "limit") {
       await positionBottomCenter(LIMIT_W, LIMIT_H);
     } else if (withToast) {
@@ -503,6 +521,11 @@ async function resizeForState(state: DictationState, withToast = false) {
     } else {
       await positionBottomCenter(OVERLAY_W, OVERLAY_H);
     }
+    await Promise.all([
+      win.setIgnoreCursorEvents(!needsClicks).catch(() => {}),
+      win.show(),
+    ]);
+    await clearOverlayChrome();
   } catch {
     // ignore
   }

@@ -49,8 +49,9 @@ export default function App() {
     if (label === "overlay") {
       document.documentElement.setAttribute("data-window", "overlay");
       applyTheme("dark");
-      // Fully transparent chrome — only the pill/toast paints pixels.
-      const clear = [0, 0, 0, 0] as [number, number, number, number];
+      // Fully transparent chrome — charcoal RGB + A=0 so a failed clear
+      // flashes pill-matching dark instead of WebView2 white.
+      const clear = [18, 18, 18, 0] as [number, number, number, number];
       void getCurrentWindow()
         .setBackgroundColor(clear)
         .catch(() => {});

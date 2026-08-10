@@ -11,6 +11,8 @@ import TransformsPage from "./pages/TransformsPage";
 import ScratchpadPage from "./pages/ScratchpadPage";
 import TranscriberPage from "./pages/TranscriberPage";
 import SettingsPage from "./pages/SettingsPage";
+import PlanModal from "../components/PlanModal";
+import ThemeWipe from "../components/ThemeWipe";
 import {
   checkForUpdate,
   installAvailableUpdate,
@@ -65,10 +67,15 @@ export default function Shell({ authUser }: { authUser: AuthUser | null }) {
   const [updating, setUpdating] = useState(false);
   const [updatePct, setUpdatePct] = useState<number | null>(null);
   const [plan, setPlan] = useState<PlanStatus | null>(null);
+  const [plansOpen, setPlansOpen] = useState(false);
 
   function goToPage(next: PageId) {
     if (next !== "home") setSelectDeleteMode(false);
     setPage(next);
+  }
+
+  function openPlans() {
+    setPlansOpen(true);
   }
 
   useEffect(() => {
@@ -133,7 +140,8 @@ export default function Shell({ authUser }: { authUser: AuthUser | null }) {
   }, []);
 
   useEffect(() => {
-    let unlisten: (() => void) | undefined;
+    let unlistenNav: (() => void) | undefined;
+    let unlistenPlans: (() => void) | undefined;
     void listen<string>("navigate-page", (ev) => {
       const next = ev.payload;
       if (
@@ -150,10 +158,16 @@ export default function Shell({ authUser }: { authUser: AuthUser | null }) {
         goToPage(next);
       }
     }).then((fn) => {
-      unlisten = fn;
+      unlistenNav = fn;
+    });
+    void listen("open-plans", () => {
+      openPlans();
+    }).then((fn) => {
+      unlistenPlans = fn;
     });
     return () => {
-      unlisten?.();
+      unlistenNav?.();
+      unlistenPlans?.();
     };
   }, []);
 
@@ -190,7 +204,18 @@ export default function Shell({ authUser }: { authUser: AuthUser | null }) {
   }
 
   return (
-    <div className="flex h-screen bg-[var(--ms-bg)] text-[var(--ms-text)] overflow-hidden flex-col">
+    <div className="flex h-screen bg-[var(--ms-bg)] text-[var(--ms-text)] overflow-hidden flex-col relative">
+      <ThemeWipe />
+      <div className="ms-shell-chrome">
+      <PlanModal
+        open={plansOpen}
+        plan={plan}
+        authUser={authUser}
+        onClose={() => setPlansOpen(false)}
+        onChanged={() => {
+          void refresh();
+        }}
+      />
       {updateInfo && (
         <div
           className="shrink-0 px-4 py-2.5 flex items-center justify-between gap-3"
@@ -278,7 +303,7 @@ export default function Shell({ authUser }: { authUser: AuthUser | null }) {
         >
           {plan?.weekly_limit != null && (
             <button
-              onClick={() => goToPage("settings")}
+              onClick={openPlans}
               className="w-full text-left p-3 rounded-2xl hover:bg-[var(--ms-surface)] transition-colors"
               style={{ background: "var(--ms-fill-muted)" }}
             >
@@ -384,8 +409,11 @@ export default function Shell({ authUser }: { authUser: AuthUser | null }) {
 
       {(page === "home" || page === "insights") && (
         <aside
-          className="w-[200px] shrink-0 bg-[var(--ms-bg-soft)] p-3 space-y-3 overflow-y-auto page-enter"
-          style={{ borderLeft: "1px solid var(--ms-hairline)" }}
+          className="shrink-0 bg-[var(--ms-bg-soft)] p-3 space-y-3 rail-scroll page-enter"
+          style={{
+            borderLeft: "1px solid var(--ms-hairline)",
+            width: "clamp(210px, 22.5%, 280px)",
+          }}
         >
           <div className="surface-card p-5 space-y-5">
             <StatBlock
@@ -436,11 +464,11 @@ export default function Shell({ authUser }: { authUser: AuthUser | null }) {
                 {!plan.can_dictate
                   ? plan.tier === "max"
                     ? "You've hit your weekly limit. It resets every Monday (UTC)."
-                    : "You've hit your weekly limit. Upgrade in Settings to keep dictating."
+                    : "You've hit your weekly limit. Upgrade to keep dictating."
                   : `${planLabel(plan.tier)} includes ${plan.weekly_limit.toLocaleString()} words per week.`}
               </p>
               <button
-                onClick={() => goToPage("settings")}
+                onClick={openPlans}
                 className="btn-primary w-full px-3 py-2 text-xs"
               >
                 View plans
@@ -489,6 +517,7 @@ export default function Shell({ authUser }: { authUser: AuthUser | null }) {
 
         </aside>
       )}
+      </div>
       </div>
     </div>
   );

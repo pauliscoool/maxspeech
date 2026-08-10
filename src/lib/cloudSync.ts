@@ -10,6 +10,7 @@ export const SYNC_SETTING_KEYS = [
   "sound_cue",
   "sound_cue_volume",
   "ui_theme",
+  "launch_at_startup",
   "plan_tier",
   "stt_multilingual",
   "stt_languages",

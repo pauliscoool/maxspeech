@@ -40,6 +40,9 @@ export default function HomePage({
   const [loadingMore, setLoadingMore] = useState(false);
   const [copyState, setCopyState] = useState<Record<number, BtnState>>({});
   const [remakeState, setRemakeState] = useState<Record<number, BtnState>>({});
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editDraft, setEditDraft] = useState("");
+  const [editSaving, setEditSaving] = useState(false);
   const [deleteId, setDeleteId] = useState<number | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [selected, setSelected] = useState<Set<number>>(new Set());
@@ -243,6 +246,35 @@ export default function HomePage({
     }
   }
 
+  function beginEdit(entry: HistoryEntry) {
+    if (selectMode) return;
+    setEditingId(entry.id);
+    setEditDraft(entry.text);
+  }
+
+  async function saveEdit() {
+    if (editingId == null || editSaving) return;
+    const id = editingId;
+    const draft = editDraft.trim();
+    if (!draft) {
+      setEditingId(null);
+      return;
+    }
+    setEditSaving(true);
+    try {
+      const saved = await invoke<string>("update_history_text", { id, text: draft });
+      setEntries((prev) =>
+        prev.map((e) => (e.id === id ? { ...e, text: saved } : e)),
+      );
+      setEditingId(null);
+      onChanged();
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setEditSaving(false);
+    }
+  }
+
   function toggleSelect(id: number) {
     setSelected((prev) => {
       const next = new Set(prev);
@@ -430,6 +462,11 @@ export default function HomePage({
                               />
                             ) : null}
                             <IconBtn
+                              label="Edit"
+                              onClick={() => beginEdit(entry)}
+                              title="Edit text — name fixes are saved to your dictionary"
+                            />
+                            <IconBtn
                               label="Delete"
                               onClick={() => setDeleteId(entry.id)}
                               danger
@@ -437,13 +474,62 @@ export default function HomePage({
                           </div>
                         )}
                       </div>
-                      <p
-                        className="text-sm text-[var(--ms-text-soft)] leading-relaxed whitespace-pre-wrap break-words"
-                        onClick={selectMode ? () => toggleSelect(entry.id) : undefined}
-                        style={selectMode ? { cursor: "pointer" } : undefined}
-                      >
-                        {entry.text}
-                      </p>
+                      {editingId === entry.id ? (
+                        <div className="space-y-2">
+                          <textarea
+                            value={editDraft}
+                            onChange={(e) => setEditDraft(e.target.value)}
+                            rows={3}
+                            className="input-field w-full px-3 py-2 text-sm leading-relaxed resize-y min-h-[4.5rem]"
+                            autoFocus
+                            onKeyDown={(e) => {
+                              if (e.key === "Escape") {
+                                e.preventDefault();
+                                setEditingId(null);
+                              } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                                e.preventDefault();
+                                void saveEdit();
+                              }
+                            }}
+                          />
+                          <div className="flex items-center justify-between gap-2">
+                            <p className="text-[10px] text-[var(--ms-text-dim)]">
+                              Name fixes are added to your dictionary for future dictation
+                            </p>
+                            <div className="flex gap-1.5 shrink-0">
+                              <button
+                                type="button"
+                                className="px-2.5 py-1 text-[11px] rounded-full text-[var(--ms-text-dim)]"
+                                style={{ background: "var(--ms-fill-muted)" }}
+                                disabled={editSaving}
+                                onClick={() => setEditingId(null)}
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                type="button"
+                                className="btn-primary px-2.5 py-1 text-[11px]"
+                                disabled={editSaving || !editDraft.trim()}
+                                onClick={() => void saveEdit()}
+                              >
+                                {editSaving ? "Saving…" : "Save"}
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      ) : (
+                        <p
+                          className="text-sm text-[var(--ms-text-soft)] leading-relaxed whitespace-pre-wrap break-words"
+                          onClick={selectMode ? () => toggleSelect(entry.id) : undefined}
+                          onDoubleClick={
+                            selectMode ? undefined : () => beginEdit(entry)
+                          }
+                          style={selectMode ? { cursor: "pointer" } : undefined}
+                          title={selectMode ? undefined : "Double-click to edit"}
+                        >
+                          {entry.text}
+                        </p>
+                      )}
                     </div>
                   </article>
                 );

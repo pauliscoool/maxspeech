@@ -1,11 +1,13 @@
 {
-  "version": "0.1.17",
-  "notes": "Transparent overlay chrome, snappier hotkey response, gentler mic gate/AGC, custom start/stop sound cue with volume control, and a login gate so dictation stays off until you're signed in.",
-  "url": "https://maxspeech.vercel.app/downloads/MaxSpeech_x64-setup.exe",
-  "github": "https://github.com/pauliscoool/maxspeech/releases/latest",
-  "platforms": {
-    "windows": "https://maxspeech.vercel.app/downloads/MaxSpeech_x64-setup.exe",
-    "macos": "https://maxspeech.vercel.app/mac",
-    "linux": "https://maxspeech.vercel.app/downloads/MaxSpeech_0.1.1_amd64.AppImage"
-  }
+    "version":  "0.1.28",
+    "download":  "https://maxspeech.vercel.app/downloads/MaxSpeech_0.1.28_x64-setup.exe",
+    "github":  "https://github.com/pauliscoool/maxspeech/releases/latest",
+    "platforms":  {
+                      "linux":  "https://maxspeech.vercel.app/downloads/MaxSpeech_0.1.1_amd64.AppImage",
+                      "macos":  "https://maxspeech.vercel.app/mac",
+                      "windows":  "https://maxspeech.vercel.app/downloads/MaxSpeech_0.1.28_x64-setup.exe"
+                  },
+    "filename":  "MaxSpeech_0.1.28_x64-setup.exe",
+    "url":  "https://maxspeech.vercel.app/downloads/MaxSpeech_x64-setup.exe",
+    "notes":  "MaxSpeech 0.1.28"
 }

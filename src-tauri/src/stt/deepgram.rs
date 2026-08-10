@@ -399,7 +399,7 @@ pub async fn stream_audio(
                 }
                 _ = stop_rx.recv() => {
                     // Drain trailing PCM (hotkey-release trail + in-flight chunks)
-                    // before CloseStream so Deepgram still hears word endings.
+                    // before Finalize so Deepgram still hears word endings.
                     loop {
                         match tokio::time::timeout(
                             std::time::Duration::from_millis(100),
@@ -419,7 +419,15 @@ pub async fn stream_audio(
                             Ok(None) | Err(_) => break,
                         }
                     }
-                    let _ = write.send(Message::Text(r#"{"type":"CloseStream"}"#.into())).await;
+                    // Ask Deepgram to flush finals for the last utterance, wait
+                    // briefly for them on the read side, then close.
+                    let _ = write
+                        .send(Message::Text(r#"{"type":"Finalize"}"#.into()))
+                        .await;
+                    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                    let _ = write
+                        .send(Message::Text(r#"{"type":"CloseStream"}"#.into()))
+                        .await;
                     break;
                 }
             }

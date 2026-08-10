@@ -30,26 +30,34 @@
 
       <h1>Windows download</h1>
       <p class="get-lede">
-        Your download should start automatically. If it doesn’t, use the button
-        below.
+        Your download should start automatically (~6&nbsp;MB installer — normal
+        for Tauri apps that use the system WebView2). If it doesn’t, use the
+        button below.
       </p>
 
       <a
         class="btn-primary"
         id="dl"
         href="/downloads/MaxSpeech_x64-setup.exe"
-        download="MaxSpeech-Setup.exe"
+        download="MaxSpeech_x64-setup.exe"
       >
         Download MaxSpeech for Windows
       </a>
+      <p class="get-alt" id="dl-ver" hidden></p>
 
       <ol class="get-steps">
-        <li>Open the downloaded <code>.exe</code> file.</li>
+        <li>Open the downloaded <code>.exe</code> (~6&nbsp;MB).</li>
         <li>
           If SmartScreen appears: <em>More info</em> → <em>Run anyway</em>.
         </li>
-        <li>Finish the installer, then open MaxSpeech and sign in.</li>
-        <li>Hold <kbd>Ctrl</kbd> + <kbd>Win</kbd> to dictate. Release to type.</li>
+        <li>
+          Finish the installer. Windows needs
+          <a href="https://developer.microsoft.com/microsoft-edge/webview2/"
+            >WebView2</a
+          >
+          (the installer embeds the bootstrapper if it’s missing).
+        </li>
+        <li>Open MaxSpeech and sign in, then hold <kbd>Ctrl</kbd> + <kbd>Win</kbd> to dictate.</li>
       </ol>
 
       <p class="get-alt">
@@ -59,15 +67,55 @@
     </main>
 
     <script>
-      // Kick off the file download as soon as the page opens.
-      setTimeout(function () {
-        var a = document.createElement("a");
-        a.href = "/downloads/MaxSpeech_x64-setup.exe";
-        a.setAttribute("download", "MaxSpeech-Setup.exe");
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-      }, 400);
+      (function () {
+        var STABLE = "/downloads/MaxSpeech_x64-setup.exe";
+        var btn = document.getElementById("dl");
+        var verEl = document.getElementById("dl-ver");
+
+        function applyVersion(ver) {
+          var name = "MaxSpeech_" + ver + "_x64-setup.exe";
+          // Prefer the versioned path (redirects to latest bytes). download=
+          // forces a distinct filename in the Downloads folder each release.
+          var href = "/downloads/" + name;
+          btn.href = href;
+          btn.setAttribute("download", name);
+          if (verEl) {
+            verEl.hidden = false;
+            verEl.textContent = "Version " + ver;
+          }
+          return { href: href, name: name };
+        }
+
+        function kick(href, name) {
+          var a = document.createElement("a");
+          a.href = href;
+          a.setAttribute("download", name);
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+        }
+
+        fetch("/updates/latest.json", { cache: "no-store" })
+          .then(function (r) {
+            return r.ok ? r.json() : Promise.reject();
+          })
+          .then(function (j) {
+            var ver = String((j && j.version) || "").trim();
+            if (!/^\d+\.\d+\.\d+$/.test(ver)) throw new Error("bad version");
+            var info = applyVersion(ver);
+            setTimeout(function () {
+              kick(info.href, info.name);
+            }, 400);
+          })
+          .catch(function () {
+            // Fallback: stable URL + generic name if manifest is unreachable.
+            btn.href = STABLE;
+            btn.setAttribute("download", "MaxSpeech_x64-setup.exe");
+            setTimeout(function () {
+              kick(STABLE, "MaxSpeech_x64-setup.exe");
+            }, 400);
+          });
+      })();
     </script>
   </body>
 </html>

@@ -2744,7 +2744,7 @@ dependencies = [
 
 [[package]]
 name = "maxspeech"
-version = "0.1.17"
+version = "0.1.28"
 dependencies = [
  "arboard",
  "base64 0.22.1",
@@ -2772,6 +2772,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "url",
+ "webview2-com",
  "windows 0.61.3",
 ]
 

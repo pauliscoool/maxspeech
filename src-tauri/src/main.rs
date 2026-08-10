@@ -4,6 +4,7 @@ mod audio;
 mod context;
 mod hotkey;
 mod inject;
+mod overlay_win;
 mod pipeline;
 mod plan;
 mod profiles;
@@ -166,6 +167,8 @@ async fn test_microphone(app: tauri::AppHandle) -> Result<audio::MicTestResult, 
 async fn complete_onboarding(app: tauri::AppHandle) -> Result<(), String> {
     let store = app.state::<Store>();
     store.set_onboarded(true).map_err(|e| e.to_string())?;
+    // Fresh install: enable launch-at-startup unless the user already opted out.
+    ensure_default_autostart(&app);
     if let Some(w) = app.get_webview_window("onboarding") {
         let _ = w.close();
     }
@@ -379,6 +382,24 @@ async fn open_settings_page(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+async fn open_plans_modal(app: tauri::AppHandle) -> Result<(), String> {
+    open_window(&app, "settings", "MaxSpeech", 935, 612);
+    let _ = app.emit("open-plans", ());
+    Ok(())
+}
+
+/// Keep overlay chrome transparent. `apply` is ignored — GDI region clips
+/// make pill edges jagged; CSS border-radius handles the shape.
+#[tauri::command]
+fn set_overlay_pill_clip(app: tauri::AppHandle, apply: bool) -> Result<(), String> {
+    let _ = apply;
+    if let Some(w) = app.get_webview_window("overlay") {
+        overlay_win::clear_pill_region(&w);
+    }
+    Ok(())
+}
+
 /// Preview the custom dictation cue at the given volume (or saved setting).
 #[tauri::command]
 async fn preview_sound_cue(app: tauri::AppHandle, volume: Option<String>) -> Result<(), String> {
@@ -446,11 +467,15 @@ async fn download_and_run_installer(app: tauri::AppHandle, url: String) -> Resul
 
     #[cfg(target_os = "windows")]
     {
+        // Silent + update mode. Do NOT pass /R: Tauri's RunAsUser waits until
+        // the tray app exits and hangs the installer. POSTINSTALL ShellExecute
+        // launches the app asynchronously instead. /UPDATE skips uninstall-first.
         std::process::Command::new(&path)
+            .args(["/S", "/UPDATE"])
             .spawn()
             .map_err(|e| format!("Could not launch installer: {e}"))?;
-        // Unlock the running binary so NSIS can replace it.
-        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+        // Give NSIS a moment to start, then unlock the running binary.
+        tokio::time::sleep(std::time::Duration::from_millis(900)).await;
         app.exit(0);
     }
 
@@ -510,13 +535,22 @@ async fn remake_dictation(app: tauri::AppHandle, id: i64) -> Result<String, Stri
         .ok_or_else(|| "Recording file missing".to_string())?;
 
     let language = stt_language_from_store(&store);
-    let result = stt::batch::transcribe_with_language(&wav_path, &language)
-        .await
-        .map_err(|e| e.to_string())?;
+    let keyterms: Vec<String> = store
+        .get_dictionary()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|w| w.word)
+        .collect();
+    let result =
+        stt::batch::transcribe_with_language_and_keyterms(&wav_path, &language, &keyterms)
+            .await
+            .map_err(|e| e.to_string())?;
     let text = result.text.trim().to_string();
     if text.is_empty() {
         return Err("Could not re-transcribe that recording.".into());
     }
+
+    let expanded = pipeline::vocab::expand_macros(&text, &store);
 
     let has_llm = secrets::has_llm_api_key();
     let ai_enhance = store
@@ -526,15 +560,34 @@ async fn remake_dictation(app: tauri::AppHandle, id: i64) -> Result<String, Stri
         .map(|v| v != "false")
         .unwrap_or(true);
 
-    let multilingual = language == "multi" || pipeline::tone::has_non_latin_script(&text);
-    let mut output = if has_llm && ai_enhance {
-        pipeline::tone::enhance_dictation_ex(&text, "default", false, multilingual)
-            .await
-            .unwrap_or(text.clone())
-    } else if multilingual {
-        text.clone()
+    let multilingual = language == "multi" || pipeline::tone::has_non_latin_script(&expanded);
+    let corrected = if multilingual {
+        expanded.clone()
     } else {
-        pipeline::tone::local_self_correct(&text)
+        pipeline::tone::local_self_correct(&expanded)
+    };
+    if corrected.trim() != expanded.trim() {
+        pipeline::vocab::learn_name_corrections(&expanded, &corrected, &store);
+    }
+
+    let fg = context::get_foreground_app();
+    let tone_name = fg
+        .as_ref()
+        .and_then(|a| pipeline::tone::get_tone_for_app(a, &store))
+        .unwrap_or_else(|| "default".to_string());
+
+    let mut output = if has_llm && ai_enhance {
+        pipeline::tone::enhance_dictation_ex(
+            &corrected,
+            &tone_name,
+            false,
+            multilingual,
+            &keyterms,
+        )
+        .await
+        .unwrap_or(corrected.clone())
+    } else {
+        corrected
     };
 
     let trailing = store
@@ -550,7 +603,8 @@ async fn remake_dictation(app: tauri::AppHandle, id: i64) -> Result<String, Stri
     let saved = output.trim_end().to_string();
     let _ = store.update_history_text(id, &saved);
 
-    let fg_is_self = context::get_foreground_app()
+    let fg_is_self = fg
+        .as_ref()
         .map(|a| {
             let exe = a.exe.to_lowercase();
             exe.contains("maxspeech")
@@ -562,9 +616,58 @@ async fn remake_dictation(app: tauri::AppHandle, id: i64) -> Result<String, Stri
         inject::copy_text(&saved).map_err(|e| e.to_string())?;
     } else {
         tokio::time::sleep(std::time::Duration::from_millis(350)).await;
-        inject::inject_text(&output).map_err(|e| e.to_string())?;
+        let inserted = inject::inject_text(&output).map_err(|e| e.to_string())?;
+        let pipeline_state = app.state::<pipeline::PipelineState>();
+        *pipeline_state.last_insertion.lock().unwrap() = Some(inserted);
     }
     Ok(saved)
+}
+
+/// Edit a history entry and persist any name-like corrections into the dictionary.
+#[tauri::command]
+async fn update_history_text(
+    app: tauri::AppHandle,
+    id: i64,
+    text: String,
+) -> Result<String, String> {
+    let store = app.state::<Store>();
+    let entry = store
+        .get_history_by_id(id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Dictation not found".to_string())?;
+    let cleaned = text.trim().to_string();
+    pipeline::vocab::learn_name_corrections(&entry.text, &cleaned, &store);
+    store
+        .update_history_text(id, &cleaned)
+        .map_err(|e| e.to_string())?;
+    Ok(cleaned)
+}
+
+/// Enable launch-at-startup on first run only when the preference was never set.
+/// If the user previously chose off (`launch_at_startup=false`), leave it disabled.
+fn ensure_default_autostart(app: &tauri::AppHandle) {
+    use tauri_plugin_autostart::ManagerExt;
+    let store = app.state::<Store>();
+    let pref = store
+        .get_setting("launch_at_startup")
+        .ok()
+        .flatten()
+        .map(|v| v.trim().to_ascii_lowercase());
+    let launcher = app.autolaunch();
+    match pref.as_deref() {
+        Some("false") | Some("0") | Some("off") | Some("no") => {
+            let _ = launcher.disable();
+        }
+        Some("true") | Some("1") | Some("on") | Some("yes") => {
+            let _ = launcher.enable();
+        }
+        _ => {
+            // Unset → default ON for fresh installs.
+            if launcher.enable().is_ok() {
+                let _ = store.set_setting("launch_at_startup", "true");
+            }
+        }
+    }
 }
 
 fn main() {
@@ -620,9 +723,12 @@ fn main() {
             get_plan_status,
             set_plan_tier,
             open_settings_page,
+            open_plans_modal,
+            set_overlay_pill_clip,
             preview_sound_cue,
             download_and_run_installer,
             remake_dictation,
+            update_history_text,
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -664,6 +770,9 @@ fn main() {
                     let _ = launcher.enable();
                 }
             }
+
+            // Fresh installs default launch-at-startup ON; respect prior opt-out.
+            ensure_default_autostart(&handle);
 
             // Onboarding always shows. Login autostart respects "show window at login".
             // Manual launches (Start menu / tray / second instance) always open the UI.
@@ -734,16 +843,10 @@ fn open_window(app: &tauri::AppHandle, label: &str, title: &str, width: u32, hei
     let _ = builder.build();
 }
 
-fn clear_overlay_background(w: &tauri::WebviewWindow) {
-    // WebView2 defaults to opaque white — force alpha 0 so only the pill shows.
-    let clear = tauri::window::Color(0, 0, 0, 0);
-    let _ = w.set_background_color(Some(clear));
-}
-
 fn position_overlay(app: &tauri::AppHandle) {
     use tauri::{LogicalPosition, LogicalSize, Position, Size};
     if let Some(w) = app.get_webview_window("overlay") {
-        clear_overlay_background(&w);
+        overlay_win::clear_background(&w);
         let _ = w.set_shadow(false);
         // Park off-screen but keep shown — hide() cold-wakes WebView2 on hotkey.
         let _ = w.set_size(Size::Logical(LogicalSize {
@@ -754,6 +857,7 @@ fn position_overlay(app: &tauri::AppHandle) {
             x: -40_000.0,
             y: -40_000.0,
         }));
+        overlay_win::clear_pill_region(&w);
         let _ = w.set_always_on_top(true);
         let _ = w.set_ignore_cursor_events(true);
         let _ = w.show();

@@ -10,12 +10,8 @@ import {
   type UpdateInfo,
 } from "../../lib/updater";
 import {
-  PLAN_OPTIONS,
-  formatWeeklyUsage,
   tierSupportsMultilingual,
-  weeklyUsagePct,
   type PlanStatus,
-  type PlanTier,
 } from "../../lib/plan";
 import {
   THEME_OPTIONS,
@@ -26,10 +22,9 @@ import {
 import ConfirmModal from "../../components/ConfirmModal";
 import type { PageId } from "../Shell";
 import type { AuthUser } from "../../lib/auth";
-import { signOut, updateCloudPlan } from "../../lib/auth";
+import { signOut } from "../../lib/auth";
 import {
   pushCloudSettings,
-  syncAllLocalHistoryIfMax,
 } from "../../lib/cloudSync";
 import {
   DEFAULT_STT_LANGUAGES,
@@ -38,10 +33,6 @@ import {
   monolingualLanguages,
   parseSttLanguages,
 } from "../../lib/sttLanguages";
-import {
-  canSelectTierWithoutPayment,
-  isOwnerFreePlanEmail,
-} from "../../lib/planAccess";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { defaultHotkey, detectOs, formatHotkey } from "../../lib/platform";
 
@@ -96,8 +87,6 @@ export default function SettingsPage({
   const [updatePct, setUpdatePct] = useState<number | null>(null);
   const [updateMsg, setUpdateMsg] = useState("");
   const [plan, setPlan] = useState<PlanStatus | null>(null);
-  const [planMsg, setPlanMsg] = useState("");
-  const [settingTier, setSettingTier] = useState<PlanTier | null>(null);
   const [uiTheme, setUiTheme] = useState<UiTheme>("dark");
   const [logoutOpen, setLogoutOpen] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
@@ -355,47 +344,17 @@ export default function SettingsPage({
     }
   }
 
-  async function selectTier(tier: PlanTier) {
-    if (settingTier || plan?.tier === tier) return;
-    if (!canSelectTierWithoutPayment(authUser?.email, tier)) {
-      setPlanMsg(
-        tier === "max"
-          ? "Max isn't available as a free plan — payment checkout is coming soon."
-          : "Payment checkout coming soon for paid plans.",
-      );
-      return;
-    }
-    setSettingTier(tier);
-    setPlanMsg("");
-    try {
-      await invoke("set_plan_tier", { tier });
-      await updateCloudPlan(tier);
-      await pushCloudSettings();
-      if (tier === "max") await syncAllLocalHistoryIfMax();
-      const next = await invoke<PlanStatus>("get_plan_status");
-      setPlan(next);
-      // Re-apply language gating when moving to/from Free.
-      await refresh();
-      setPlanMsg(
-        tier === "max"
-          ? "Switched to Max — dictation history will sync to the cloud."
-          : `Switched to ${PLAN_OPTIONS.find((p) => p.tier === tier)?.label ?? tier}.`,
-      );
-      onChanged();
-    } catch (e) {
-      setPlanMsg(`Could not set plan: ${e}`);
-    } finally {
-      setSettingTier(null);
-    }
-  }
-
   async function toggleAutostart() {
     if (autostart) {
       await disable();
       setAutostart(false);
+      await invoke("set_setting", { key: "launch_at_startup", value: "false" });
+      void pushCloudSettings();
     } else {
       await enable();
       setAutostart(true);
+      await invoke("set_setting", { key: "launch_at_startup", value: "true" });
+      void pushCloudSettings();
     }
   }
 
@@ -578,116 +537,6 @@ export default function SettingsPage({
           </div>
         </section>
       )}
-
-      {/* Plan & usage */}
-      <section className="space-y-2.5">
-        <h2 className="settings-section-title">Plan &amp; usage</h2>
-        <div className="settings-group">
-          <div className="settings-row">
-            <div className="settings-row-text">
-              <div className="settings-row-title">Words this week</div>
-              <div className="settings-row-desc">
-                {plan
-                  ? !plan.can_dictate
-                    ? plan.tier === "max"
-                      ? "Weekly limit reached — resets Monday (UTC)"
-                      : "Weekly limit reached — upgrade to keep dictating"
-                    : "Resets every Monday (UTC)"
-                  : "Loading…"}
-              </div>
-            </div>
-            <span className="text-sm text-[var(--ms-turquoise)] font-medium shrink-0 tabular-nums">
-              {plan ? formatWeeklyUsage(plan) : "—"}
-            </span>
-          </div>
-
-          {plan && plan.weekly_limit != null && (
-            <div className="px-4 pb-4">
-              <div
-                className="h-1.5 rounded-full overflow-hidden"
-                style={{ background: "var(--ms-fill-track)" }}
-              >
-                <div
-                  className={`h-full rounded-full transition-all ${
-                    (weeklyUsagePct(plan) ?? 0) >= 100
-                      ? "bg-[var(--ms-orange)]"
-                      : "bg-[var(--ms-turquoise)]"
-                  }`}
-                  style={{ width: `${weeklyUsagePct(plan) ?? 0}%` }}
-                />
-              </div>
-            </div>
-          )}
-        </div>
-
-        <div className="settings-group p-3">
-          <div className="grid grid-cols-2 gap-2">
-            {PLAN_OPTIONS.map((opt) => {
-              const active = plan?.tier === opt.tier;
-              const busy = settingTier === opt.tier;
-              const allowed = canSelectTierWithoutPayment(authUser?.email, opt.tier);
-              const locked = !active && !allowed;
-              return (
-                <button
-                  key={opt.tier}
-                  onClick={() => selectTier(opt.tier)}
-                  disabled={!!settingTier || active || locked}
-                  className={`text-left p-3 rounded-2xl transition-all disabled:cursor-default ${
-                    active
-                      ? "bg-[var(--ms-turquoise-glow)] ring-1 ring-[var(--ms-turquoise)]/40"
-                      : locked
-                        ? "opacity-55 text-[var(--ms-text-dim)]"
-                        : "text-[var(--ms-text-dim)] hover:text-[var(--ms-hover-fg)]"
-                  }`}
-                  style={active ? undefined : { background: "var(--ms-fill-muted)" }}
-                >
-                  <div className="flex items-baseline justify-between gap-2">
-                    <div
-                      className={`text-sm font-medium ${
-                        active ? "text-[var(--ms-turquoise)]" : ""
-                      }`}
-                    >
-                      {opt.label}
-                    </div>
-                    <div
-                      className={`text-xs font-semibold ${
-                        active ? "text-[var(--ms-turquoise)]" : "text-[var(--ms-orange)]"
-                      }`}
-                    >
-                      {opt.price}
-                      {opt.tier !== "free" ? <span className="opacity-60">/mo</span> : null}
-                    </div>
-                  </div>
-                  <div className="text-[11px] mt-1 opacity-80 leading-snug">{opt.limit}</div>
-                  <div
-                    className={`text-[10px] mt-2 font-medium ${
-                      active ? "text-[var(--ms-turquoise)]" : "opacity-60"
-                    }`}
-                  >
-                    {busy
-                      ? "Switching…"
-                      : active
-                        ? "Current plan"
-                        : locked
-                          ? opt.tier === "max"
-                            ? "Payment soon"
-                            : "Locked"
-                          : "Select"}
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-          <p className="text-[11px] text-[var(--ms-text-dim)] leading-relaxed mt-3 px-1">
-            {isOwnerFreePlanEmail(authUser?.email)
-              ? "Owner access: Free, Starter, and Pro are selectable on this account. Max stays locked until checkout ships."
-              : "Free plan is available now. Paid plans unlock when checkout ships. Home dictation history stays on this device; cloud history sync is included with Max."}
-          </p>
-          {planMsg && (
-            <p className="text-xs text-[var(--ms-turquoise)] mt-2 px-1">{planMsg}</p>
-          )}
-        </div>
-      </section>
 
       {/* Hotkey */}
       <section className="space-y-2.5">
@@ -897,26 +746,35 @@ export default function SettingsPage({
             </div>
             <div className="flex items-center gap-2 shrink-0">
               {soundCue ? (
-                <select
-                  className="sound-cue-volume"
-                  value={soundCueVolume}
-                  aria-label="Sound cue volume"
-                  onChange={(e) => {
-                    const next = e.target.value as "soft" | "medium" | "loud";
-                    setSoundCueVolume(next);
-                    void invoke("set_setting", {
-                      key: "sound_cue_volume",
-                      value: next,
-                    }).then(() => {
-                      void pushCloudSettings();
-                      void invoke("preview_sound_cue", { volume: next });
-                    });
-                  }}
-                >
-                  <option value="soft">Soft</option>
-                  <option value="medium">Medium</option>
-                  <option value="loud">Loud</option>
-                </select>
+                <div className="sound-vol-seg" role="group" aria-label="Sound cue volume">
+                  {(
+                    [
+                      ["soft", "Soft"],
+                      ["medium", "Med"],
+                      ["loud", "Loud"],
+                    ] as const
+                  ).map(([value, label]) => (
+                    <button
+                      key={value}
+                      type="button"
+                      className={`sound-vol-opt${
+                        soundCueVolume === value ? " is-active" : ""
+                      }`}
+                      onClick={() => {
+                        setSoundCueVolume(value);
+                        void invoke("set_setting", {
+                          key: "sound_cue_volume",
+                          value,
+                        }).then(() => {
+                          void pushCloudSettings();
+                          void invoke("preview_sound_cue", { volume: value });
+                        });
+                      }}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
               ) : null}
               <Toggle
                 checked={soundCue}

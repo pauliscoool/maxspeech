@@ -336,6 +336,8 @@ mod win_mod_hook {
     static WIN_DOWN: AtomicBool = AtomicBool::new(false);
     /// Bumped on every edge so stale debounce workers bail out.
     static EDGE_GEN: AtomicU64 = AtomicU64::new(0);
+    /// Watchdog thread polls OS modifiers while the LL hook is installed.
+    static HEAL_STOP: AtomicBool = AtomicBool::new(false);
 
     pub fn install(app: &AppHandle, _combo: &str, mode: &str) -> Result<(), String> {
         uninstall();
@@ -385,10 +387,31 @@ mod win_mod_hook {
             thread_id,
             join: Some(join),
         });
+
+        // Idle heal: catch sticky modifiers after sleep / focus loss / missed KEYUP.
+        HEAL_STOP.store(false, Ordering::SeqCst);
+        thread::spawn(|| {
+            while !HEAL_STOP.load(Ordering::SeqCst) {
+                thread::sleep(Duration::from_millis(120));
+                if HEAL_STOP.load(Ordering::SeqCst) {
+                    break;
+                }
+                // Only reconcile when we think something is held or the combo was active.
+                if CTRL_DOWN.load(Ordering::SeqCst)
+                    || WIN_DOWN.load(Ordering::SeqCst)
+                    || COMBO_ACTIVE.load(Ordering::SeqCst)
+                    || ATE_WIN_DOWN.load(Ordering::SeqCst)
+                {
+                    reconcile_modifiers();
+                }
+            }
+        });
+
         Ok(())
     }
 
     pub fn uninstall() {
+        HEAL_STOP.store(true, Ordering::SeqCst);
         EDGE_GEN.fetch_add(1, Ordering::SeqCst);
         COMBO_ACTIVE.store(false, Ordering::SeqCst);
         // If we ate Win-down, synthesize Win-up so the OS isn't left with Win stuck.
@@ -501,14 +524,15 @@ mod win_mod_hook {
         let mode = MODE.lock().unwrap().clone();
         thread::spawn(move || {
             // Debounce brief Ctrl/Win flicker so we don't start then instantly stop.
-            thread::sleep(Duration::from_millis(15));
+            thread::sleep(Duration::from_millis(25));
             if EDGE_GEN.load(Ordering::SeqCst) != gen {
                 return;
             }
+            // Heal sticky / missed KEYUP before deciding the combo is held.
+            let _ = sync_modifier_atomics();
             if !(CTRL_DOWN.load(Ordering::SeqCst) && WIN_DOWN.load(Ordering::SeqCst)) {
                 return;
             }
-            // Heal sticky atomics against the real keyboard.
             if !ctrl_physically_down() || !win_physically_down() {
                 CTRL_DOWN.store(ctrl_physically_down(), Ordering::SeqCst);
                 WIN_DOWN.store(win_physically_down(), Ordering::SeqCst);
@@ -542,12 +566,21 @@ mod win_mod_hook {
         let mode = MODE.lock().unwrap().clone();
         thread::spawn(move || {
             // Debounce: if the combo comes back quickly, don't stop.
-            thread::sleep(Duration::from_millis(70));
+            thread::sleep(Duration::from_millis(80));
             if EDGE_GEN.load(Ordering::SeqCst) != gen {
                 return;
             }
+            let _ = sync_modifier_atomics();
             if CTRL_DOWN.load(Ordering::SeqCst) && WIN_DOWN.load(Ordering::SeqCst) {
                 return;
+            }
+
+            // If we ate Win-down but OS still thinks Win is held after release,
+            // synthesize Win-up so Start / sticky Win can't linger.
+            if ATE_WIN_DOWN.load(Ordering::SeqCst) && !win_physically_down() {
+                ATE_WIN_DOWN.store(false, Ordering::SeqCst);
+            } else if ATE_WIN_DOWN.swap(false, Ordering::SeqCst) && win_physically_down() {
+                synthesize_win_up();
             }
 
             let mode_now = app
@@ -570,22 +603,30 @@ mod win_mod_hook {
         }
     }
 
-    /// Soft-heal: if we think a modifier is down but the OS says it isn't, clear it.
-    fn reconcile_modifiers() {
+    /// Sync atomics from OS without firing press/release (safe inside debounce workers).
+    fn sync_modifier_atomics() -> bool {
         let ctrl_os = ctrl_physically_down();
         let win_os = win_physically_down();
         let mut changed = false;
-        if CTRL_DOWN.load(Ordering::SeqCst) && !ctrl_os {
-            CTRL_DOWN.store(false, Ordering::SeqCst);
+
+        if CTRL_DOWN.load(Ordering::SeqCst) != ctrl_os {
+            CTRL_DOWN.store(ctrl_os, Ordering::SeqCst);
             changed = true;
         }
-        if WIN_DOWN.load(Ordering::SeqCst) && !win_os {
-            WIN_DOWN.store(false, Ordering::SeqCst);
-            // OS already saw the up — don't leave ATE_WIN_DOWN latch armed.
-            ATE_WIN_DOWN.store(false, Ordering::SeqCst);
+        if WIN_DOWN.load(Ordering::SeqCst) != win_os {
+            WIN_DOWN.store(win_os, Ordering::SeqCst);
+            if !win_os {
+                ATE_WIN_DOWN.store(false, Ordering::SeqCst);
+            }
             changed = true;
         }
-        if changed {
+        changed
+    }
+
+    /// Resync modifier atomics both ways from GetAsyncKeyState so missed
+    /// KEYUP/KEYDOWN (sleep, focus loss, injected paste) cannot stick forever.
+    fn reconcile_modifiers() {
+        if sync_modifier_atomics() {
             update_combo_state();
         }
     }

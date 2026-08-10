@@ -31,6 +31,9 @@ pub struct PipelineState {
     paste_epoch: Mutex<u64>,
     /// 16 kHz mono PCM for the active session (Remake cache).
     session_pcm: Mutex<Option<Arc<Mutex<Vec<i16>>>>>,
+    /// Foreground app captured at hotkey-down (tone + history must use this, not
+    /// whatever is focused after enhance finishes).
+    session_fg: Mutex<Option<context::ForegroundApp>>,
 }
 
 impl Default for PipelineState {
@@ -44,6 +47,7 @@ impl Default for PipelineState {
             session_gen: Mutex::new(0),
             paste_epoch: Mutex::new(0),
             session_pcm: Mutex::new(None),
+            session_fg: Mutex::new(None),
         }
     }
 }
@@ -61,8 +65,8 @@ fn focus_login_ui(app: &tauri::AppHandle) {
 fn show_overlay_fast(app: &tauri::AppHandle) {
     use tauri::{LogicalPosition, LogicalSize, Position, Size};
     if let Some(w) = app.get_webview_window("overlay") {
-        // Transparent chrome — only the React pill paints pixels.
-        let _ = w.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+        // Clear BEFORE geometry — never reveal listening size on white WebView2 chrome.
+        crate::overlay_win::clear_background(&w);
         let _ = w.set_shadow(false);
         let _ = w.set_ignore_cursor_events(true);
         // Keep size/position ready so the first hotkey doesn't wait on JS layout.
@@ -79,8 +83,12 @@ fn show_overlay_fast(app: &tauri::AppHandle) {
             let y = screen_h - 36.0 - 48.0;
             let _ = w.set_position(Position::Logical(LogicalPosition { x, y }));
         }
+        // Resize can reset DefaultBackgroundColor — clear again before paint.
+        crate::overlay_win::clear_background(&w);
         let _ = w.set_always_on_top(true);
         let _ = w.show();
+        // Clear any stale HWND region; keep webview transparent for CSS radius.
+        crate::overlay_win::apply_pill_region(&w);
     }
 }
 
@@ -162,6 +170,8 @@ pub fn start_dictation(app: &tauri::AppHandle) {
         *epoch
     };
     *state.started_at.lock().unwrap() = Some(Instant::now());
+    // Snapshot focus now — enhance/history must not use a later app switch.
+    *state.session_fg.lock().unwrap() = context::get_foreground_app();
 
     log::info!(
         "Dictation started session={session_id} paste={paste_token} (max {}s wall-clock)",
@@ -326,6 +336,7 @@ pub fn start_dictation(app: &tauri::AppHandle) {
     let app_handle = app.clone();
     tauri::async_runtime::spawn(async move {
         let mut final_text = String::new();
+        let mut last_interim = String::new();
         while let Some(chunk) = transcript_rx.recv().await {
             let _ = app_handle.emit(
                 "transcript",
@@ -334,10 +345,24 @@ pub fn start_dictation(app: &tauri::AppHandle) {
             if chunk.is_final {
                 final_text.push_str(&chunk.text);
                 final_text.push(' ');
+                last_interim.clear();
+            } else {
+                last_interim = chunk.text;
             }
         }
 
-        let text = final_text.trim().to_string();
+        // If CloseStream beat speech_final, keep the last interim so endings aren't lost.
+        let mut text = final_text.trim().to_string();
+        let interim = last_interim.trim();
+        if !interim.is_empty() {
+            let already = text.ends_with(interim) || text.contains(interim);
+            if !already {
+                if !text.is_empty() {
+                    text.push(' ');
+                }
+                text.push_str(interim);
+            }
+        }
         if text.is_empty() {
             {
                 let state = app_handle.state::<PipelineState>();
@@ -347,9 +372,15 @@ pub fn start_dictation(app: &tauri::AppHandle) {
             return;
         }
 
-        emit_state_if_current(&app_handle, paste_token, "processing");
+        // Don't flash "Enhancing…" until we know we'll actually call the LLM.
+        // Paste happens after enhance — showing Enhancing while only doing local
+        // cleanup/paste is confusing (text already looks "done" to the user).
 
-        let fg = context::get_foreground_app();
+        let fg = {
+            let state = app_handle.state::<PipelineState>();
+            let snap = state.session_fg.lock().unwrap().clone();
+            snap.or_else(context::get_foreground_app)
+        };
         let app_name = fg
             .as_ref()
             .map(|a| context::friendly_app_name(&a.exe))
@@ -379,15 +410,32 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                         last.as_ref().map(|ins| (ins.text.clone(), ins.char_count))
                     };
                     if let Some((old, count)) = old_text {
-                        let _ = inject::undo_insertion(&LastInsertion {
-                            text: old.clone(),
-                            char_count: count,
-                        });
-                        if let Ok(rewritten) =
-                            tone::rewrite_with_llm(&old, &instruction).await
-                        {
-                            if let Ok(new_ins) = inject::inject_text(&rewritten) {
-                                *pipeline_state.last_insertion.lock().unwrap() = Some(new_ins);
+                        // Rewrite first — never delete the prior paste until we have
+                        // something to replace it with (LLM failure used to wipe text).
+                        match tone::rewrite_with_llm(&old, &instruction).await {
+                            Ok(rewritten) => {
+                                let _ = inject::undo_insertion(&LastInsertion {
+                                    text: old.clone(),
+                                    char_count: count,
+                                });
+                                match inject::inject_text(&rewritten) {
+                                    Ok(new_ins) => {
+                                        *pipeline_state.last_insertion.lock().unwrap() =
+                                            Some(new_ins);
+                                    }
+                                    Err(e) => {
+                                        log::warn!(
+                                            "Rewrite inject failed after undo, restoring original: {e}"
+                                        );
+                                        if let Ok(restored) = inject::inject_text(&old) {
+                                            *pipeline_state.last_insertion.lock().unwrap() =
+                                                Some(restored);
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                log::warn!("Rewrite LLM failed; leaving original text: {e}");
                             }
                         }
                     }
@@ -412,6 +460,11 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                 tone::local_self_correct(&expanded)
             };
 
+            // Whisper Flow–style: remember name fixes from spoken self-corrections.
+            if corrected.trim() != expanded.trim() {
+                vocab::learn_name_corrections(&expanded, &corrected, &store);
+            }
+
             let has_llm_key = secrets::has_llm_api_key();
             let ai_enhance = store
                 .get_setting("ai_enhance")
@@ -425,6 +478,12 @@ pub fn start_dictation(app: &tauri::AppHandle) {
             // Multilingual / code-switch: keep Deepgram text as-is. The English
             // Grammarly pass was compounding ASR mistakes into fluent wrong prose
             // ("build function" stayed "blood function" or got rewritten further).
+            let will_call_llm =
+                language_for_pipeline != "multi" && has_llm_key && ai_enhance;
+            if will_call_llm {
+                emit_state_if_current(&app_handle, paste_token, "processing");
+            }
+
             let mut final_output = if language_for_pipeline == "multi" {
                 log::info!("Skipping AI enhance for multilingual session");
                 corrected
@@ -433,11 +492,18 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                     .as_ref()
                     .and_then(|a| tone::get_tone_for_app(a, &store))
                     .unwrap_or_else(|| "default".to_string());
+                let dict_terms: Vec<String> = store
+                    .get_dictionary()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|w| w.word)
+                    .collect();
                 match tone::enhance_dictation_ex(
                     &corrected,
                     &tone_name,
                     word_count >= 40,
                     multilingual_session,
+                    &dict_terms,
                 )
                 .await
                 {
@@ -493,6 +559,8 @@ pub fn start_dictation(app: &tauri::AppHandle) {
             if let Ok(ins) = inject::inject_text(&final_output) {
                 *pipeline_state.last_insertion.lock().unwrap() = Some(ins);
             }
+            // Paste is done — never leave the pill on "Enhancing…" after text lands.
+            emit_state_if_current(&app_handle, paste_token, "done");
 
             let history_text = final_output.trim_end().to_string();
             if let Ok(hid) = store.add_history(&history_text, &app_name) {
@@ -610,12 +678,12 @@ pub fn stop_dictation(app: &tauri::AppHandle) {
         *gen
     };
 
-    // Keep the mic open briefly so the last syllables aren't chopped when the
-    // hotkey is released mid-word. Then signal Deepgram CloseStream.
+    // Keep the mic open past Deepgram English endpointing (500ms) so the last
+    // syllables finalize when the hotkey is released mid-word / right after speech.
     let stop_tx = state.stop_tx.lock().unwrap().take();
     let app_trail = app.clone();
     tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(350)).await;
+        tokio::time::sleep(Duration::from_millis(800)).await;
         let state = app_trail.state::<PipelineState>();
         // Don't tear down a newer session that started during the trail.
         if !*state.active.lock().unwrap() && *state.session_gen.lock().unwrap() == stop_gen {
@@ -627,9 +695,9 @@ pub fn stop_dictation(app: &tauri::AppHandle) {
     });
 
     if let Some(secs) = elapsed {
-        log::info!("Dictation stopped after {secs:.1}s (350ms trail)");
+        log::info!("Dictation stopped after {secs:.1}s (800ms trail)");
     } else {
-        log::info!("Dictation stopped (350ms trail)");
+        log::info!("Dictation stopped (800ms trail)");
     }
 }
 

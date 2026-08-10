@@ -126,6 +126,17 @@
   scrollbar-color: var(--ms-scrollbar-thumb) var(--ms-scrollbar-track);
 }
 
+/* Right stats rail: keep overflow reachable, hide scrollbar chrome. */
+.rail-scroll {
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+.rail-scroll::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
 *::-webkit-scrollbar {
   width: 8px;
   height: 8px;
@@ -176,9 +187,17 @@ html[data-window="overlay"] body,
 html[data-window="overlay"] #root {
   background: transparent !important;
   background-color: transparent !important;
+  /* Kill default UA focus / selection chrome that can read as a white edge. */
+  outline: none !important;
+  box-shadow: none !important;
+  border: none !important;
 }
 html[data-window="overlay"] body {
   transition: none !important;
+  overflow: hidden !important;
+}
+html[data-window="overlay"] * {
+  -webkit-tap-highlight-color: transparent;
 }
 
 /* Solid chrome for main windows — never the overlay. */
@@ -206,19 +225,29 @@ html[data-window="onboarding"] body {
 .liquid-glass-pill {
   /* No backdrop-filter: on a truly transparent always-on-top window, Windows
      has to blur live desktop content every frame which is extremely expensive
-     and caused severe lag. Fake the frosted look with an opaque-ish gradient. */
+     and caused severe lag. Fake the frosted look with an opaque gradient.
+     Fully opaque fills (no partial alpha) avoid light AA fringe against
+     WebView2's clear color. CSS radius (not HWND SetWindowRgn) keeps smooth edges. */
   width: 100%;
   height: 100%;
   box-sizing: border-box;
+  border-radius: 999px;
+  overflow: hidden;
   background: linear-gradient(
     145deg,
-    rgba(38, 38, 38, 0.98) 0%,
-    rgba(18, 18, 18, 0.99) 35%,
-    rgba(8, 8, 8, 1) 100%
+    #262626 0%,
+    #121212 35%,
+    #080808 100%
   );
-  border: none;
+  border: 0 solid transparent;
   outline: none;
+  outline-offset: 0;
   box-shadow: none;
+  /* Cover any residual subpixel fringe with matching charcoal — never white. */
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
+  transform: translateZ(0);
+  isolation: isolate;
 }
 
 .liquid-glass-bar {
@@ -257,12 +286,6 @@ html[data-window="onboarding"] body {
 
 .nav-icon-active {
   color: var(--ms-turquoise);
-}
-
-.nav-logo-glow {
-  /* prefer .ms-logo for new UI */
-  box-shadow: 0 0 18px var(--ms-turquoise-glow);
-  image-rendering: -webkit-optimize-contrast;
 }
 
 .nav-icon svg {
@@ -361,6 +384,23 @@ html[data-window="onboarding"] body {
   /* Never frost the full window — only the pill/toast */
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
+  /* Hard-mask the HWND to a capsule so WebView2/DWM white never shows in
+     the rectangular corners outside the CSS border-radius AA fringe. */
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 174 36'%3E%3Crect width='174' height='36' rx='18' ry='18' fill='%23000'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 174 36'%3E%3Crect width='174' height='36' rx='18' ry='18' fill='%23000'/%3E%3C/svg%3E");
+  -webkit-mask-size: 100% 100%;
+  mask-size: 100% 100%;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+}
+
+.overlay-root--toast,
+.overlay-root--limit {
+  /* Larger toast/limit chrome — use a soft round-rect mask, not the pill. */
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 320 120'%3E%3Crect width='320' height='120' rx='16' ry='16' fill='%23000'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 320 120'%3E%3Crect width='320' height='120' rx='16' ry='16' fill='%23000'/%3E%3C/svg%3E");
 }
 
 .overlay-root--toast {
@@ -395,23 +435,20 @@ html[data-window="onboarding"] body {
 
 @keyframes overlayPillIn {
   from {
-    opacity: 0;
-    transform: translateY(6px) scale(0.98);
+    /* No opacity fade — opacity:0 revealed WebView2 white behind the pill. */
+    transform: translateZ(0) translateY(6px) scale(0.98);
   }
   to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
+    transform: translateZ(0) translateY(0) scale(1);
   }
 }
 
 @keyframes overlayPillOut {
   from {
-    opacity: 1;
-    transform: translateY(0) scale(1);
+    transform: translateZ(0) translateY(0) scale(1);
   }
   to {
-    opacity: 0;
-    transform: translateY(5px) scale(0.98);
+    transform: translateZ(0) translateY(5px) scale(0.98);
   }
 }
 
@@ -439,14 +476,13 @@ html[data-window="onboarding"] body {
   transform: translateY(0);
 }
 
-/* Zoomed + rounded MaxSpeech mark for in-app UI */
+/* Zoomed + rounded MaxSpeech mark for in-app UI — no glow (reads unprofessional in chrome). */
 .ms-logo {
   width: 32px;
   height: 32px;
   border-radius: 10px;
   overflow: hidden;
   flex-shrink: 0;
-  box-shadow: 0 0 18px var(--ms-turquoise-glow);
   background: rgba(0, 0, 0, 0.25);
 }
 
@@ -709,17 +745,12 @@ html[data-window="onboarding"] body {
   font-size: 0.72rem;
   font-weight: 500;
   color: var(--ms-text);
-  background: var(--ms-fill-muted);
+  background-color: var(--ms-fill-muted);
   border: 1px solid color-mix(in srgb, var(--ms-turquoise) 28%, transparent);
   border-radius: 999px;
   padding: 0.28rem 1.55rem 0.28rem 0.7rem;
   cursor: pointer;
   outline: none;
-  background-image: linear-gradient(45deg, transparent 50%, var(--ms-text-dim) 50%),
-    linear-gradient(135deg, var(--ms-text-dim) 50%, transparent 50%);
-  background-position: calc(100% - 12px) 55%, calc(100% - 7px) 55%;
-  background-size: 5px 5px, 5px 5px;
-  background-repeat: no-repeat;
 }
 
 .sound-cue-volume:hover {
@@ -831,6 +862,101 @@ html[data-window="onboarding"] body {
 .lang-chip:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+.sound-vol-seg {
+  display: inline-flex;
+  align-items: stretch;
+  padding: 2px;
+  border-radius: 999px;
+  background: var(--ms-fill-muted);
+  border: 1px solid var(--ms-hairline);
+  gap: 1px;
+}
+
+.sound-vol-opt {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--ms-text-dim);
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  padding: 0.28rem 0.55rem;
+  border-radius: 999px;
+  cursor: pointer;
+  line-height: 1.2;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.sound-vol-opt:hover {
+  color: var(--ms-hover-fg);
+}
+
+.sound-vol-opt.is-active {
+  background: var(--ms-turquoise-glow);
+  color: var(--ms-turquoise);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ms-turquoise) 35%, transparent);
+}
+
+/* Theme radial wipe — background only; must sit under shell chrome. */
+.ms-theme-wipe {
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+}
+
+.ms-theme-wipe-dot {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 10px;
+  height: 10px;
+  margin: -5px 0 0 -5px;
+  border-radius: 50%;
+  background: var(--ms-wipe-fill, #0a0a0a);
+  /* Soft glow disk that expands behind UI — never a solid cover over content. */
+  opacity: 0.55;
+  animation: msThemeWipeExpand 0.65s cubic-bezier(0.22, 1, 0.36, 1) both;
+  will-change: transform, opacity;
+  filter: blur(0.5px);
+}
+
+@keyframes msThemeWipeExpand {
+  0% {
+    transform: scale(0);
+    opacity: 0.7;
+  }
+  40% {
+    opacity: 0.45;
+  }
+  100% {
+    transform: scale(160);
+    opacity: 0;
+  }
+}
+
+/* Shell content above the theme wipe */
+.ms-shell-chrome {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Smooth shell chrome when theme tokens change */
+html[data-window="shell"] body,
+html[data-window="shell"] #root,
+html[data-window="shell"] .flex.h-screen {
+  transition:
+    background-color 0.35s ease,
+    color 0.35s ease,
+    border-color 0.35s ease;
 }
 
 /* Confirm modal */

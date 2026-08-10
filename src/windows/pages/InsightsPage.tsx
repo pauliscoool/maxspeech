@@ -39,7 +39,7 @@ export default function InsightsPage() {
                 {!plan.can_dictate
                   ? plan.tier === "max"
                     ? "Limit reached — resets Monday (UTC)"
-                    : "Limit reached — upgrade in Settings"
+                    : "Limit reached — upgrade"
                   : "Resets every Monday (UTC)"}
               </div>
             </div>

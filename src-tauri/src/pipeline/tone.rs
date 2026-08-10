@@ -137,6 +137,31 @@ fn system_prompt_for_tone(tone: &str, multilingual: bool) -> String {
     }
 }
 
+fn dictionary_prompt_block(terms: &[String]) -> String {
+    let cleaned: Vec<&str> = terms
+        .iter()
+        .map(|t| t.trim())
+        .filter(|t| !t.is_empty())
+        .take(60)
+        .collect();
+    if cleaned.is_empty() {
+        return String::new();
+    }
+    format!(
+        "\n\nPreferred vocabulary (spell and capitalize exactly when the user says these): {}.",
+        cleaned.join(", ")
+    )
+}
+
+fn with_dictionary(system: String, terms: &[String]) -> String {
+    let block = dictionary_prompt_block(terms);
+    if block.is_empty() {
+        system
+    } else {
+        format!("{system}{block}")
+    }
+}
+
 /// True when the transcript likely contains non-Latin script (Cyrillic, CJK, Arabic, etc.).
 pub fn has_non_latin_script(text: &str) -> bool {
     text.chars().any(|c| {
@@ -355,9 +380,10 @@ async fn apply_tone_ex(
     text: &str,
     tone: &str,
     multilingual: bool,
+    dict_terms: &[String],
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let api_key = llm_key()?;
-    let system = system_prompt_for_tone(tone, multilingual);
+    let system = with_dictionary(system_prompt_for_tone(tone, multilingual), dict_terms);
     call_llm(&api_key, &system, text, 1024).await
 }
 
@@ -379,15 +405,19 @@ async fn enhance_long_dictation_ex(
     text: &str,
     tone: &str,
     multilingual: bool,
+    dict_terms: &[String],
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let api_key = llm_key()?;
 
     let style = system_prompt_for_tone(tone, multilingual);
-    let system = format!(
-        "{style}\n\nThis is a longer dictation. Apply Grammarly-style grammar, punctuation, \
-         and clarity fixes throughout. Remove filler (um, uh, like). Break into clear paragraphs \
-         when natural. Apply self-correction rules carefully. Do not summarize — return the full \
-         cleaned transcript only."
+    let system = with_dictionary(
+        format!(
+            "{style}\n\nThis is a longer dictation. Apply Grammarly-style grammar, punctuation, \
+             and clarity fixes throughout. Remove filler (um, uh, like). Break into clear paragraphs \
+             when natural. Apply self-correction rules carefully. Do not summarize — return the full \
+             cleaned transcript only."
+        ),
+        dict_terms,
     );
     call_llm(&api_key, &system, text, 4096).await
 }
@@ -395,6 +425,7 @@ async fn enhance_long_dictation_ex(
 async fn cleanup_self_corrections_ex(
     text: &str,
     multilingual: bool,
+    dict_terms: &[String],
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let api_key = llm_key()?;
 
@@ -403,10 +434,13 @@ async fn cleanup_self_corrections_ex(
     } else {
         String::new()
     };
-    let system = format!(
-        "You are a Grammarly-like cleanup pass for spoken dictation. \
-         {GRAMMAR_RULES} {ASR_CORRECTION_RULES} {SELF_CORRECTION_RULES}{multi} \
-         Only return the cleaned text, nothing else."
+    let system = with_dictionary(
+        format!(
+            "You are a Grammarly-like cleanup pass for spoken dictation. \
+             {GRAMMAR_RULES} {ASR_CORRECTION_RULES} {SELF_CORRECTION_RULES}{multi} \
+             Only return the cleaned text, nothing else."
+        ),
+        dict_terms,
     );
     call_llm(&api_key, &system, text, 2048).await
 }
@@ -417,6 +451,7 @@ pub async fn enhance_dictation_ex(
     tone: &str,
     long: bool,
     multilingual: bool,
+    dict_terms: &[String],
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     // Local English self-correction can mangle mixed-script text — skip it when
     // the transcript already contains non-Latin characters.
@@ -427,11 +462,11 @@ pub async fn enhance_dictation_ex(
     };
     let multi = multilingual || has_non_latin_script(&local);
     if long {
-        enhance_long_dictation_ex(&local, tone, multi).await
+        enhance_long_dictation_ex(&local, tone, multi, dict_terms).await
     } else if tone == "default" {
-        cleanup_self_corrections_ex(&local, multi).await
+        cleanup_self_corrections_ex(&local, multi, dict_terms).await
     } else {
-        apply_tone_ex(&local, tone, multi).await
+        apply_tone_ex(&local, tone, multi, dict_terms).await
     }
 }
 

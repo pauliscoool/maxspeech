@@ -1,4 +1,4 @@
-# Fast MaxSpeech installer build — reserves headroom for rustc/lld (~8GB Node + parallel cargo).
+# Fast MaxSpeech installer build - reserves headroom for rustc/lld (~8GB Node + parallel cargo).
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
@@ -17,7 +17,7 @@ $tauriExit = $LASTEXITCODE
 
 $nsis = Join-Path $root "src-tauri\target\release\bundle\nsis\MaxSpeech_${ver}_x64-setup.exe"
 $webDl = Join-Path $root "website\downloads\MaxSpeech_${ver}_x64-setup.exe"
-# Stable, version-less filename — windows.html and latest.json always point here so
+# Stable, version-less filename - windows.html and latest.json always point here so
 # every old link (and the update button) resolves to whatever was built last, never
 # a stale pinned version.
 $webDlStable = Join-Path $root "website\downloads\MaxSpeech_x64-setup.exe"
@@ -28,26 +28,35 @@ New-Item -ItemType Directory -Force -Path (Split-Path $webDl) | Out-Null
 Copy-Item -Force $nsis $webDl
 Copy-Item -Force $nsis $webDlStable
 
+$versionedUrl = "https://maxspeech.vercel.app/downloads/MaxSpeech_${ver}_x64-setup.exe"
+$stableUrl = "https://maxspeech.vercel.app/downloads/MaxSpeech_x64-setup.exe"
 $manifest = @{
   version = $ver
   notes   = "MaxSpeech $ver"
-  url     = "https://maxspeech.vercel.app/downloads/MaxSpeech_x64-setup.exe"
+  # Stable URL for updater / bookmarks; versioned URL for browser Downloads naming.
+  url     = $stableUrl
+  download = $versionedUrl
+  filename = "MaxSpeech_${ver}_x64-setup.exe"
   github  = "https://github.com/pauliscoool/maxspeech/releases/latest"
   platforms = @{
-    windows = "https://maxspeech.vercel.app/downloads/MaxSpeech_x64-setup.exe"
+    windows = $versionedUrl
     macos   = "https://maxspeech.vercel.app/mac"
     linux   = "https://maxspeech.vercel.app/downloads/MaxSpeech_0.1.1_amd64.AppImage"
   }
 } | ConvertTo-Json
 $manifestDir = Join-Path $root "website\updates"
 New-Item -ItemType Directory -Force -Path $manifestDir | Out-Null
-Set-Content -Path (Join-Path $manifestDir "latest.json") -Value $manifest -Encoding utf8
+# UTF-8 without BOM — PowerShell's Set-Content -Encoding utf8 writes a BOM that
+# breaks some JSON consumers (including updater / CDN edge cases).
+$latestPath = Join-Path $manifestDir "latest.json"
+$utf8NoBom = New-Object System.Text.UTF8Encoding $false
+[System.IO.File]::WriteAllText($latestPath, $manifest, $utf8NoBom)
 
 Write-Host ""
 Write-Host "Installer ready:" -ForegroundColor Green
 Write-Host "  $nsis"
-Write-Host "  $webDl (archived, old link)"
-Write-Host "  $webDlStable (canonical — windows.html + latest.json point here)"
+Write-Host "  $webDl (versioned - windows.html download name)"
+Write-Host "  $webDlStable (canonical stable - redirects / updater)"
 Write-Host "  website\updates\latest.json"
 Write-Host ""
 Write-Host "Next: from website/, run 'vercel deploy --prod -y' then 'vercel alias set <url> maxspeech.vercel.app'." -ForegroundColor Cyan

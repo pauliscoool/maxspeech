@@ -59,13 +59,45 @@ function websitePageFallback(os: HostOs = detectHostOs()): string {
   return WEBSITE_PAGES.windows;
 }
 
+/** Pull `x.y.z` from an installer filename in a URL, if present. */
+export function versionFromUrl(url: string): string | null {
+  try {
+    const path = new URL(url).pathname;
+    const match = path.match(/(\d+\.\d+\.\d+)/);
+    return match?.[1] ?? null;
+  } catch {
+    const match = url.match(/(\d+\.\d+\.\d+)/);
+    return match?.[1] ?? null;
+  }
+}
+
+/**
+ * True when a direct installer URL is safe to use for `targetVersion`.
+ * Version-less stable URLs (e.g. MaxSpeech_x64-setup.exe) are always allowed.
+ * Versioned URLs are rejected when they embed an older version than the one
+ * we're offering — this is what stopped GitHub's stale v0.1.1 asset from
+ * winning over the website's current build.
+ */
+function installerUrlMatchesTarget(url: string, targetVersion: string): boolean {
+  if (!looksLikeDirectInstaller(url)) return true;
+  const embedded = versionFromUrl(url);
+  if (!embedded) return true; // stable / unversioned filename
+  // Reject anything older than the version we're advertising.
+  return !isNewerVersion(targetVersion, embedded);
+}
+
 function pickGithubAssetUrl(
   assets: { name: string; browser_download_url: string }[] | undefined,
   os: HostOs,
+  targetVersion?: string,
 ): string | undefined {
   if (!assets?.length) return undefined;
   const find = (re: RegExp) =>
-    assets.find((a) => re.test(a.name))?.browser_download_url;
+    assets.find((a) => {
+      if (!re.test(a.name)) return false;
+      if (!targetVersion) return true;
+      return installerUrlMatchesTarget(a.browser_download_url, targetVersion);
+    })?.browser_download_url;
 
   if (os === "macos") {
     return (
@@ -114,6 +146,7 @@ async function urlExists(url: string): Promise<boolean> {
 async function pickManifestDownloadUrl(
   manifest: RemoteManifest,
   os: HostOs,
+  targetVersion: string,
   githubAssetUrl?: string,
 ): Promise<string> {
   const fromPlatforms =
@@ -125,16 +158,19 @@ async function pickManifestDownloadUrl(
           ? manifest.platforms?.windows
           : undefined;
 
+  // Prefer the website's canonical / platform URL first. GitHub assets come
+  // later and are filtered by version so a stale release can't win.
   const candidates = [
-    githubAssetUrl,
     fromPlatforms,
     os === "windows" || os === "unknown" ? manifest.url : undefined,
+    githubAssetUrl,
     websitePageFallback(os),
     manifest.github,
     GITHUB_RELEASES_PAGE,
   ].filter((u): u is string => !!u);
 
   for (const url of candidates) {
+    if (!installerUrlMatchesTarget(url, targetVersion)) continue;
     if (!looksLikeDirectInstaller(url)) return url;
     if (await urlExists(url)) return url;
   }
@@ -195,30 +231,52 @@ async function fetchManifestUpdate(
   currentVersion: string,
 ): Promise<UpdateInfo | null> {
   const os = detectHostOs();
-  const release = await fetchJson<GhRelease>(GITHUB_LATEST_API);
-  const githubAsset = pickGithubAssetUrl(release?.assets, os);
+  const [release, fromSite] = await Promise.all([
+    fetchJson<GhRelease>(GITHUB_LATEST_API),
+    fetchJson<RemoteManifest>(WEBSITE_MANIFEST),
+  ]);
 
-  const fromSite = await fetchJson<RemoteManifest>(WEBSITE_MANIFEST);
-  if (fromSite?.version && isNewerVersion(fromSite.version, currentVersion)) {
+  const siteVersion = fromSite?.version?.replace(/^v/i, "") ?? "";
+  const ghTag = (release?.tag_name || release?.name || "").replace(/^v/i, "");
+
+  const siteIsNewer =
+    !!siteVersion && isNewerVersion(siteVersion, currentVersion);
+  const ghIsNewer = !!ghTag && isNewerVersion(ghTag, currentVersion);
+
+  if (!siteIsNewer && !ghIsNewer) return null;
+
+  // Offer whichever source is genuinely newer. Prefer the website when tied
+  // (its installer URL is the stable canonical one).
+  const preferSite =
+    siteIsNewer && (!ghIsNewer || !isNewerVersion(ghTag, siteVersion));
+
+  if (preferSite && fromSite) {
+    const targetVersion = siteVersion;
+    const githubAsset = pickGithubAssetUrl(release?.assets, os, targetVersion);
     return {
-      version: fromSite.version.replace(/^v/i, ""),
+      version: targetVersion,
       body: fromSite.notes ?? null,
       currentVersion,
-      downloadUrl: await pickManifestDownloadUrl(fromSite, os, githubAsset),
+      downloadUrl: await pickManifestDownloadUrl(
+        fromSite,
+        os,
+        targetVersion,
+        githubAsset,
+      ),
       source: "manifest",
     };
   }
 
-  const tag = release?.tag_name || release?.name || "";
-  if (!tag || !isNewerVersion(tag, currentVersion)) return null;
-
+  // GitHub tag is newer (or website missing) — still filter the asset by version.
+  const targetVersion = ghTag;
+  const githubAsset = pickGithubAssetUrl(release?.assets, os, targetVersion);
   const setup =
     githubAsset ||
     release?.html_url ||
     websitePageFallback(os);
 
   return {
-    version: tag.replace(/^v/i, ""),
+    version: targetVersion,
     body: release?.body?.trim() || null,
     currentVersion,
     downloadUrl: setup,
@@ -316,7 +374,19 @@ export async function installAvailableUpdate(
     cachedManifest?.downloadUrl ||
     websitePageFallback();
 
+  // Hard stop: never download/run an installer whose filename embeds a version
+  // older than what we're currently running. Open the landing page instead.
   if (looksLikeDirectInstaller(url)) {
+    const embedded = versionFromUrl(url);
+    if (embedded && isNewerVersion(info.currentVersion, embedded)) {
+      console.warn(
+        `Refusing downgrade installer ${url} (embedded ${embedded} < running ${info.currentVersion})`,
+      );
+      await openUrl(websitePageFallback());
+      throw new Error(
+        "Opened the download page — the linked installer was outdated.",
+      );
+    }
     await downloadAndRunInstaller(url, onProgress);
     return;
   }

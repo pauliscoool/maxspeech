@@ -9,26 +9,25 @@ const TARGET_RATE: u32 = 16000;
 const BAR_COUNT: usize = 20;
 
 // Visual meter only — slight gain so bars jump cleanly without looking clipped.
-const NOISE_GATE: f32 = 0.0019;
-const LEVEL_GAIN: f32 = 7.9;
+const NOISE_GATE: f32 = 0.0008;
+const LEVEL_GAIN: f32 = 11.0;
 
-// Modest AGC — ~5% less aggressive than prior so quiet speech lands cleaner
-// without boosting call / room voices as hard.
-const AGC_PREAMP: f32 = 1.14;
-const AGC_TARGET_RMS: f32 = 0.0855;
-const AGC_MAX_GAIN: f32 = 2.28;
-const AGC_NOISE_FLOOR: f32 = 0.0019;
-const AGC_ATTACK: f32 = 0.17;
-const AGC_RELEASE: f32 = 0.085;
+// Stronger AGC for quiet laptop / PC mics — lift soft speech to a usable
+// Deepgram level without hard-clipping peaks.
+const AGC_PREAMP: f32 = 1.9;
+const AGC_TARGET_RMS: f32 = 0.14;
+const AGC_MAX_GAIN: f32 = 5.5;
+const AGC_NOISE_FLOOR: f32 = 0.0007;
+const AGC_ATTACK: f32 = 0.32;
+const AGC_RELEASE: f32 = 0.07;
 
-/// Near-field gate for STT: open for the loud close talker, mute quieter
-/// background (other people on a call, room chatter). ~5% easier open so
-/// close speech isn't clipped while distant talk still stays out.
-const STT_GATE_FLOOR_OPEN: f32 = 0.0133;
-const STT_GATE_FLOOR_CLOSE: f32 = 0.00665;
-const STT_GATE_REL_OPEN: f32 = 0.304;
-const STT_GATE_REL_CLOSE: f32 = 0.152;
-const STT_GATE_PEAK_DECAY: f32 = 0.992;
+/// Near-field gate for STT: open easily for quiet laptop/PC mics; still mute
+/// much quieter room / call background via relative hysteresis.
+const STT_GATE_FLOOR_OPEN: f32 = 0.0035;
+const STT_GATE_FLOOR_CLOSE: f32 = 0.0016;
+const STT_GATE_REL_OPEN: f32 = 0.14;
+const STT_GATE_REL_CLOSE: f32 = 0.07;
+const STT_GATE_PEAK_DECAY: f32 = 0.996;
 
 /// Empty / "default" means follow the OS default input device.
 pub const MIC_DEVICE_DEFAULT: &str = "default";
@@ -52,6 +51,9 @@ pub struct MicTestResult {
 pub struct AudioCapture {
     stream: Option<cpal::Stream>,
     pub sample_rate: u32,
+    /// Shared PCM buffer so `stop()` can flush a partial trailing chunk.
+    pcm_buffer: Option<Arc<Mutex<Vec<i16>>>>,
+    pcm_tx: Option<tokio::sync::mpsc::UnboundedSender<Vec<i16>>>,
 }
 
 unsafe impl Send for AudioCapture {}
@@ -62,6 +64,8 @@ impl AudioCapture {
         Self {
             stream: None,
             sample_rate: TARGET_RATE,
+            pcm_buffer: None,
+            pcm_tx: None,
         }
     }
 
@@ -93,13 +97,15 @@ impl AudioCapture {
         let chunk_size = (TARGET_RATE as usize) / 20; // 50ms at 16kHz — snappier start/end
         let buffer: Arc<Mutex<Vec<i16>>> = Arc::new(Mutex::new(Vec::with_capacity(chunk_size)));
         let buffer_clone = buffer.clone();
+        self.pcm_buffer = Some(buffer);
+        self.pcm_tx = Some(sender.clone());
         let resample_state = Arc::new(Mutex::new(0.0f64));
         let resample_state_clone = resample_state.clone();
         let agc_gain = Arc::new(Mutex::new(1.0f32));
         let agc_gain_clone = agc_gain.clone();
-        let gate_open = Arc::new(Mutex::new(false));
+        let gate_open = Arc::new(Mutex::new(true));
         let gate_open_clone = gate_open.clone();
-        let gate_peak = Arc::new(Mutex::new(0.0f32));
+        let gate_peak = Arc::new(Mutex::new(0.02f32));
         let gate_peak_clone = gate_peak.clone();
         let ratio = native_rate as f64 / TARGET_RATE as f64;
 
@@ -217,7 +223,18 @@ impl AudioCapture {
     }
 
     pub fn stop(&mut self) {
+        // Stop the callback first, then flush any leftover < chunk_size samples
+        // so the last ~50ms of speech still reaches Deepgram.
         self.stream = None;
+        if let (Some(buf), Some(tx)) = (self.pcm_buffer.take(), self.pcm_tx.take()) {
+            let leftover = {
+                let mut b = buf.lock().unwrap();
+                std::mem::take(&mut *b)
+            };
+            if !leftover.is_empty() {
+                let _ = tx.send(leftover);
+            }
+        }
     }
 }
 

@@ -69,9 +69,9 @@ pub fn deepgram_key_candidates() -> Vec<String> {
 
 /// Resolve the OpenAI / LLM key without any Settings UI.
 ///
-/// Order: keyring `llm_api_key` → env `MAXSPEECH_LLM_API_KEY` → shared fallback.
-/// The fallback is Deepgram-format (40 hex); OpenAI may reject it — callers should
-/// treat auth failure as soft and fall back to local cleanup.
+/// Order: keyring `llm_api_key` → env `MAXSPEECH_LLM_API_KEY`.
+/// Does **not** use the Deepgram app fallback — that key is STT-only and causes
+/// enhance calls to 401 when treated as a valid LLM key.
 pub fn resolve_llm_api_key() -> Option<String> {
     if let Ok(Some(k)) = get_secret("llm_api_key") {
         if !k.is_empty() {
@@ -83,12 +83,7 @@ pub fn resolve_llm_api_key() -> Option<String> {
             return Some(k.trim().to_string());
         }
     }
-    let fallback = decode_fallback_api_key();
-    if fallback.is_empty() {
-        None
-    } else {
-        Some(fallback)
-    }
+    None
 }
 
 pub fn has_llm_api_key() -> bool {

@@ -3,25 +3,23 @@ use crate::store::Store;
 /// Expand macro triggers in the text. If a macro matches, return its expansion.
 /// Also apply dictionary casing / whole-word corrections for known terms.
 pub fn expand_macros(text: &str, store: &Store) -> String {
-    let macros = store.get_macros().unwrap_or_default();
+    let mut macros = store.get_macros().unwrap_or_default();
+    // Longest triggers first so "sign off" wins over "sign".
+    macros.sort_by(|a, b| b.trigger.len().cmp(&a.trigger.len()));
     let lower = text.to_lowercase();
 
     // Check for full macro matches first
     for m in &macros {
         if lower.trim() == m.trigger.to_lowercase() {
-            return m.expansion.clone();
+            return expand_template_vars(&m.expansion);
         }
     }
 
-    // Apply inline macro expansions
+    // Inline expansions: whole-word / phrase boundaries, all occurrences, UTF-8 safe.
     let mut result = text.to_string();
     for m in &macros {
-        let trigger_lower = m.trigger.to_lowercase();
-        if let Some(pos) = result.to_lowercase().find(&trigger_lower) {
-            let before = &result[..pos];
-            let after = &result[pos + m.trigger.len()..];
-            result = format!("{before}{}{after}", m.expansion);
-        }
+        let expansion = expand_template_vars(&m.expansion);
+        result = replace_phrase_ci(&result, &m.trigger, &expansion);
     }
 
     // Apply dictionary corrections as whole-word replacements (case-insensitive).
@@ -37,6 +35,135 @@ pub fn expand_macros(text: &str, store: &Store) -> String {
     }
 
     fix_common_asr(&result)
+}
+
+/// Expand `{clipboard}`, `{date}`, `{time}` in snippet templates.
+fn expand_template_vars(expansion: &str) -> String {
+    let mut out = expansion.to_string();
+    if out.contains("{clipboard}") {
+        let clip = arboard::Clipboard::new()
+            .ok()
+            .and_then(|mut cb| cb.get_text().ok())
+            .unwrap_or_default();
+        out = out.replace("{clipboard}", &clip);
+    }
+    if out.contains("{date}") {
+        let date = chrono::Local::now().format("%Y-%m-%d").to_string();
+        out = out.replace("{date}", &date);
+    }
+    if out.contains("{time}") {
+        let time = chrono::Local::now().format("%H:%M").to_string();
+        out = out.replace("{time}", &time);
+    }
+    out
+}
+
+/// Persist name-like corrections so future ASR prefers the fixed spelling.
+/// Learns tokens that look like proper names / jargon when the user (or
+/// self-correction) changes one word into another.
+pub fn learn_name_corrections(before: &str, after: &str, store: &Store) {
+    let before_t = before.trim();
+    let after_t = after.trim();
+    if before_t.is_empty() || after_t.is_empty() || before_t == after_t {
+        return;
+    }
+
+    let strip = |s: &str| -> Vec<String> {
+        s.split_whitespace()
+            .map(|w| {
+                w.trim_matches(|c: char| matches!(c, ',' | '.' | '!' | '?' | ';' | ':' | '"' | '\''))
+                    .to_string()
+            })
+            .filter(|w| !w.is_empty())
+            .collect()
+    };
+
+    let a = strip(before_t);
+    let b = strip(after_t);
+    if a.is_empty() || b.is_empty() {
+        return;
+    }
+
+    // Align from the end: self-corrections usually replace the last N words.
+    let mut i = a.len();
+    let mut j = b.len();
+    while i > 0 && j > 0 {
+        if a[i - 1].eq_ignore_ascii_case(&b[j - 1]) {
+            i -= 1;
+            j -= 1;
+        } else {
+            break;
+        }
+    }
+    // Tokens that differ at the end of `after` are the corrections.
+    let n_changed = b.len().saturating_sub(j);
+    let changed: Vec<&str> = b[j..]
+        .iter()
+        .map(|s| s.as_str())
+        .filter(|w| {
+            // Single-token swaps (classic name fix) are always candidates;
+            // multi-word corrections only keep name-like tokens.
+            if n_changed == 1 {
+                looks_like_learnable_term(w)
+            } else {
+                looks_like_name_term(w)
+            }
+        })
+        .collect();
+
+    // Also pick up mid-sentence single-token diffs of equal length.
+    if changed.is_empty() && a.len() == b.len() {
+        for (wa, wb) in a.iter().zip(b.iter()) {
+            if !wa.eq_ignore_ascii_case(wb) && looks_like_name_term(wb) {
+                let _ = store.add_dict_word(wb, 1.0);
+                log::info!("Learned name correction from edit: {wa} → {wb}");
+            }
+        }
+        return;
+    }
+
+    for w in changed {
+        if store.add_dict_word(w, 1.0).is_ok() {
+            log::info!("Learned name correction: {w}");
+        }
+    }
+}
+
+fn looks_like_learnable_term(word: &str) -> bool {
+    let w = word.trim();
+    if w.len() < 2 || w.len() > 40 {
+        return false;
+    }
+    let letters = w.chars().filter(|c| c.is_alphabetic()).count();
+    if letters < 2 {
+        return false;
+    }
+    let lower = w.to_ascii_lowercase();
+    !is_stop_word(&lower)
+}
+
+fn looks_like_name_term(word: &str) -> bool {
+    let w = word.trim();
+    if !looks_like_learnable_term(w) {
+        return false;
+    }
+    let first = w.chars().next().unwrap();
+    first.is_uppercase()
+        || w.contains('-')
+        || (w.len() <= 6 && w.chars().all(|c| c.is_ascii_uppercase()))
+}
+
+fn is_stop_word(lower: &str) -> bool {
+    const STOP: &[&str] = &[
+        "a", "an", "the", "and", "or", "but", "to", "of", "in", "on", "for",
+        "with", "at", "by", "from", "as", "is", "it", "this", "that", "i",
+        "you", "he", "she", "we", "they", "my", "your", "me", "him", "her",
+        "monday", "tuesday", "wednesday", "thursday", "friday", "saturday",
+        "sunday", "today", "tomorrow", "yesterday", "please", "thanks",
+        "yes", "no", "ok", "okay", "um", "uh", "like", "just", "really",
+        "hello", "hi", "hey", "thanks", "thank", "sorry", "actually",
+    ];
+    STOP.contains(&lower)
 }
 
 /// Deterministic fixes for frequent English ASR near-homophones (esp. Git ↔ get).

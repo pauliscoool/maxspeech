@@ -26,6 +26,14 @@ pub async fn transcribe_with_language(
     file_path: &str,
     language: &str,
 ) -> Result<TranscriptionResult, Box<dyn std::error::Error + Send + Sync>> {
+    transcribe_with_language_and_keyterms(file_path, language, &[]).await
+}
+
+pub async fn transcribe_with_language_and_keyterms(
+    file_path: &str,
+    language: &str,
+    keyterms: &[String],
+) -> Result<TranscriptionResult, Box<dyn std::error::Error + Send + Sync>> {
     let data = tokio::fs::read(file_path).await?;
     let ext = Path::new(file_path)
         .extension()
@@ -47,9 +55,17 @@ pub async fn transcribe_with_language(
     } else {
         language.trim()
     };
-    let url = format!(
+    let mut url = format!(
         "https://api.deepgram.com/v1/listen?model=nova-3&language={lang}&punctuate=true&diarize=true&smart_format=true"
     );
+    for term in keyterms.iter().take(40) {
+        let t = term.trim();
+        if t.is_empty() {
+            continue;
+        }
+        url.push_str("&keyterm=");
+        url.push_str(&urlenc(t));
+    }
 
     let client = reqwest::Client::new();
     let mut last_err: Option<String> = None;
@@ -168,4 +184,19 @@ pub fn export(format: &str, text: &str) -> Result<(), Box<dyn std::error::Error>
     std::fs::write(&path, content)?;
     log::info!("Exported transcription to {}", path.display());
     Ok(())
+}
+
+fn urlenc(s: &str) -> String {
+    let mut result = String::new();
+    for byte in s.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                result.push(byte as char);
+            }
+            _ => {
+                result.push_str(&format!("%{:02X}", byte));
+            }
+        }
+    }
+    result
 }

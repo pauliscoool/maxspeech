@@ -46,6 +46,7 @@ export default function SnippetsPage() {
         <h1 className="page-title">Snippets</h1>
         <p className="page-subtitle">
           Say a trigger phrase — MaxSpeech expands it to canned text.
+          Use {"{clipboard}"}, {"{date}"}, or {"{time}"} in the expansion.
         </p>
       </header>
 
