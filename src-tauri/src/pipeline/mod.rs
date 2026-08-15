@@ -24,6 +24,8 @@ pub struct PipelineState {
     audio_capture: Mutex<AudioCapture>,
     /// Wall-clock start of the current recording session.
     started_at: Mutex<Option<Instant>>,
+    /// Duration of the session that just stopped (for trail / enhance decisions).
+    last_session_secs: Mutex<f64>,
     /// Bumped on each start/stop so orphaned max-length timers cannot kill a newer session.
     session_gen: Mutex<u64>,
     /// Bumped only when a *new* recording starts. A finishing enhance/inject from an
@@ -44,6 +46,7 @@ impl Default for PipelineState {
             stop_tx: Mutex::new(None),
             audio_capture: Mutex::new(AudioCapture::new()),
             started_at: Mutex::new(None),
+            last_session_secs: Mutex::new(0.0),
             session_gen: Mutex::new(0),
             paste_epoch: Mutex::new(0),
             session_pcm: Mutex::new(None),
@@ -63,32 +66,66 @@ fn focus_login_ui(app: &tauri::AppHandle) {
 }
 
 fn show_overlay_fast(app: &tauri::AppHandle) {
-    use tauri::{LogicalPosition, LogicalSize, Position, Size};
-    if let Some(w) = app.get_webview_window("overlay") {
-        // Clear BEFORE geometry — never reveal listening size on white WebView2 chrome.
-        crate::overlay_win::clear_background(&w);
-        let _ = w.set_shadow(false);
-        let _ = w.set_ignore_cursor_events(true);
-        // Keep size/position ready so the first hotkey doesn't wait on JS layout.
-        let _ = w.set_size(Size::Logical(LogicalSize {
-            width: 174.0,
-            height: 36.0,
-        }));
-        if let Ok(Some(monitor)) = w.current_monitor() {
-            let scale = monitor.scale_factor();
-            let size = monitor.size();
-            let screen_w = size.width as f64 / scale;
-            let screen_h = size.height as f64 / scale;
-            let x = (screen_w - 174.0) / 2.0;
-            let y = screen_h - 36.0 - 48.0;
-            let _ = w.set_position(Position::Logical(LogicalPosition { x, y }));
+    // Hotkey path runs on a worker thread — WebView2/DWM clears only stick on the
+    // UI thread. Queue there; fall back to inline if scheduling fails.
+    let app2 = app.clone();
+    if app.run_on_main_thread(move || show_overlay_fast_inner(&app2)).is_err() {
+        show_overlay_fast_inner(app);
+    }
+}
+
+fn hide_overlay_fast(app: &tauri::AppHandle) {
+    let app2 = app.clone();
+    if app
+        .run_on_main_thread(move || {
+            if let Some(w) = app2.get_webview_window("overlay") {
+                crate::overlay_win::park_idle(&w);
+            }
+        })
+        .is_err()
+    {
+        if let Some(w) = app.get_webview_window("overlay") {
+            crate::overlay_win::park_idle(&w);
         }
-        // Resize can reset DefaultBackgroundColor — clear again before paint.
-        crate::overlay_win::clear_background(&w);
-        let _ = w.set_always_on_top(true);
-        let _ = w.show();
-        // Clear any stale HWND region; keep webview transparent for CSS radius.
-        crate::overlay_win::apply_pill_region(&w);
+    }
+}
+
+fn hide_overlay_if_current(app: &tauri::AppHandle, paste_token: u64) {
+    let current = *app.state::<PipelineState>().paste_epoch.lock().unwrap();
+    if current != paste_token {
+        return;
+    }
+    hide_overlay_fast(app);
+}
+
+fn show_overlay_fast_inner(app: &tauri::AppHandle) {
+    use std::sync::OnceLock;
+
+    /// Physical bottom-center slot, resolved once. Idle parks the same-sized
+    /// HWND off-screen, so the hotkey only has to clip (off-screen) and move.
+    static SLOT: OnceLock<(i32, i32)> = OnceLock::new();
+
+    crate::ensure_overlay_window(app);
+    if let Some(w) = app.get_webview_window("overlay") {
+        let (x, y) = *SLOT.get_or_init(|| {
+            if let Ok(Some(monitor)) = w.current_monitor() {
+                let scale = monitor.scale_factor();
+                let size = monitor.size();
+                let origin = monitor.position();
+                let pill_w = (148.0 * scale).round() as i32;
+                let pill_h = (36.0 * scale).round() as i32;
+                let margin = (48.0 * scale).round() as i32;
+                (
+                    origin.x + (size.width as i32 - pill_w) / 2,
+                    origin.y + size.height as i32 - pill_h - margin,
+                )
+            } else {
+                (873, 996)
+            }
+        });
+        // Clip while still parked, then one SetWindowPos — never reveal a
+        // rectangular HWND for a frame.
+        crate::overlay_win::reveal_listening(&w, x, y);
     }
 }
 
@@ -122,7 +159,11 @@ pub fn start_dictation(app: &tauri::AppHandle) {
         *active = true;
     }
 
-    // Require sign-in (cloud or Continue locally) before any mic / STT work.
+    // Paint the listening pill FIRST — before SQLite auth / plan / mic / Deepgram.
+    // Auth failures flip to error afterward so the hotkey never feels dead.
+    let _ = app.emit("dictation-state", "listening");
+    show_overlay_fast(app);
+
     if !app
         .try_state::<Store>()
         .map(|s| is_signed_in(&s))
@@ -132,14 +173,10 @@ pub fn start_dictation(app: &tauri::AppHandle) {
         let _ = app.emit("dictation-error", "Sign in to use dictation");
         let _ = app.emit("dictation-state", "error");
         show_overlay_fast(app);
-        // Bring the login UI forward so the hotkey isn't a silent no-op.
         focus_login_ui(app);
         return;
     }
 
-    // Paint the listening pill immediately — before SQLite / mic / Deepgram work.
-    let _ = app.emit("dictation-state", "listening");
-    show_overlay_fast(app);
     play_sound_cue(app, crate::sound::CueKind::Start);
 
     // Weekly word limit: hard stop when plan quota is exhausted (Mon 00:00 UTC reset).
@@ -153,7 +190,7 @@ pub fn start_dictation(app: &tauri::AppHandle) {
             show_overlay_fast(app);
             let _ = app
                 .get_webview_window("overlay")
-                .map(|w| w.set_ignore_cursor_events(false));
+                .map(|w| crate::overlay_win::set_click_through(&w, false));
             *state.active.lock().unwrap() = false;
             return;
         }
@@ -368,6 +405,7 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                 let state = app_handle.state::<PipelineState>();
                 *state.session_pcm.lock().unwrap() = None;
             }
+            hide_overlay_if_current(&app_handle, paste_token);
             emit_state_if_current(&app_handle, paste_token, "idle");
             return;
         }
@@ -473,19 +511,36 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                 .map(|v| v != "false")
                 .unwrap_or(true);
 
+            // Short hold (<5s): paste fast with local cleanup only. Full LLM
+            // enhance is reserved for longer dictations where the lag is worth it.
+            let session_secs = *app_handle
+                .state::<PipelineState>()
+                .last_session_secs
+                .lock()
+                .unwrap();
+            let quick_session = session_secs < 5.0;
+
             let word_count = corrected.split_whitespace().count();
             let mut enhance_ran = false;
             // Multilingual / code-switch: keep Deepgram text as-is. The English
             // Grammarly pass was compounding ASR mistakes into fluent wrong prose
             // ("build function" stayed "blood function" or got rewritten further).
-            let will_call_llm =
-                language_for_pipeline != "multi" && has_llm_key && ai_enhance;
+            let will_call_llm = language_for_pipeline != "multi"
+                && has_llm_key
+                && ai_enhance
+                && !quick_session;
             if will_call_llm {
                 emit_state_if_current(&app_handle, paste_token, "processing");
             }
 
             let mut final_output = if language_for_pipeline == "multi" {
                 log::info!("Skipping AI enhance for multilingual session");
+                corrected
+            } else if quick_session {
+                log::info!(
+                    "Quick session ({session_secs:.1}s) — local cleanup only, skip LLM"
+                );
+                enhance_ran = corrected.trim() != expanded.trim();
                 corrected
             } else if has_llm_key && ai_enhance {
                 let tone_name = fg
@@ -527,6 +582,17 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                 corrected
             };
 
+            // Prefer a real sentence end over ASR's trailing comma/semicolon.
+            // Skip multilingual so we don't impose English punctuation habits.
+            if language_for_pipeline != "multi" && !multilingual_session {
+                let tone_for_punct = fg
+                    .as_ref()
+                    .and_then(|a| tone::get_tone_for_app(a, &store))
+                    .unwrap_or_else(|| "default".to_string());
+                final_output =
+                    tone::normalize_terminal_punctuation(&final_output, &tone_for_punct);
+            }
+
             let original_for_toast = expanded.trim().to_string();
             let enhanced_for_toast = final_output.trim().to_string();
             let text_changed = original_for_toast != enhanced_for_toast;
@@ -559,8 +625,22 @@ pub fn start_dictation(app: &tauri::AppHandle) {
             if let Ok(ins) = inject::inject_text(&final_output) {
                 *pipeline_state.last_insertion.lock().unwrap() = Some(ins);
             }
-            // Paste is done — never leave the pill on "Enhancing…" after text lands.
-            emit_state_if_current(&app_handle, paste_token, "done");
+
+            // Grammarly-like toast before WAV I/O so it isn't delayed by Remake save.
+            let show_enhance_toast = ai_enhance && enhance_ran && text_changed;
+            if show_enhance_toast {
+                let _ = app_handle.emit(
+                    "dictation-enhanced",
+                    serde_json::json!({
+                        "original": original_for_toast,
+                        "enhanced": enhanced_for_toast,
+                    }),
+                );
+            } else {
+                // Paste is done — park instantly. Don't linger on "Done" while history saves.
+                hide_overlay_if_current(&app_handle, paste_token);
+            }
+            emit_state_if_current(&app_handle, paste_token, "idle");
 
             let history_text = final_output.trim_end().to_string();
             if let Ok(hid) = store.add_history(&history_text, &app_name) {
@@ -595,28 +675,10 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                     }),
                 );
             }
-
-            // Grammarly-like toast: only when enhance path ran and text actually changed
-            let show_enhance_toast = ai_enhance && enhance_ran && text_changed;
-            if show_enhance_toast {
-                let _ = app_handle.emit(
-                    "dictation-enhanced",
-                    serde_json::json!({
-                        "original": original_for_toast,
-                        "enhanced": enhanced_for_toast,
-                    }),
-                );
-            }
-
-            emit_state_if_current(&app_handle, paste_token, "done");
-            let dismiss_ms = if show_enhance_toast { 3200 } else { 2000 };
-            tokio::time::sleep(tokio::time::Duration::from_millis(dismiss_ms)).await;
-            emit_state_if_current(&app_handle, paste_token, "idle");
             return;
         }
 
-        emit_state_if_current(&app_handle, paste_token, "done");
-        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+        hide_overlay_if_current(&app_handle, paste_token);
         emit_state_if_current(&app_handle, paste_token, "idle");
     });
 }
@@ -666,24 +728,28 @@ pub fn stop_dictation(app: &tauri::AppHandle) {
     drop(active);
     play_sound_cue(app, crate::sound::CueKind::Stop);
 
-    let elapsed = state
+    let elapsed_secs = state
         .started_at
         .lock()
         .unwrap()
-        .map(|t| t.elapsed().as_secs_f64());
+        .map(|t| t.elapsed().as_secs_f64())
+        .unwrap_or(0.0);
     *state.started_at.lock().unwrap() = None;
+    *state.last_session_secs.lock().unwrap() = elapsed_secs;
     let stop_gen = {
         let mut gen = state.session_gen.lock().unwrap();
         *gen = gen.wrapping_add(1);
         *gen
     };
 
-    // Keep the mic open past Deepgram English endpointing (500ms) so the last
-    // syllables finalize when the hotkey is released mid-word / right after speech.
+    // Trail keeps the mic open past Deepgram endpointing so the last syllable
+    // finalizes. Short holds don't need a long trail — that was the main lag.
+    let trail_ms: u64 = if elapsed_secs < 5.0 { 40 } else { 280 };
+
     let stop_tx = state.stop_tx.lock().unwrap().take();
     let app_trail = app.clone();
     tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(800)).await;
+        tokio::time::sleep(Duration::from_millis(trail_ms)).await;
         let state = app_trail.state::<PipelineState>();
         // Don't tear down a newer session that started during the trail.
         if !*state.active.lock().unwrap() && *state.session_gen.lock().unwrap() == stop_gen {
@@ -694,11 +760,7 @@ pub fn stop_dictation(app: &tauri::AppHandle) {
         }
     });
 
-    if let Some(secs) = elapsed {
-        log::info!("Dictation stopped after {secs:.1}s (800ms trail)");
-    } else {
-        log::info!("Dictation stopped (800ms trail)");
-    }
+    log::info!("Dictation stopped after {elapsed_secs:.1}s ({trail_ms}ms trail)");
 }
 
 fn invalidate_session(state: &PipelineState) {

@@ -1,16 +1,16 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import HomePage from "./pages/HomePage";
-import InsightsPage from "./pages/InsightsPage";
-import DictionaryPage from "./pages/DictionaryPage";
-import SnippetsPage from "./pages/SnippetsPage";
-import StylePage from "./pages/StylePage";
-import TransformsPage from "./pages/TransformsPage";
-import ScratchpadPage from "./pages/ScratchpadPage";
-import TranscriberPage from "./pages/TranscriberPage";
-import SettingsPage from "./pages/SettingsPage";
+const HomePage = lazy(() => import("./pages/HomePage"));
+const InsightsPage = lazy(() => import("./pages/InsightsPage"));
+const DictionaryPage = lazy(() => import("./pages/DictionaryPage"));
+const SnippetsPage = lazy(() => import("./pages/SnippetsPage"));
+const StylePage = lazy(() => import("./pages/StylePage"));
+const TransformsPage = lazy(() => import("./pages/TransformsPage"));
+const ScratchpadPage = lazy(() => import("./pages/ScratchpadPage"));
+const TranscriberPage = lazy(() => import("./pages/TranscriberPage"));
+const SettingsPage = lazy(() => import("./pages/SettingsPage"));
 import PlanModal from "../components/PlanModal";
 import ThemeWipe from "../components/ThemeWipe";
 import {
@@ -112,7 +112,7 @@ export default function Shell({ authUser }: { authUser: AuthUser | null }) {
         })
         .catch(() => {});
     };
-    run();
+    const boot = window.setTimeout(run, 12_000);
     // Re-check periodically and when the window becomes visible again.
     const timer = window.setInterval(run, 6 * 60 * 60 * 1000);
     const onVis = () => {
@@ -121,6 +121,7 @@ export default function Shell({ authUser }: { authUser: AuthUser | null }) {
     document.addEventListener("visibilitychange", onVis);
     return () => {
       cancelled = true;
+      window.clearTimeout(boot);
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", onVis);
     };
@@ -380,6 +381,11 @@ export default function Shell({ authUser }: { authUser: AuthUser | null }) {
       </aside>
 
       <main className="flex-1 min-w-0 overflow-y-auto page-enter" key={page}>
+        <Suspense
+          fallback={
+            <div className="p-8 text-sm text-[var(--ms-text-dim)]">Loading…</div>
+          }
+        >
         {page === "home" && (
           <HomePage
             displayName={authUser?.username}
@@ -405,6 +411,7 @@ export default function Shell({ authUser }: { authUser: AuthUser | null }) {
             onEnterSelectDelete={() => setSelectDeleteMode(true)}
           />
         )}
+        </Suspense>
       </main>
 
       {(page === "home" || page === "insights") && (

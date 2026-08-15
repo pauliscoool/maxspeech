@@ -30,9 +30,9 @@
 
       <h1>Windows download</h1>
       <p class="get-lede">
-        Your download should start automatically (~6&nbsp;MB installer — normal
-        for Tauri apps that use the system WebView2). If it doesn’t, use the
-        button below.
+        Your download should start automatically. This is the
+        <strong>full Windows installer</strong> (embeds WebView2 so it works
+        out of the box). If it doesn’t start, use the button below.
       </p>
 
       <a
@@ -46,19 +46,70 @@
       <p class="get-alt" id="dl-ver" hidden></p>
 
       <ol class="get-steps">
-        <li>Open the downloaded <code>.exe</code> (~6&nbsp;MB).</li>
+        <li>Open the downloaded installer (full setup with WebView2 embedded).</li>
         <li>
           If SmartScreen appears: <em>More info</em> → <em>Run anyway</em>.
+          This is the #1 reason a second PC looks like “it won’t install.”
         </li>
         <li>
-          Finish the installer. Windows needs
+          Click through the wizard (Install / Add). It installs under your user folder
+          (<code>%LOCALAPPDATA%\MaxSpeech</code>) and may open MaxSpeech when finished.
+          To remove it later, use Windows <em>Settings → Apps → MaxSpeech → Uninstall</em>
+          — do not pick Uninstall inside the setup wizard if you only meant to remove it.
+        </li>
+        <li>
+          Windows needs
           <a href="https://developer.microsoft.com/microsoft-edge/webview2/"
             >WebView2</a
           >
-          (the installer embeds the bootstrapper if it’s missing).
+          (the installer embeds the bootstrapper if it’s missing — that step needs internet).
         </li>
-        <li>Open MaxSpeech and sign in, then hold <kbd>Ctrl</kbd> + <kbd>Win</kbd> to dictate.</li>
+        <li>Sign in (or Continue locally), then hold <kbd>Ctrl</kbd> + <kbd>Win</kbd> to dictate.</li>
       </ol>
+
+      <div class="get-trouble">
+        <h2>Won’t install on another PC?</h2>
+        <p>
+          Microphone, headphones, USB audio, and “connectors” do
+          <strong>not</strong> block install. Those only matter after MaxSpeech is
+          running. Same for Wi‑Fi/firewall except when WebView2 must download.
+        </p>
+        <ul>
+          <li>
+            <strong>SmartScreen (“Windows protected your PC”)</strong> — click
+            <em>More info</em>, then <em>Run anyway</em>. Choosing Don’t run looks
+            like the installer “doesn’t open.”
+          </li>
+          <li>
+            <strong>File disappears after download</strong> — Windows Defender may
+            have quarantined it. Check <em>Windows Security → Protection history</em>
+            and restore <code>MaxSpeech_x64-setup.exe</code>.
+          </li>
+          <li>
+            <strong>File should be a large installer</strong> — the full package
+            embeds WebView2 so a clean PC can install offline. If your download
+            is only a few KB, delete it and download again.
+          </li>
+          <li>
+            <strong>WebView2 error during setup</strong> — go online, install
+            <a href="https://go.microsoft.com/fwlink/p/?LinkId=2124703">WebView2 Runtime</a>,
+            then re-run the MaxSpeech installer.
+          </li>
+          <li>
+            <strong>Installer finished but no window</strong> — open the system tray
+            (∧), look for MaxSpeech, or run
+            <code>%LOCALAPPDATA%\MaxSpeech\maxspeech.exe</code> from File Explorer.
+          </li>
+          <li>
+            <strong>Needs 64-bit Windows (x64)</strong> — this build won’t run on
+            32-bit Windows.
+          </li>
+        </ul>
+        <p class="get-alt">
+          Direct link:
+          <a href="/downloads/MaxSpeech_x64-setup.exe">/downloads/MaxSpeech_x64-setup.exe</a>
+        </p>
+      </div>
 
       <p class="get-alt">
         <a href="/mac">Mac</a> · <a href="/linux">Linux</a> ·
@@ -73,26 +124,23 @@
         var verEl = document.getElementById("dl-ver");
 
         function applyVersion(ver) {
+          // Always hit the stable file (no 307). Use a versioned download=
+          // name so Downloads stays readable per release.
           var name = "MaxSpeech_" + ver + "_x64-setup.exe";
-          // Prefer the versioned path (redirects to latest bytes). download=
-          // forces a distinct filename in the Downloads folder each release.
-          var href = "/downloads/" + name;
-          btn.href = href;
+          btn.href = STABLE;
           btn.setAttribute("download", name);
           if (verEl) {
             verEl.hidden = false;
             verEl.textContent = "Version " + ver;
           }
-          return { href: href, name: name };
+          return { href: STABLE, name: name };
         }
 
-        function kick(href, name) {
-          var a = document.createElement("a");
-          a.href = href;
-          a.setAttribute("download", name);
-          document.body.appendChild(a);
-          a.click();
-          a.remove();
+        function kick(href) {
+          // Full navigation is more reliable than a synthetic <a download>
+          // click (popup blockers / cross-origin quirks). Content-Disposition
+          // forces a file save instead of navigating away.
+          window.location.assign(href);
         }
 
         fetch("/updates/latest.json", { cache: "no-store" })
@@ -102,18 +150,17 @@
           .then(function (j) {
             var ver = String((j && j.version) || "").trim();
             if (!/^\d+\.\d+\.\d+$/.test(ver)) throw new Error("bad version");
-            var info = applyVersion(ver);
+            applyVersion(ver);
             setTimeout(function () {
-              kick(info.href, info.name);
-            }, 400);
+              kick(STABLE);
+            }, 300);
           })
           .catch(function () {
-            // Fallback: stable URL + generic name if manifest is unreachable.
             btn.href = STABLE;
             btn.setAttribute("download", "MaxSpeech_x64-setup.exe");
             setTimeout(function () {
-              kick(STABLE, "MaxSpeech_x64-setup.exe");
-            }, 400);
+              kick(STABLE);
+            }, 300);
           });
       })();
     </script>

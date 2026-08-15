@@ -21,5 +21,7 @@
 
 !macro NSIS_HOOK_POSTINSTALL
   ; Async launch — do not use RunAsUser here (blocks until Quit).
+  ; Silent/passive/update: always start so in-app updater and /S feel finished.
+  ; Interactive wizard: also start once so a fresh PC sees MaxSpeech after Next.
   System::Call 'shell32::ShellExecuteW(i 0, w "open", w "$INSTDIR\${MAINBINARYNAME}.exe", i 0, w "$INSTDIR", i 1)'
 !macroend

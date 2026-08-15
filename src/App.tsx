@@ -85,15 +85,15 @@ export default function App() {
         const user = await getSessionUser();
         if (cancelled) return;
         setAuthUser(user);
-        await syncDictationAuth(user);
-        if (user) await pullCloudSettings();
+        setAuthReady(true);
+        void syncDictationAuth(user);
+        if (user) void pullCloudSettings();
       } catch {
         if (!cancelled) {
           setAuthUser(null);
-          await syncDictationAuth(null);
+          setAuthReady(true);
+          void syncDictationAuth(null);
         }
-      } finally {
-        if (!cancelled) setAuthReady(true);
       }
     })();
 

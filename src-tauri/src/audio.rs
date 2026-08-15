@@ -8,25 +8,26 @@ use tauri::Emitter;
 const TARGET_RATE: u32 = 16000;
 const BAR_COUNT: usize = 20;
 
-// Visual meter only — slight gain so bars jump cleanly without looking clipped.
-const NOISE_GATE: f32 = 0.0008;
-const LEVEL_GAIN: f32 = 11.0;
+// Visual meter — tuned so quiet PC / USB mics still drive a lively swell
+// (laptop built-ins are louder; metering post-AGC equalizes them).
+const NOISE_GATE: f32 = 0.00035;
+const LEVEL_GAIN: f32 = 12.0;
 
 // Stronger AGC for quiet laptop / PC mics — lift soft speech to a usable
 // Deepgram level without hard-clipping peaks.
-const AGC_PREAMP: f32 = 1.9;
-const AGC_TARGET_RMS: f32 = 0.14;
-const AGC_MAX_GAIN: f32 = 5.5;
-const AGC_NOISE_FLOOR: f32 = 0.0007;
-const AGC_ATTACK: f32 = 0.32;
+const AGC_PREAMP: f32 = 2.2;
+const AGC_TARGET_RMS: f32 = 0.15;
+const AGC_MAX_GAIN: f32 = 6.5;
+const AGC_NOISE_FLOOR: f32 = 0.0005;
+const AGC_ATTACK: f32 = 0.36;
 const AGC_RELEASE: f32 = 0.07;
 
 /// Near-field gate for STT: open easily for quiet laptop/PC mics; still mute
 /// much quieter room / call background via relative hysteresis.
-const STT_GATE_FLOOR_OPEN: f32 = 0.0035;
-const STT_GATE_FLOOR_CLOSE: f32 = 0.0016;
-const STT_GATE_REL_OPEN: f32 = 0.14;
-const STT_GATE_REL_CLOSE: f32 = 0.07;
+const STT_GATE_FLOOR_OPEN: f32 = 0.0022;
+const STT_GATE_FLOOR_CLOSE: f32 = 0.0010;
+const STT_GATE_REL_OPEN: f32 = 0.12;
+const STT_GATE_REL_CLOSE: f32 = 0.06;
 const STT_GATE_PEAK_DECAY: f32 = 0.996;
 
 /// Empty / "default" means follow the OS default input device.
@@ -381,8 +382,8 @@ fn process_f32(
     let gained = apply_soft_agc(&gated, agc_gain);
 
     let frame = FRAME.fetch_add(1, Ordering::Relaxed);
-    // Meter from pre-AGC gated signal so bars reflect what STT hears.
-    let bars = compute_bars(&gated, BAR_COUNT, frame);
+    // Meter the AGC'd signal so quiet PC/USB mics animate like loud laptop mics.
+    let bars = compute_bars(&gained, BAR_COUNT, frame);
     let _ = app.emit("audio-level", bars);
 
     let resampled = if (ratio - 1.0).abs() < 0.001 {
@@ -575,31 +576,19 @@ fn compute_bars(samples: &[f32], n: usize, frame: u64) -> Vec<f32> {
         return bars;
     }
 
-    let chunk = (samples.len() / n).max(1);
+    // One global loudness for the whole chunk — no per-slice chaos. A gentle
+    // symmetrical wave shaped by that level; peaks read as a smooth swell.
+    // Softer curve (0.58) so quiet devices jump earlier without clipping loud ones.
+    let level = ((energy - NOISE_GATE * 0.35).max(0.0) * LEVEL_GAIN)
+        .powf(0.58)
+        .clamp(0.12, 0.98);
     for i in 0..n {
-        let start = i * chunk;
-        let end = ((i + 1) * chunk).min(samples.len());
-        let slice = if start < samples.len() {
-            &samples[start..end]
-        } else {
-            &samples[..]
-        };
-        let rms = (slice.iter().map(|s| s * s).sum::<f32>() / slice.len().max(1) as f32).sqrt();
-        let local_peak = slice
-            .iter()
-            .copied()
-            .map(f32::abs)
-            .fold(0.0f32, f32::max);
-        let mixed = rms * 0.55 + local_peak * 0.45;
-
-        let mid = 1.0 - (i as f32 - (n as f32 - 1.0) / 2.0).abs() / ((n as f32 - 1.0) / 2.0) * 0.25;
-        let phase = i as f32 * 0.7 + t;
-        let jitter = 0.12 * (phase.sin() * 0.5 + 0.5);
-
-        let gated = ((mixed - NOISE_GATE * 0.5).max(0.0) * LEVEL_GAIN).clamp(0.0, 1.0);
-        // Slightly softer curve — peaks jump, but don't slam the top as hard.
-        let level = (gated.powf(0.68) * mid + jitter * gated).clamp(0.08, 1.0);
-        bars.push(level);
+        // Bell envelope: tallest in the middle, tapering to the capsule ends.
+        let center_dist = (i as f32 - (n as f32 - 1.0) / 2.0) / ((n as f32 - 1.0) / 2.0);
+        let bell = 1.0 - center_dist * center_dist * 0.40;
+        // Slow wave so neighboring bars differ slightly — calm, not jittery.
+        let wave = 0.82 + 0.18 * ((t * 1.6 + i as f32 * 0.5).sin() * 0.5 + 0.5);
+        bars.push((level * bell * wave).clamp(0.12, 0.98));
     }
     bars
 }

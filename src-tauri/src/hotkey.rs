@@ -524,7 +524,7 @@ mod win_mod_hook {
         let mode = MODE.lock().unwrap().clone();
         thread::spawn(move || {
             // Debounce brief Ctrl/Win flicker so we don't start then instantly stop.
-            thread::sleep(Duration::from_millis(25));
+            thread::sleep(Duration::from_millis(1));
             if EDGE_GEN.load(Ordering::SeqCst) != gen {
                 return;
             }
@@ -566,7 +566,7 @@ mod win_mod_hook {
         let mode = MODE.lock().unwrap().clone();
         thread::spawn(move || {
             // Debounce: if the combo comes back quickly, don't stop.
-            thread::sleep(Duration::from_millis(80));
+            thread::sleep(Duration::from_millis(12));
             if EDGE_GEN.load(Ordering::SeqCst) != gen {
                 return;
             }

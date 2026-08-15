@@ -9,11 +9,15 @@
   ],
   "headers": [
     {
-      "source": "/downloads/MaxSpeech_x64-setup.exe",
+      "source": "/downloads/(.*\\.exe)",
       "headers": [
         {
+          "key": "Content-Type",
+          "value": "application/octet-stream"
+        },
+        {
           "key": "Content-Disposition",
-          "value": "attachment; filename=\"MaxSpeech_x64-setup.exe\""
+          "value": "attachment"
         },
         {
           "key": "Cache-Control",
@@ -22,15 +26,19 @@
       ]
     },
     {
-      "source": "/downloads/(.*\\.exe)",
+      "source": "/downloads/MaxSpeech_x64-setup.exe",
       "headers": [
         {
+          "key": "Content-Type",
+          "value": "application/octet-stream"
+        },
+        {
           "key": "Content-Disposition",
-          "value": "attachment"
+          "value": "attachment; filename=\"MaxSpeech_x64-setup.exe\""
         },
         {
           "key": "Cache-Control",
-          "value": "public, max-age=3600"
+          "value": "public, max-age=60, must-revalidate"
         }
       ]
     },
@@ -70,6 +78,15 @@
         {
           "key": "Cache-Control",
           "value": "public, max-age=3600"
+        }
+      ]
+    },
+    {
+      "source": "/updates/latest.json",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=60, must-revalidate"
         }
       ]
     }

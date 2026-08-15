@@ -54,6 +54,34 @@ function clearLocalUser(): void {
   }
 }
 
+async function restoreFromDeviceStore(): Promise<AuthUser | null> {
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const unlocked = await invoke<string | null>("get_setting", {
+      key: "dictation_unlocked",
+    });
+    const email = await invoke<string | null>("get_setting", { key: "account_email" });
+    if (unlocked !== "true") return null;
+    const cleanEmail = (email ?? "").trim().toLowerCase();
+    if (!cleanEmail) return null;
+
+    if (cleanEmail === LOCAL_USER.email) {
+      writeLocalUser(LOCAL_USER);
+      return LOCAL_USER;
+    }
+
+    const plan = await invoke<{ tier: PlanTier }>("get_plan_status");
+    return {
+      id: "device-session",
+      email: cleanEmail,
+      username: usernameFromEmail(cleanEmail),
+      planTier: plan.tier ?? "free",
+    };
+  } catch {
+    return null;
+  }
+}
+
 /** Skip cloud auth — use this device only (settings/history stay local). */
 export async function signInLocal(): Promise<AuthUser> {
   clearLocalUser();
@@ -63,6 +91,18 @@ export async function signInLocal(): Promise<AuthUser> {
 }
 
 export async function getSessionUser(): Promise<AuthUser | null> {
+  // Local / SQLite session first — never block the window on a network refresh.
+  const local = readLocalUser();
+  if (local) {
+    void unlockDictation(local.email);
+    return local;
+  }
+  const restored = await restoreFromDeviceStore();
+  if (restored) {
+    void unlockDictation(restored.email);
+    return restored;
+  }
+
   const { data, error } = await supabase.auth.getSession();
   if (!error && data.session?.user) {
     clearLocalUser();
@@ -81,12 +121,6 @@ export async function getSessionUser(): Promise<AuthUser | null> {
     };
   }
 
-  const local = readLocalUser();
-  if (local) {
-    await unlockDictation(local.email);
-    return local;
-  }
-  await lockDictation();
   return null;
 }
 
@@ -275,10 +309,16 @@ export function onAuthChange(cb: (user: AuthUser | null) => void): () => void {
         if (local) {
           await unlockDictation(local.email);
           cb(local);
-        } else {
-          await lockDictation();
-          cb(null);
+          return;
         }
+        const restored = await restoreFromDeviceStore();
+        if (restored) {
+          await unlockDictation(restored.email);
+          cb(restored);
+          return;
+        }
+        await lockDictation();
+        cb(null);
         return;
       }
       try {

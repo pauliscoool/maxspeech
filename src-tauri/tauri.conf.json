@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicovince/tauri/HEAD/crates/tauri-config-schema/schema.json",
   "productName": "MaxSpeech",
-  "version": "0.1.28",
+  "version": "0.1.42",
   "identifier": "com.maxspeech.app",
   "build": {
     "frontendDist": "../dist",
@@ -12,26 +12,6 @@
   "app": {
     "withGlobalTauri": true,
     "windows": [
-      {
-        "label": "overlay",
-        "title": "MaxSpeech Overlay",
-        "url": "index.html?window=overlay",
-        "width": 174,
-        "height": 36,
-        "decorations": false,
-        "transparent": true,
-        "alwaysOnTop": true,
-        "skipTaskbar": true,
-        "resizable": false,
-        "visible": false,
-        "shadow": false,
-        "backgroundColor": [
-          18,
-          18,
-          18,
-          0
-        ]
-      },
       {
         "label": "settings",
         "title": "MaxSpeech",
@@ -71,7 +51,7 @@
     ],
     "windows": {
       "webviewInstallMode": {
-        "type": "embedBootstrapper",
+        "type": "offlineInstaller",
         "silent": true
       },
       "nsis": {

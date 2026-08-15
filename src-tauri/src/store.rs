@@ -42,11 +42,18 @@ pub struct Store {
 }
 
 impl Store {
-    pub fn new() -> Result<Self, rusqlite::Error> {
+    pub fn new() -> Result<Self, String> {
         let data_dir = dirs_data_dir();
-        std::fs::create_dir_all(&data_dir).ok();
+        std::fs::create_dir_all(&data_dir).map_err(|e| {
+            format!("Cannot create data folder at {data_dir}: {e}")
+        })?;
         let db_path = std::path::Path::new(&data_dir).join("maxspeech.db");
-        let conn = Connection::open(db_path)?;
+        let db_display = db_path.display().to_string();
+        let conn = Connection::open(&db_path)
+            .map_err(|e| format!("Cannot open database at {db_display}: {e}"))?;
+        let _ = conn.pragma_update(None, "journal_mode", "WAL");
+        let _ = conn.pragma_update(None, "synchronous", "NORMAL");
+        let _ = conn.pragma_update(None, "temp_store", "MEMORY");
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
              CREATE TABLE IF NOT EXISTS history (
@@ -81,12 +88,16 @@ impl Store {
              );
              CREATE INDEX IF NOT EXISTS idx_history_created ON history(created_at);
              CREATE INDEX IF NOT EXISTS idx_history_text ON history(text);
-             CREATE INDEX IF NOT EXISTS idx_usage_created ON usage_events(created_at);
-             CREATE UNIQUE INDEX IF NOT EXISTS idx_app_profiles_exe_title
-                 ON app_profiles(exe_pattern, title_pattern);",
-        )?;
+             CREATE INDEX IF NOT EXISTS idx_usage_created ON usage_events(created_at);",
+        )
+        .map_err(|e| format!("Cannot initialize database schema at {db_display}: {e}"))?;
         let store = Self { conn: Mutex::new(conn) };
-        let _ = store.migrate();
+        // Dedupe + unique index must run before any seed that relies on it.
+        // Never create the unique index in the schema batch above — existing DBs
+        // can still have duplicate (exe, title) rows and that would fail open.
+        store
+            .migrate()
+            .map_err(|e| format!("Cannot migrate database at {db_display}: {e}"))?;
         let _ = store.seed_default_profiles();
         Ok(store)
     }
@@ -138,16 +149,36 @@ impl Store {
                 )?;
             }
         }
-        // Dedupe legacy rows before enforcing uniqueness (old seed used INSERT OR IGNORE
-        // without a unique key and could insert duplicates).
-        conn.execute_batch(
-            "DELETE FROM app_profiles
-             WHERE id NOT IN (
-               SELECT MIN(id) FROM app_profiles GROUP BY exe_pattern, title_pattern
-             );
-             CREATE UNIQUE INDEX IF NOT EXISTS idx_app_profiles_exe_title
-             ON app_profiles(exe_pattern, title_pattern);",
-        )?;
+        // Ensure unique (exe, title) before creating the unique index.
+        // Re-run dedupe whenever the index is missing — older DBs (or a failed
+        // prior migrate) can still have duplicates even if profiles_deduped=1.
+        let has_unique: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'index' AND name = 'idx_app_profiles_exe_title'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|n| n > 0)
+            .unwrap_or(false);
+        let deduped: Option<String> = conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'profiles_deduped'",
+                [],
+                |row| row.get(0),
+            )
+            .ok();
+        if !has_unique || deduped.as_deref() != Some("1") {
+            conn.execute_batch(
+                "DELETE FROM app_profiles
+                 WHERE id NOT IN (
+                   SELECT MIN(id) FROM app_profiles GROUP BY exe_pattern, title_pattern
+                 );
+                 CREATE UNIQUE INDEX IF NOT EXISTS idx_app_profiles_exe_title
+                 ON app_profiles(exe_pattern, title_pattern);
+                 INSERT OR REPLACE INTO meta (key, value) VALUES ('profiles_deduped', '1');",
+            )?;
+        }
 
         Ok(())
     }
@@ -587,6 +618,16 @@ impl Store {
     }
 
     pub fn seed_default_profiles(&self) -> Result<(), rusqlite::Error> {
+        // Skip the hundreds of INSERT OR IGNORE rows once the seed has landed.
+        if self
+            .get_setting("profiles_seed_rev")
+            .ok()
+            .flatten()
+            .as_deref()
+            == Some("1")
+        {
+            return Ok(());
+        }
         let defaults = crate::profiles::defaults::all_default_profiles();
         let conn = self.conn.lock().unwrap();
         // Unique index makes INSERT OR IGNORE skip existing (exe, title) pairs
@@ -602,6 +643,8 @@ impl Store {
             }
         }
         tx.commit()?;
+        drop(conn);
+        let _ = self.set_setting("profiles_seed_rev", "1");
         Ok(())
     }
 }
@@ -619,14 +662,15 @@ fn dirs_data_dir() -> String {
 }
 
 pub fn data_dir() -> String {
-    // Prefer the OS app-data location:
-    // Windows: %LOCALAPPDATA%\MaxSpeech
+    // Prefer the OS app-data location (dirs::data_dir):
+    // Windows: %APPDATA%\MaxSpeech (Roaming)
     // macOS: ~/Library/Application Support/MaxSpeech
     // Linux: $XDG_DATA_HOME/MaxSpeech or ~/.local/share/MaxSpeech
     if let Some(base) = dirs::data_dir() {
         return base.join("MaxSpeech").to_string_lossy().into_owned();
     }
-    if let Some(d) = std::env::var_os("LOCALAPPDATA") {
+    if let Some(d) = std::env::var_os("APPDATA").or_else(|| std::env::var_os("LOCALAPPDATA"))
+    {
         return std::path::Path::new(&d)
             .join("MaxSpeech")
             .to_string_lossy()

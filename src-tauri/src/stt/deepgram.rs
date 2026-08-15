@@ -252,7 +252,7 @@ fn build_url(config: &DeepgramConfig) -> String {
     // Quiet speakers benefit from a slightly longer window so soft endings land.
     let endpointing = if config.language == "multi" { 300 } else { 500 };
     let mut url = format!(
-        "wss://api.deepgram.com/v1/listen?model={}&language={}&punctuate=true&interim_results=true&smart_format=true&numerals=true&endpointing={}&encoding=linear16&sample_rate=16000&channels=1",
+        "wss://api.deepgram.com/v1/listen?model={}&language={}&punctuate=true&interim_results=true&smart_format=true&numerals=false&endpointing={}&encoding=linear16&sample_rate=16000&channels=1",
         config.model, config.language, endpointing
     );
     // Nova-3 rejects legacy `keywords` (HTTP 400). Use `keyterm` instead.

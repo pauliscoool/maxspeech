@@ -6,3 +6,7 @@ src-tauri/keys/
 *.log
 *.key
 !*.key.pub
+
+# Full Windows installers exceed GitHub's 100MB limit — ship via Vercel / Releases only.
+website/downloads/MaxSpeech_*_x64-setup.exe
+website/downloads/MaxSpeech_x64-setup.exe

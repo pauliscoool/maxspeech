@@ -68,6 +68,10 @@ const GRAMMAR_RULES: &str = "\
 Grammarly-style cleanup (always apply): \
 - Fix grammar, subject-verb agreement, articles (a/an/the), and awkward phrasing. \
 - Fix punctuation: commas, periods, question marks, apostrophes, quotes. \
+- Terminal punctuation: when the utterance is a finished statement, end with a period. \
+  Never leave a trailing comma or semicolon on a completed sentence (ASR often does that). \
+  Keep '?' for questions and '!' for exclamations. Do not force a period on fragments, \
+  lists mid-thought, or text that clearly continues (ends with ':' or an ellipsis). \
 - Capitalize sentence starts and proper nouns; fix obvious misspellings from speech. \
 - Remove filler (um, uh, like, you know) when they add no meaning. \
 - Improve clarity lightly — tighten run-ons — but KEEP the speaker's meaning, voice, \
@@ -90,6 +94,10 @@ Prefer the reading that makes the sentence sensible. Examples: \
   (do NOT assume the speaker means the MaxSpeech app itself unless truly unambiguous — \
   names like 'Maximus Dev' or similar-sounding phrases are NOT the app name) \
 - common: 'there'/'their'/'they're', 'to'/'too'/'two', 'its'/'it's' by grammar \
+- numbers: ASR often inserts digits for homophones ('for'→'4', 'to'→'2', 'won'→'1'). \
+  Prefer the word that fits the sentence; only use digits when the speaker clearly \
+  dictated a number, code, time, or quantity (e.g. 'meet at 4pm', 'room 101'). \
+  In normal prose keep spelled-out numbers as words unless obviously numeric. \
 Do NOT invent new content. Only swap clearly wrong ASR tokens. \
 Do NOT change ordinary English 'get' ('I want to get coffee'). \
 If both readings are plausible, keep the transcript as-is.";
@@ -244,6 +252,63 @@ fn apply_weekday_correction(words: &mut Vec<String>, corr_words: &[&str]) -> boo
     // If correction is just the day, we're done.
     let _ = corr_day_i;
     true
+}
+
+/// Fix weak ASR endings so finished dictation doesn't land with a trailing comma.
+/// Keeps `?` / `!` / `.` / `…`, leaves casual tone without forcing a new period,
+/// and skips short fragments that don't look like full sentences.
+pub fn normalize_terminal_punctuation(text: &str, tone: &str) -> String {
+    let s = text.trim_end();
+    if s.is_empty() {
+        return String::new();
+    }
+
+    let last = s.chars().last().unwrap_or('\0');
+
+    // Already a strong sentence end (including ellipsis / multi-char …).
+    if matches!(last, '.' | '!' | '?' | '…') || s.ends_with("...") {
+        return s.to_string();
+    }
+
+    // Closing quotes/brackets after content — leave alone if already punctuated inside.
+    if matches!(last, '"' | '\'' | ')' | ']' | '}') {
+        return s.to_string();
+    }
+
+    // Intro / list lead-in — not a finished sentence.
+    if last == ':' {
+        return s.to_string();
+    }
+
+    // Deepgram often ends a held utterance with "," or ";" — treat as a full stop.
+    if matches!(last, ',' | ';') {
+        let stem = s[..s.len() - last.len_utf8()].trim_end();
+        if stem.is_empty() {
+            return s.to_string();
+        }
+        return format!("{stem}.");
+    }
+
+    // No terminal punctuation: add a period when it reads like a finished sentence.
+    // Casual chat tone prefers no trailing period.
+    if tone == "casual" || !last.is_alphanumeric() {
+        return s.to_string();
+    }
+    if looks_like_finished_sentence(s) {
+        return format!("{s}.");
+    }
+    s.to_string()
+}
+
+fn looks_like_finished_sentence(s: &str) -> bool {
+    let words: Vec<&str> = s.split_whitespace().collect();
+    // One- or two-word replies ("yes", "ok thanks") shouldn't get a forced period.
+    if words.len() < 3 {
+        return false;
+    }
+    let first = s.chars().find(|c| !c.is_whitespace()).unwrap_or('\0');
+    // Prefer capitalized starts; still accept longer uncapitalized dictation.
+    first.is_uppercase() || words.len() >= 5
 }
 
 /// Local heuristic: fix "… Tuesday oh no I meant Monday" without needing an LLM.
@@ -521,7 +586,61 @@ async fn call_llm(
 
 #[cfg(test)]
 mod tests {
-    use super::local_self_correct;
+    use super::{local_self_correct, normalize_terminal_punctuation};
+
+    #[test]
+    fn trailing_comma_becomes_period() {
+        assert_eq!(
+            normalize_terminal_punctuation("This is a finished sentence,", "default"),
+            "This is a finished sentence."
+        );
+        assert_eq!(
+            normalize_terminal_punctuation("Also done;", "default"),
+            "Also done."
+        );
+    }
+
+    #[test]
+    fn keeps_question_and_exclamation() {
+        assert_eq!(
+            normalize_terminal_punctuation("Are you free tomorrow?", "default"),
+            "Are you free tomorrow?"
+        );
+        assert_eq!(
+            normalize_terminal_punctuation("That was amazing!", "default"),
+            "That was amazing!"
+        );
+    }
+
+    #[test]
+    fn adds_period_to_complete_statement() {
+        assert_eq!(
+            normalize_terminal_punctuation("Please send the report today", "default"),
+            "Please send the report today."
+        );
+    }
+
+    #[test]
+    fn casual_tone_does_not_force_period() {
+        assert_eq!(
+            normalize_terminal_punctuation("hey can you check this later", "casual"),
+            "hey can you check this later"
+        );
+        // Weak ASR endings still get cleaned even in casual.
+        assert_eq!(
+            normalize_terminal_punctuation("hey can you check this later,", "casual"),
+            "hey can you check this later."
+        );
+    }
+
+    #[test]
+    fn short_fragment_stays_unpunctuated() {
+        assert_eq!(normalize_terminal_punctuation("ok", "default"), "ok");
+        assert_eq!(
+            normalize_terminal_punctuation("got it", "default"),
+            "got it"
+        );
+    }
 
     #[test]
     fn corrects_tuesday_to_monday() {

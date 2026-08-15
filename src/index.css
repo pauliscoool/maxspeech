@@ -185,8 +185,8 @@ body {
 html[data-window="overlay"],
 html[data-window="overlay"] body,
 html[data-window="overlay"] #root {
-  background: transparent !important;
-  background-color: transparent !important;
+  background: #080808 !important;
+  background-color: #080808 !important;
   /* Kill default UA focus / selection chrome that can read as a white edge. */
   outline: none !important;
   box-shadow: none !important;
@@ -223,50 +223,75 @@ html[data-window="onboarding"] body {
 }
 
 .liquid-glass-pill {
-  /* No backdrop-filter: on a truly transparent always-on-top window, Windows
-     has to blur live desktop content every frame which is extremely expensive
-     and caused severe lag. Fake the frosted look with an opaque gradient.
-     Fully opaque fills (no partial alpha) avoid light AA fringe against
-     WebView2's clear color. CSS radius (not HWND SetWindowRgn) keeps smooth edges. */
+  position: relative;
+  /* Content stays unscaled; ::before handles edge fill for corner pixels. */
   width: 100%;
   height: 100%;
   box-sizing: border-box;
-  border-radius: 999px;
+  border-radius: 9999px;
   overflow: hidden;
-  background: linear-gradient(
-    145deg,
-    #262626 0%,
-    #121212 35%,
-    #080808 100%
-  );
-  border: 0 solid transparent;
+  background: transparent;
+  border: none;
   outline: none;
   outline-offset: 0;
-  box-shadow: none;
-  /* Cover any residual subpixel fringe with matching charcoal — never white. */
   -webkit-backface-visibility: hidden;
   backface-visibility: hidden;
-  transform: translateZ(0);
   isolation: isolate;
+}
+
+.liquid-glass-pill::before {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 9999px;
+  background: linear-gradient(
+    160deg,
+    #0a0a0a 0%,
+    #080808 45%,
+    #040404 100%
+  );
+  box-shadow: inset 0 0 0 2px rgba(0, 0, 0, 0.95);
+  z-index: 0;
+  pointer-events: none;
+}
+
+.liquid-glass-pill > * {
+  position: relative;
+  z-index: 1;
+}
+
+.overlay-waveform {
+  overflow: visible;
+  flex: 0 0 auto;
 }
 
 .liquid-glass-bar {
   border-radius: 999px;
   border: none;
+  /* Soft teal sheen — orange accents via --orange modifier. */
   background: linear-gradient(
     180deg,
-    rgba(255, 255, 255, 0.5) 0%,
-    var(--bar-hi, #99f6e4) 30%,
-    var(--bar-color, var(--ms-turquoise)) 100%
+    #8ff5e4 0%,
+    #2dd4bf 55%,
+    #0d9488 100%
   );
-  /* Soft edges via rounded caps + glow — never filter:blur (blurs the whole UI). */
   box-shadow:
-    0 0 6px color-mix(in srgb, var(--bar-color, var(--ms-turquoise)) 40%, transparent),
-    inset 0 1px 0 rgba(255, 255, 255, 0.4),
-    inset 0 -1px 3px rgba(0, 0, 0, 0.18);
-  transition: height 90ms cubic-bezier(0.33, 1, 0.68, 1);
-  opacity: 0.96;
-  will-change: height;
+    0 0 5px rgba(45, 212, 191, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.35);
+  transition: height 60ms cubic-bezier(0.33, 1, 0.68, 1);
+  opacity: 0.97;
+}
+
+.liquid-glass-bar--orange {
+  background: linear-gradient(
+    180deg,
+    #fdba74 0%,
+    #fb923c 55%,
+    #ea580c 100%
+  );
+  box-shadow:
+    0 0 5px rgba(251, 146, 60, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.35);
 }
 
 .nav-icon {
@@ -371,8 +396,9 @@ html[data-window="onboarding"] body {
 .overlay-root {
   width: 100%;
   height: 100%;
-  background: transparent !important;
-  background-color: transparent !important;
+  /* Charcoal under everything — if a corner pixel slips past GDI/mask it's dark. */
+  background: #080808 !important;
+  background-color: #080808 !important;
   display: flex;
   flex-direction: column;
   align-items: stretch;
@@ -386,8 +412,8 @@ html[data-window="onboarding"] body {
   -webkit-backdrop-filter: none;
   /* Hard-mask the HWND to a capsule so WebView2/DWM white never shows in
      the rectangular corners outside the CSS border-radius AA fringe. */
-  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 174 36'%3E%3Crect width='174' height='36' rx='18' ry='18' fill='%23000'/%3E%3C/svg%3E");
-  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 174 36'%3E%3Crect width='174' height='36' rx='18' ry='18' fill='%23000'/%3E%3C/svg%3E");
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 148 36'%3E%3Crect x='2' y='2' width='144' height='32' rx='16' ry='16' fill='%23000'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 148 36'%3E%3Crect x='2' y='2' width='144' height='32' rx='16' ry='16' fill='%23000'/%3E%3C/svg%3E");
   -webkit-mask-size: 100% 100%;
   mask-size: 100% 100%;
   -webkit-mask-repeat: no-repeat;
@@ -419,37 +445,21 @@ html[data-window="onboarding"] body {
 }
 
 .liquid-glass-pill--limit {
-  width: 174px;
+  width: 148px;
   height: 36px;
   flex: 0 0 auto;
   justify-content: center;
 }
 
-.liquid-glass-pill--in {
-  animation: overlayPillIn 0.12s cubic-bezier(0.22, 1, 0.36, 1) both;
+/* Idle keeps the charcoal pill painted (WebView2 stays warm) while the HWND
+   is parked off-screen. visibility:hidden left a white first frame on reveal. */
+.liquid-glass-pill--idle {
+  visibility: visible;
 }
 
+.liquid-glass-pill--in,
 .liquid-glass-pill--out {
-  animation: overlayPillOut 0.1s cubic-bezier(0.4, 0, 0.2, 1) both;
-}
-
-@keyframes overlayPillIn {
-  from {
-    /* No opacity fade — opacity:0 revealed WebView2 white behind the pill. */
-    transform: translateZ(0) translateY(6px) scale(0.98);
-  }
-  to {
-    transform: translateZ(0) translateY(0) scale(1);
-  }
-}
-
-@keyframes overlayPillOut {
-  from {
-    transform: translateZ(0) translateY(0) scale(1);
-  }
-  to {
-    transform: translateZ(0) translateY(5px) scale(0.98);
-  }
+  animation: none;
 }
 
 .limit-upgrade {

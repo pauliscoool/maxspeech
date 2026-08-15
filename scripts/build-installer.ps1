@@ -28,18 +28,23 @@ New-Item -ItemType Directory -Force -Path (Split-Path $webDl) | Out-Null
 Copy-Item -Force $nsis $webDl
 Copy-Item -Force $nsis $webDlStable
 
-$versionedUrl = "https://maxspeech.vercel.app/downloads/MaxSpeech_${ver}_x64-setup.exe"
+$sha256 = (Get-FileHash -Algorithm SHA256 -Path $webDlStable).Hash.ToLowerInvariant()
+$sizeBytes = (Get-Item $webDlStable).Length
+
 $stableUrl = "https://maxspeech.vercel.app/downloads/MaxSpeech_x64-setup.exe"
 $manifest = @{
   version = $ver
-  notes   = "MaxSpeech $ver"
-  # Stable URL for updater / bookmarks; versioned URL for browser Downloads naming.
+  notes   = "MaxSpeech $ver - full Windows installer with embedded WebView2"
+  # Always advertise the stable EXE — versioned URLs 307-redirect and break
+  # some browser download= / in-app updater flows.
   url     = $stableUrl
-  download = $versionedUrl
+  download = $stableUrl
   filename = "MaxSpeech_${ver}_x64-setup.exe"
+  sha256  = $sha256
+  size    = $sizeBytes
   github  = "https://github.com/pauliscoool/maxspeech/releases/latest"
   platforms = @{
-    windows = $versionedUrl
+    windows = $stableUrl
     macos   = "https://maxspeech.vercel.app/mac"
     linux   = "https://maxspeech.vercel.app/downloads/MaxSpeech_0.1.1_amd64.AppImage"
   }
@@ -57,6 +62,7 @@ Write-Host "Installer ready:" -ForegroundColor Green
 Write-Host "  $nsis"
 Write-Host "  $webDl (versioned - windows.html download name)"
 Write-Host "  $webDlStable (canonical stable - redirects / updater)"
+Write-Host "  size=$sizeBytes sha256=$sha256"
 Write-Host "  website\updates\latest.json"
 Write-Host ""
 Write-Host "Next: from website/, run 'vercel deploy --prod -y' then 'vercel alias set <url> maxspeech.vercel.app'." -ForegroundColor Cyan
