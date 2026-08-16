@@ -48,6 +48,10 @@ const BUILTIN_KEYTERMS: &[&str] = &[
     "Discord",
     "Figma",
     "Linear",
+    // Gaming / mods — before Cursor so "curse forge" isn't biased to "Cursor".
+    "CurseForge",
+    "Curse Forge",
+    "Forge",
     "Cursor",
 ];
 

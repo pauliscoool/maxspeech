@@ -230,9 +230,7 @@ export default function Shell({ authUser }: { authUser: AuthUser | null }) {
               Update available — v{updateInfo.version}
             </div>
             <div className="text-xs text-[var(--ms-text-dim)] truncate">
-              {updateInfo.source === "tauri"
-                ? "Install in-app, then MaxSpeech will restart"
-                : "Downloads and installs the latest release"}
+              Installs the update, then MaxSpeech closes and reopens
             </div>
           </div>
           <button
@@ -244,9 +242,7 @@ export default function Shell({ authUser }: { authUser: AuthUser | null }) {
               ? updatePct != null
                 ? `${updatePct}%`
                 : "Working…"
-              : updateInfo.source === "tauri"
-                ? "Update now"
-                : "Download"}
+              : "Update now"}
           </button>
         </div>
       )}
@@ -359,7 +355,7 @@ export default function Shell({ authUser }: { authUser: AuthUser | null }) {
               </div>
               <div className="text-[11px] text-[var(--ms-text-dim)] mt-1">
                 {updating
-                  ? "Installing, then MaxSpeech will restart"
+                  ? "Closing and reopening MaxSpeech…"
                   : `v${updateInfo.version} — tap to install`}
               </div>
             </button>

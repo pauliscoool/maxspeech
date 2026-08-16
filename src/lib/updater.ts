@@ -1,5 +1,5 @@
 import { check, type Update } from "@tauri-apps/plugin-updater";
-import { relaunch } from "@tauri-apps/plugin-process";
+import { exit, relaunch } from "@tauri-apps/plugin-process";
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -388,6 +388,13 @@ export async function installAvailableUpdate(
       );
     }
     await downloadAndRunInstaller(url, onProgress);
+    // Rust hard-exits after spawning NSIS; this is a backup if the invoke
+    // returns before the process dies. Installer POSTINSTALL relaunches.
+    try {
+      await exit(0);
+    } catch {
+      // Process may already be exiting.
+    }
     return;
   }
 

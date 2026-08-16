@@ -689,9 +689,11 @@ async fn download_and_run_installer(app: tauri::AppHandle, url: String) -> Resul
             .args(["/S", "/UPDATE"])
             .spawn()
             .map_err(|e| format!("Could not launch installer: {e}"))?;
-        // Give NSIS a moment to start, then unlock the running binary.
-        tokio::time::sleep(std::time::Duration::from_millis(900)).await;
-        app.exit(0);
+        // Hard-quit so NSIS can overwrite the running binary. `app.exit` can
+        // race with tray keep-alive; process::exit is definitive. PREINSTALL
+        // also KillProcess as a backup; POSTINSTALL starts the new build.
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        std::process::exit(0);
     }
 
     #[cfg(target_os = "macos")]

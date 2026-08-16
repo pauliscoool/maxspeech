@@ -90,7 +90,9 @@ Prefer the reading that makes the sentence sensible. Examples: \
   'push it to get' → 'push it to Git'; 'get hub' → 'GitHub' \
 - tech/cloud: 'clout'→'cloud', 'a WS'→'AWS', 'verse cell'→'Vercel', \
   'type script'→'TypeScript', 'post grass'→'Postgres' \
-- product names: Deepgram, Claude, ChatGPT, Cursor, Notion, Slack \
+- product names: Deepgram, Claude, ChatGPT, Notion, Slack, CurseForge \
+  (do NOT rewrite 'curse forge' / 'CurseForge' to 'Cursor' — different product) \
+  Cursor only when clearly the editor/IDE, not gaming/modding context \
   (do NOT assume the speaker means the MaxSpeech app itself unless truly unambiguous — \
   names like 'Maximus Dev' or similar-sounding phrases are NOT the app name) \
 - common: 'there'/'their'/'they're', 'to'/'too'/'two', 'its'/'it's' by grammar \
