@@ -1135,14 +1135,16 @@ fn main() {
 
             hotkey::register_hotkeys(&handle);
 
-            // Don't create a second WebView2 during the first paint — that was
-            // stalling the settings window on slower laptops. Warm the overlay
-            // and Deepgram after the UI is up.
-            let warm = handle.clone();
+            // Warm Deepgram ASAP; create overlay shortly after first paint so the
+            // hotkey isn't blocked spinning up a second WebView2.
             tauri::async_runtime::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_millis(1600)).await;
-                let thread = warm.clone();
-                let _ = warm.run_on_main_thread(move || {
+                stt::deepgram::prewarm().await;
+            });
+            let warm_ui = handle.clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(450)).await;
+                let thread = warm_ui.clone();
+                let _ = warm_ui.run_on_main_thread(move || {
                     ensure_overlay_window(&thread);
                 });
             });

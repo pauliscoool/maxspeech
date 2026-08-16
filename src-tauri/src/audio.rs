@@ -13,22 +13,21 @@ const BAR_COUNT: usize = 20;
 const NOISE_GATE: f32 = 0.00035;
 const LEVEL_GAIN: f32 = 12.0;
 
-// Stronger AGC for quiet mics — but capped so room / behind-you talk isn't
-// lifted into "speech" once the gate slips open.
-const AGC_PREAMP: f32 = 1.75;
-const AGC_TARGET_RMS: f32 = 0.13;
-const AGC_MAX_GAIN: f32 = 4.2;
-const AGC_NOISE_FLOOR: f32 = 0.0008;
-const AGC_ATTACK: f32 = 0.28;
-const AGC_RELEASE: f32 = 0.09;
+// AGC: lift quiet mics for STT without blasting room noise into speech.
+const AGC_PREAMP: f32 = 1.95;
+const AGC_TARGET_RMS: f32 = 0.14;
+const AGC_MAX_GAIN: f32 = 5.2;
+const AGC_NOISE_FLOOR: f32 = 0.0006;
+const AGC_ATTACK: f32 = 0.32;
+const AGC_RELEASE: f32 = 0.08;
 
-/// Near-field gate for STT: prefer the close talker; mute quieter room / people
-/// behind you. Absolute floors + relative hysteresis vs recent speech peak.
-const STT_GATE_FLOOR_OPEN: f32 = 0.0055;
-const STT_GATE_FLOOR_CLOSE: f32 = 0.0024;
-const STT_GATE_REL_OPEN: f32 = 0.28;
-const STT_GATE_REL_CLOSE: f32 = 0.14;
-const STT_GATE_PEAK_DECAY: f32 = 0.997;
+/// Near-field gate: open for normal close-mic speech; stay closed for quieter
+/// room / behind-you talk once a speech peak is established.
+const STT_GATE_FLOOR_OPEN: f32 = 0.0032;
+const STT_GATE_FLOOR_CLOSE: f32 = 0.0015;
+const STT_GATE_REL_OPEN: f32 = 0.18;
+const STT_GATE_REL_CLOSE: f32 = 0.09;
+const STT_GATE_PEAK_DECAY: f32 = 0.995;
 
 /// Empty / "default" means follow the OS default input device.
 pub const MIC_DEVICE_DEFAULT: &str = "default";
@@ -106,8 +105,10 @@ impl AudioCapture {
         let agc_gain_clone = agc_gain.clone();
         let gate_open = Arc::new(Mutex::new(false));
         let gate_open_clone = gate_open.clone();
-        // Start with a modest peak so relative open stays picky until the user speaks.
-        let gate_peak = Arc::new(Mutex::new(0.06f32));
+        // Low starter peak so the *first* utterance opens on the absolute floor
+        // (easy for the user). After they speak, peak rises and relative
+        // hysteresis keeps quieter behind-you talk out.
+        let gate_peak = Arc::new(Mutex::new(0.012f32));
         let gate_peak_clone = gate_peak.clone();
         let ratio = native_rate as f64 / TARGET_RATE as f64;
 
