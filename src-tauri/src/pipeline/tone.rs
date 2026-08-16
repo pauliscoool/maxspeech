@@ -100,6 +100,10 @@ Prefer the reading that makes the sentence sensible. Examples: \
   Prefer the word that fits the sentence; only use digits when the speaker clearly \
   dictated a number, code, time, or quantity (e.g. 'meet at 4pm', 'room 101'). \
   In normal prose keep spelled-out numbers as words unless obviously numeric. \
+- percents (VERY common): '10 times' / 'ten times' → '10%' when the speaker meant \
+  a percentage (at/by/of/about/only/discount/rate/tax/tip), NOT repetition \
+  ('do it 10 times') or comparison ('10 times faster'). \
+  'ten percent' / '10 percent' → '10%'. \
 Do NOT invent new content. Only swap clearly wrong ASR tokens. \
 Do NOT change ordinary English 'get' ('I want to get coffee'). \
 If both readings are plausible, keep the transcript as-is.";
@@ -315,6 +319,131 @@ fn looks_like_finished_sentence(s: &str) -> bool {
 
 /// Local heuristic: fix "… Tuesday oh no I meant Monday" without needing an LLM.
 pub fn local_self_correct(text: &str) -> String {
+    let after_markers = local_self_correct_markers(text);
+    local_asr_cleanup(&after_markers)
+}
+
+/// Fix common ASR mangling that shouldn't wait on an LLM (quick sessions skip enhance).
+pub fn local_asr_cleanup(text: &str) -> String {
+    let after_percent_word = fix_spoken_percent_word(text);
+    fix_percent_heard_as_times(&after_percent_word)
+}
+
+fn fix_spoken_percent_word(text: &str) -> String {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if words.len() < 2 {
+        return text.to_string();
+    }
+    let mut out: Vec<String> = Vec::with_capacity(words.len());
+    let mut i = 0;
+    while i < words.len() {
+        let w = words[i];
+        let bare = w.trim_matches(|c: char| matches!(c, ',' | '.' | ';' | ':' | '!' | '?' | '"' | '\''));
+        let is_num = bare.chars().all(|c| c.is_ascii_digit()) && !bare.is_empty();
+        let next_is_pct = words
+            .get(i + 1)
+            .map(|n| {
+                let nb = n.trim_matches(|c: char| {
+                    matches!(c, ',' | '.' | ';' | ':' | '!' | '?' | '"' | '\'')
+                });
+                nb.eq_ignore_ascii_case("percent")
+                    || nb.eq_ignore_ascii_case("percentage")
+                    || nb.eq_ignore_ascii_case("percents")
+            })
+            .unwrap_or(false);
+        if is_num && next_is_pct {
+            let pct_tok = words[i + 1];
+            let trailing: String = pct_tok
+                .chars()
+                .rev()
+                .take_while(|c| matches!(c, ',' | '.' | ';' | ':' | '!' | '?' | '"' | '\''))
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect();
+            out.push(format!("{bare}%{trailing}"));
+            i += 2;
+            continue;
+        }
+        out.push(w.to_string());
+        i += 1;
+    }
+    out.join(" ")
+}
+
+fn fix_percent_heard_as_times(text: &str) -> String {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if words.len() < 2 {
+        return text.to_string();
+    }
+
+    let mult_next = [
+        "as", "more", "faster", "slower", "larger", "bigger", "harder", "louder",
+        "cheaper", "better", "worse", "higher", "lower", "greater", "smaller",
+        "again", "over", "before", "after", "until", "the", "a", "an",
+    ];
+    let percent_prev = [
+        "at", "by", "of", "about", "around", "roughly", "exactly", "only", "to",
+        "from", "discount", "off", "plus", "minus", "rate", "tax", "tip",
+        "interest", "fee", "up", "down", "nearly", "almost", "over", "under",
+        "above", "below", "was", "is", "be", "been",
+    ];
+
+    let mut out: Vec<String> = Vec::with_capacity(words.len());
+    let mut i = 0;
+    while i < words.len() {
+        let w = words[i];
+        let bare = w.trim_matches(|c: char| matches!(c, ',' | '.' | ';' | ':' | '!' | '?' | '"' | '\''));
+        let is_num = bare.chars().all(|c| c.is_ascii_digit()) && !bare.is_empty();
+        let next_is_times = words
+            .get(i + 1)
+            .map(|n| {
+                let nb = n.trim_matches(|c: char| matches!(c, ',' | '.' | ';' | ':' | '!' | '?' | '"' | '\''));
+                nb.eq_ignore_ascii_case("times") || nb.eq_ignore_ascii_case("time")
+            })
+            .unwrap_or(false);
+
+        if is_num && next_is_times {
+            let prev = out
+                .last()
+                .map(|p| {
+                    p.trim_matches(|c: char| matches!(c, ',' | '.' | ';' | ':' | '!' | '?' | '"' | '\''))
+                        .to_ascii_lowercase()
+                })
+                .unwrap_or_default();
+            let after = words.get(i + 2).map(|n| {
+                n.trim_matches(|c: char| matches!(c, ',' | '.' | ';' | ':' | '!' | '?' | '"' | '\''))
+                    .to_ascii_lowercase()
+            });
+            let after_is_mult = after
+                .as_deref()
+                .map(|a| mult_next.contains(&a))
+                .unwrap_or(false);
+            let prev_suggests_pct = percent_prev.iter().any(|p| *p == prev.as_str());
+            // Bare "10 times" → percent; "at 10 times" → percent; "10 times faster" stays.
+            let bare_utterance = words.len() <= 2;
+            if !after_is_mult && (prev_suggests_pct || bare_utterance || prev.is_empty()) {
+                let times_tok = words[i + 1];
+                let trailing: String = times_tok
+                    .chars()
+                    .rev()
+                    .take_while(|c| matches!(c, ',' | '.' | ';' | ':' | '!' | '?' | '"' | '\''))
+                    .collect::<String>()
+                    .chars()
+                    .rev()
+                    .collect();
+                out.push(format!("{bare}%{trailing}"));
+                i += 2;
+                continue;
+            }
+        }
+        out.push(w.to_string());
+        i += 1;
+    }
+    out.join(" ")
+}
+
+fn local_self_correct_markers(text: &str) -> String {
     let markers = [
         "oh no i meant ",
         "oh no, i meant ",
@@ -588,7 +717,18 @@ async fn call_llm(
 
 #[cfg(test)]
 mod tests {
-    use super::{local_self_correct, normalize_terminal_punctuation};
+    use super::{local_asr_cleanup, local_self_correct, normalize_terminal_punctuation};
+
+    #[test]
+    fn ten_times_becomes_percent() {
+        assert_eq!(local_asr_cleanup("10 times"), "10%");
+        assert_eq!(local_asr_cleanup("at 10 times."), "at 10%.");
+        assert_eq!(local_asr_cleanup("10 percent"), "10%");
+        // Multiplication / repetition sense stays.
+        assert_eq!(local_asr_cleanup("10 times faster"), "10 times faster");
+        assert_eq!(local_asr_cleanup("do it 10 times"), "do it 10 times");
+        assert_eq!(local_asr_cleanup("do it 10 times again"), "do it 10 times again");
+    }
 
     #[test]
     fn trailing_comma_becomes_period() {

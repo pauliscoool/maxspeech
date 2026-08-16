@@ -56,7 +56,7 @@ pub async fn transcribe_with_language_and_keyterms(
         language.trim()
     };
     let mut url = format!(
-        "https://api.deepgram.com/v1/listen?model=nova-3&language={lang}&punctuate=true&diarize=true&smart_format=true"
+        "https://api.deepgram.com/v1/listen?model=nova-3&language={lang}&punctuate=true&diarize=true&smart_format=true&numerals=true"
     );
     for term in keyterms.iter().take(40) {
         let t = term.trim();
