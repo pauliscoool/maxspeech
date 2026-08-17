@@ -330,6 +330,7 @@ export default function Shell({ authUser }: { authUser: AuthUser | null }) {
             identity={identity}
             email={authUser?.email ?? ""}
             username={authUser?.username}
+            active={page === "settings"}
             onOpen={() => goToPage("settings")}
           />
           {updateInfo && (
@@ -352,19 +353,6 @@ export default function Shell({ authUser }: { authUser: AuthUser | null }) {
               </div>
             </button>
           )}
-          <button
-            onClick={() => goToPage("settings")}
-            className={`nav-item w-full flex items-center gap-3 px-3 py-2.5 rounded-full text-sm transition-all ${
-              page === "settings"
-                ? "nav-active"
-                : "text-[var(--ms-text-dim)] hover:text-[var(--ms-hover-fg)] hover:bg-[var(--ms-surface)]"
-            }`}
-          >
-            <span className={`nav-icon shrink-0 ${page === "settings" ? "nav-icon-active" : ""}`}>
-              <IconGear active={page === "settings"} />
-            </span>
-            Settings
-          </button>
         </div>
       </aside>
 
@@ -524,11 +512,13 @@ function ProfileNavButton({
   identity,
   email,
   username,
+  active,
   onOpen,
 }: {
   identity: ProfileIdentity | null;
   email: string;
   username?: string;
+  active: boolean;
   onOpen: () => void;
 }) {
   const first = identity?.firstName ?? "";
@@ -543,7 +533,12 @@ function ProfileNavButton({
     <button
       type="button"
       onClick={onOpen}
-      className="w-full flex items-center gap-2 px-1.5 py-1.5 rounded-2xl text-left hover:bg-[var(--ms-surface)] transition-all"
+      aria-current={active ? "page" : undefined}
+      className={`nav-item w-full flex items-center gap-2 px-1.5 py-1.5 rounded-2xl text-left transition-all duration-200 ${
+        active
+          ? "nav-active"
+          : "hover:bg-[var(--ms-surface)]"
+      }`}
       aria-label="Open Settings"
     >
       {showAvatar ? (
@@ -701,15 +696,6 @@ function IconWave({ active: _a }: { active: boolean }) {
       <path d="M14 8v8" />
       <path d="M18 5v14" />
       <path d="M22 10v4" />
-    </svg>
-  );
-}
-
-function IconGear({ active: _a }: { active: boolean }) {
-  return (
-    <svg {...iconProps()}>
-      <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
-      <circle cx="12" cy="12" r="3" />
     </svg>
   );
 }

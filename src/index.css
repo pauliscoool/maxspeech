@@ -207,19 +207,24 @@ html[data-window="onboarding"] body {
 }
 
 .page-enter {
-  animation: fadeSlideIn 0.35s ease both;
+  animation: fadeSlideIn 0.2s ease-out both;
 }
 
 @keyframes fadeSlideIn {
   from {
     opacity: 0;
-    transform: translateY(8px);
+    transform: translateY(10px);
   }
   to {
     /* Omit transform so fill-mode doesn't leave a transform containing
        block on <main>, which breaks position:fixed overlays. */
     opacity: 1;
   }
+}
+
+/* Overlay window must never inherit shell page transitions. */
+html[data-window="overlay"] .page-enter {
+  animation: none !important;
 }
 
 .liquid-glass-pill {
