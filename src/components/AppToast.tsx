@@ -46,7 +46,7 @@ export default function AppToast() {
     };
   }, [toast?.id]);
 
-  if (!toast) return null;
+  if (!toast || typeof document === "undefined" || !document.body) return null;
 
   return createPortal(
     <div

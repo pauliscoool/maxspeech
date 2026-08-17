@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicovince/tauri/HEAD/crates/tauri-config-schema/schema.json",
   "productName": "MaxSpeech",
-  "version": "0.1.47",
+  "version": "0.1.48",
   "identifier": "com.maxspeech.app",
   "build": {
     "frontendDist": "../dist",

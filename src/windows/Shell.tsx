@@ -536,6 +536,8 @@ function ProfileNavButton({
   const fullName = formatFullName(first, last) || username || "Account";
   const mail = (identity?.email || email).trim();
   const avatar = identity?.avatarDataUrl;
+  const [avatarBroken, setAvatarBroken] = useState(false);
+  const showAvatar = avatar && !avatarBroken;
 
   return (
     <button
@@ -544,11 +546,12 @@ function ProfileNavButton({
       className="w-full flex items-center gap-2 px-1.5 py-1.5 rounded-2xl text-left hover:bg-[var(--ms-surface)] transition-all"
       aria-label="Open Settings"
     >
-      {avatar ? (
+      {showAvatar ? (
         <img
           src={avatar}
           alt=""
           className="w-8 h-8 rounded-full object-cover shrink-0"
+          onError={() => setAvatarBroken(true)}
         />
       ) : (
         <div

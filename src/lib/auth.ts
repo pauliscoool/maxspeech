@@ -12,6 +12,8 @@ export type AuthUser = {
 };
 
 const LOCAL_SESSION_KEY = "maxspeech_local_session";
+/** Never block the shell on a slow/offline Supabase refresh. */
+const CLOUD_SESSION_TIMEOUT_MS = 8_000;
 
 const LOCAL_USER: AuthUser = {
   id: "local-user",
@@ -103,7 +105,15 @@ export async function getSessionUser(): Promise<AuthUser | null> {
     return restored;
   }
 
-  const { data, error } = await supabase.auth.getSession();
+  const { data, error } = await Promise.race([
+    supabase.auth.getSession(),
+    new Promise<{ data: { session: null }; error: null }>((resolve) => {
+      window.setTimeout(
+        () => resolve({ data: { session: null }, error: null }),
+        CLOUD_SESSION_TIMEOUT_MS,
+      );
+    }),
+  ]);
   if (!error && data.session?.user) {
     clearLocalUser();
     const u = data.session.user;

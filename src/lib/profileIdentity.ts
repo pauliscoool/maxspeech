@@ -8,6 +8,8 @@ export const PROFILE_AVATAR_SAVED_EVENT = "maxspeech-profile-avatar-saved";
 const AVATAR_SAVE_DELAY_MS = 3000;
 
 export const MAX_AVATAR_BYTES = 1 * 1024 * 1024;
+/** Base64 data URLs can exceed raw bytes — cap what we hydrate into React. */
+const MAX_AVATAR_DATA_URL_LEN = MAX_AVATAR_BYTES * 2 + 256;
 
 export const SETTING_FIRST_NAME = "profile_first_name";
 export const SETTING_LAST_NAME = "profile_last_name";
@@ -95,6 +97,16 @@ export function profileInitials(first: string, last: string): string {
   return s || "MS";
 }
 
+function safeAvatarDataUrl(raw: string | null | undefined): string | null {
+  const trimmed = (raw ?? "").trim();
+  if (!trimmed.startsWith("data:image/")) return null;
+  if (trimmed.length > MAX_AVATAR_DATA_URL_LEN) {
+    console.warn("profile avatar too large to display");
+    return null;
+  }
+  return trimmed;
+}
+
 export function validateAvatarFile(file: File): string | null {
   if (file.size > MAX_AVATAR_BYTES) {
     return "Images must be 1 MB or smaller.";
@@ -134,11 +146,11 @@ export async function loadProfileIdentity(fallback: {
     first = (await invoke<string>("get_setting", { key: SETTING_FIRST_NAME })).trim();
     last = (await invoke<string>("get_setting", { key: SETTING_LAST_NAME })).trim();
     const raw = (await invoke<string>("get_setting", { key: SETTING_AVATAR })).trim();
-    avatar = pendingAvatarDataUrl ?? (raw.startsWith("data:image/") ? raw : null);
+    avatar = safeAvatarDataUrl(pendingAvatarDataUrl ?? raw);
   } catch {
     /* ignore when not in Tauri */
   }
-  if (pendingAvatarDataUrl) avatar = pendingAvatarDataUrl;
+  if (pendingAvatarDataUrl) avatar = safeAvatarDataUrl(pendingAvatarDataUrl);
 
   if (!first && !last) {
     try {
