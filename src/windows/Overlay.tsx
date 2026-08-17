@@ -20,6 +20,8 @@ const BAR_COUNT = 20;
 const BAR_MAX_PX = 18;
 const BAR_WIDTH_PX = 3;
 const BAR_GAP_PX = 3;
+/** After this long still processing, switch from ping-pong wave → digging sweep. */
+const THINKING_DIG_AFTER_S = 3;
 /** 20×3 + 19×3 = 117px bars + ~28px side padding. */
 const OVERLAY_W = 148;
 const OVERLAY_H = 36;
@@ -67,8 +69,8 @@ export default function Overlay() {
   }, []);
 
   useEffect(() => {
-    // Processing: loading wave. Listening: wait for real audio-level events —
-    // do not breathe as if the mic is live while WASAPI/WS are still opening.
+    // Processing: synthetic ping-pong / dig wave. Listening: real audio-level
+    // events only — do not breathe as if the mic is live while WASAPI/WS open.
     if (state !== "listening" && state !== "processing") {
       if (raf.current) cancelAnimationFrame(raf.current);
       raf.current = null;
@@ -84,8 +86,14 @@ export default function Overlay() {
     }
     let t0 = performance.now();
     let lastTick = 0;
-    const FRAME_MS = 1000 / 30;
+    const FRAME_MS = 1000 / 50;
     let alive = true;
+    const paint = (now: number) => {
+      const t = (now - t0) / 1000;
+      const next = Array.from({ length: BAR_COUNT }, (_, i) => thinkingBarLevel(t, i));
+      smoothed.current = next;
+      setLevels(next);
+    };
     const tick = (now: number) => {
       if (!alive) return;
       if (now - lastTick < FRAME_MS) {
@@ -93,18 +101,10 @@ export default function Overlay() {
         return;
       }
       lastTick = now;
-      const t = (now - t0) / 1000;
-      // Loading wave: a soft peak travels left → right while processing.
-      const next = Array.from({ length: BAR_COUNT }, (_, i) => {
-        const phase = t * 2.0 - i * 0.45;
-        const envelope = 0.5 + 0.5 * Math.sin(phase);
-        const peak = Math.pow(envelope, 1.8);
-        return 0.14 + peak * 0.55;
-      });
-      smoothed.current = next;
-      setLevels(next);
+      paint(now);
       raf.current = requestAnimationFrame(tick);
     };
+    paint(t0);
     raf.current = requestAnimationFrame(tick);
     return () => {
       alive = false;
@@ -385,9 +385,11 @@ export default function Overlay() {
                 ? "liquid-glass-pill--idle"
                 : connecting
                   ? "liquid-glass-pill--connecting liquid-glass-pill--in"
-                  : pillActive
-                    ? "liquid-glass-pill--in"
-                    : ""
+                  : state === "processing"
+                    ? "liquid-glass-pill--thinking liquid-glass-pill--in"
+                    : pillActive
+                      ? "liquid-glass-pill--in"
+                      : ""
           }`}
         >
           {!showLimit && (
@@ -423,6 +425,36 @@ export default function Overlay() {
       )}
     </div>
   );
+}
+
+function pingPong01(t: number, oneWayS: number): number {
+  const cycle = oneWayS * 2;
+  const x = ((t % cycle) + cycle) % cycle;
+  return x < oneWayS ? x / oneWayS : 2 - x / oneWayS;
+}
+
+function gaussian(dist: number, sigma: number): number {
+  return Math.exp(-(dist * dist) / (2 * sigma * sigma));
+}
+
+/** Processing / enhance: traveling ping-pong, then a slower dual-phase “dig”. */
+function thinkingBarLevel(t: number, i: number): number {
+  const n = BAR_COUNT - 1;
+  const pulse = pingPong01(t, 1.05);
+  const a1 = 0.14 + gaussian(i - pulse * n, 1.65) * 0.8;
+
+  const t2 = Math.max(0, t - THINKING_DIG_AFTER_S);
+  const dig = pingPong01(t2, 1.9);
+  const pos = dig * n;
+  const wide = gaussian(i - pos, 3.5);
+  const counter = gaussian(i - (n - pos), 1.5);
+  const floor = 0.13 + 0.05 * (0.5 + 0.5 * Math.sin(t2 * 0.9));
+  const a2 = floor + wide * 0.55 + counter * 0.28;
+
+  if (t < THINKING_DIG_AFTER_S) return Math.min(0.98, a1);
+  const k = Math.min(1, (t - THINKING_DIG_AFTER_S) / 0.4);
+  const eased = k * k * (3 - 2 * k);
+  return Math.min(0.98, a1 + (a2 - a1) * eased);
 }
 
 function truncate(s: string, n: number) {

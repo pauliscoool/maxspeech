@@ -64,6 +64,7 @@ vercel alias set <deployment-url> maxspeech.vercel.app
 7. **Mic:** Fuzzy device name matching; Bluetooth-friendly tests; live level events.
 8. **Updates:** Prefer signed Tauri `latest.json` on GitHub Releases; fallback to `https://maxspeech.vercel.app/updates/latest.json` + Releases API.
 9. **Secrets:** Never commit `.env`, signing private keys, or API keys. `.env.example` is the template.
+10. **Ship when a batch is done:** After app changes are complete and no further sub-work is in flight, bump the patch version, build the Windows installer (`scripts/build-installer.ps1`), silent-install on this machine, commit+push `origin windows` (never giant EXEs), then deploy `website/` to Vercel prod and alias `maxspeech.vercel.app` so `website/updates/latest.json` drives in-app update.
 
 ## Env
 

@@ -75,6 +75,9 @@ const BUILTIN_KEYTERMS: &[&str] = &[
     "percentage",
     "%",
     "Cursor",
+    // Product — ASR hears "Covenant Core" as Court / Corner.
+    "Covenant Core",
+    "CovenantCore",
 ];
 
 #[derive(Debug, Clone)]
@@ -598,6 +601,8 @@ mod tests {
         assert!(lower.iter().any(|s| s == "curseforge"));
         assert!(lower.iter().any(|s| s == "percent"));
         assert!(lower.iter().any(|s| s == "postgres"));
+        assert!(lower.iter().any(|s| s == "covenant core"));
+        assert!(!lower.iter().any(|s| s.contains("corner")));
     }
 
     #[test]

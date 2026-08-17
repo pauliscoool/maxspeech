@@ -611,6 +611,9 @@ impl Store {
             "deepgram_api_key",
             "llm_api_key",
             "api_key",
+            "profile_first_name",
+            "profile_last_name",
+            "profile_avatar",
         ] {
             let _ = conn.execute("DELETE FROM meta WHERE key = ?1", params![key]);
         }

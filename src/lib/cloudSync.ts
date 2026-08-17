@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { supabase } from "./supabase";
 import type { PlanTier } from "./plan";
+import { showAccountSavedToast } from "./toast";
 
 /** Local settings keys mirrored to Supabase `user_settings.settings`. */
 export const SYNC_SETTING_KEYS = [
@@ -11,11 +12,18 @@ export const SYNC_SETTING_KEYS = [
   "sound_cue_volume",
   "ui_theme",
   "launch_at_startup",
+  "open_window_on_launch",
   "plan_tier",
   "stt_multilingual",
   "stt_languages",
   "mic_device",
+  "profile_first_name",
+  "profile_last_name",
+  "profile_avatar",
 ] as const;
+
+/** Debounce from last settings edit before pushing to the account. */
+export const ACCOUNT_SAVE_DEBOUNCE_MS = 5000;
 
 export type CloudSettings = Record<string, string>;
 
@@ -75,13 +83,23 @@ async function applyLocalSettings(settings: CloudSettings): Promise<void> {
   }
 }
 
-export async function pushCloudSettings(): Promise<void> {
+export async function hasCloudSession(): Promise<boolean> {
+  const { data: session } = await supabase.auth.getSession();
+  return Boolean(session.session?.user?.id);
+}
+
+/**
+ * Push local prefs (hotkey, theme, mic, …) to Supabase.
+ * No-ops for local-only / unsigned-in sessions. Returns true only when
+ * the upsert succeeded for a real cloud user.
+ */
+export async function pushCloudSettings(): Promise<boolean> {
   const { data: session } = await supabase.auth.getSession();
   const uid = session.session?.user?.id;
-  if (!uid) return;
+  if (!uid) return false;
 
-  const settings = await readLocalSettings();
-  const tier = (settings.plan_tier || "free") as PlanTier;
+  const local = await readLocalSettings();
+  const tier = (local.plan_tier || "free") as PlanTier;
 
   await supabase
     .from("profiles")
@@ -91,6 +109,17 @@ export async function pushCloudSettings(): Promise<void> {
     })
     .eq("id", uid);
 
+  // Merge so a hotkey/theme push cannot wipe a stored avatar.
+  const { data: existing } = await supabase
+    .from("user_settings")
+    .select("settings")
+    .eq("user_id", uid)
+    .maybeSingle();
+  const settings: CloudSettings = {
+    ...((existing?.settings as CloudSettings) || {}),
+    ...local,
+  };
+
   const { error } = await supabase.from("user_settings").upsert(
     {
       user_id: uid,
@@ -99,7 +128,71 @@ export async function pushCloudSettings(): Promise<void> {
     },
     { onConflict: "user_id" },
   );
-  if (error) console.warn("pushCloudSettings:", error.message);
+  if (error) {
+    console.warn("pushCloudSettings:", error.message);
+    return false;
+  }
+  return true;
+}
+
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+let savePending = false;
+let saveChain: Promise<void> = Promise.resolve();
+let flushListenersBound = false;
+
+function bindSaveFlushListeners() {
+  if (flushListenersBound || typeof window === "undefined") return;
+  flushListenersBound = true;
+  const flushQuiet = () => {
+    void flushScheduledCloudSettingsPush({ toast: false });
+  };
+  window.addEventListener("pagehide", flushQuiet);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") flushQuiet();
+  });
+}
+
+/**
+ * Debounce account sync: local SQLite already saved; wait ~5s after the last
+ * edit, then push once and toast. Local-only users skip this (no account toast).
+ */
+export function scheduleCloudSettingsPush(): void {
+  bindSaveFlushListeners();
+  savePending = true;
+  if (saveTimer != null) {
+    clearTimeout(saveTimer);
+  }
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    void commitScheduledCloudSettings({ toast: true });
+  }, ACCOUNT_SAVE_DEBOUNCE_MS);
+}
+
+/** Flush a pending debounced push (e.g. window hidden). */
+export function flushScheduledCloudSettingsPush(
+  opts?: { toast?: boolean },
+): Promise<void> {
+  if (saveTimer != null) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+  return commitScheduledCloudSettings({ toast: opts?.toast === true });
+}
+
+function commitScheduledCloudSettings(opts: { toast: boolean }): Promise<void> {
+  saveChain = saveChain
+    .then(async () => {
+      if (!savePending) return;
+      savePending = false;
+      const ok = await pushCloudSettings();
+      // More edits arrived while we were pushing — let the next timer/flush toast.
+      if (savePending) return;
+      if (ok && opts.toast) showAccountSavedToast();
+    })
+    .catch((e) => {
+      console.warn("scheduleCloudSettingsPush:", e);
+    });
+  return saveChain;
 }
 
 export async function pullCloudSettings(): Promise<CloudSettings | null> {
@@ -133,6 +226,9 @@ export async function pullCloudSettings(): Promise<CloudSettings | null> {
 
   if (Object.keys(settings).length > 0) {
     await applyLocalSettings(settings);
+  }
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event("maxspeech-profile-changed"));
   }
   return settings;
 }

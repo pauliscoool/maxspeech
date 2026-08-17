@@ -92,11 +92,14 @@ Prefer the reading that makes the sentence sensible. Examples: \
   'push it to get' → 'push it to Git'; 'get hub' → 'GitHub' \
 - tech/cloud: 'clout'→'cloud', 'a WS'→'AWS', 'verse cell'→'Vercel', \
   'type script'→'TypeScript', 'post grass'→'Postgres' \
-- product names: Deepgram, Claude, ChatGPT, Notion, Slack, CurseForge \
+- product names: Deepgram, Claude, ChatGPT, Notion, Slack, CurseForge, Covenant Core \
   (do NOT rewrite 'curse forge' / 'CurseForge' to 'Cursor' — different product) \
   Cursor only when clearly the editor/IDE, not gaming/modding context \
   (do NOT assume the speaker means the MaxSpeech app itself unless truly unambiguous — \
   names like 'Maximus Dev' or similar-sounding phrases are NOT the app name) \
+  'Covenant court' / 'Covenant Court' → 'Covenant Core'; \
+  'Covenant corner' / 'Covenant Corner' → 'Covenant Core' \
+  (do NOT rewrite to 'Covenant Corner' — the product is Covenant Core) \
 - common: 'there'/'their'/'they're', 'to'/'too'/'two', 'its'/'it's' by grammar \
 - numbers: ASR often inserts digits for homophones ('for'→'4', 'to'→'2', 'won'→'1'). \
   Prefer the word that fits the sentence; only use digits when the speaker clearly \
@@ -115,7 +118,8 @@ Prefer the reading that makes the sentence sensible. Examples: \
 - split product names: 'type script'→TypeScript, 'java script'→JavaScript, \
   'super base'→Supabase, 'verse cell'→Vercel, 'cloud flare'→Cloudflare, \
   'chat gpt'→ChatGPT, 'open ai'→OpenAI, 'vs code'→VS Code, \
-  'curse forge'→CurseForge (not Cursor), 'post grass'→Postgres. \
+  'curse forge'→CurseForge (not Cursor), 'post grass'→Postgres, \
+  'covenant court'/'covenant corner'/'covenant core'→Covenant Core. \
 - 'could of'/'would of'/'should of' → could've/would've/should've \
   (unless 'of the/a/course'). \
 - comparatives: 'better then' / 'more then' / 'rather then' → than. \

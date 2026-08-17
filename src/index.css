@@ -300,6 +300,12 @@ html[data-window="onboarding"] body {
   box-shadow: none;
 }
 
+/* Enhancing / processing — keep the synthetic wave snappy so it never looks idle. */
+.liquid-glass-pill--thinking .liquid-glass-bar {
+  opacity: 1;
+  transition: height 40ms linear;
+}
+
 .nav-icon {
   width: 22px;
   height: 22px;
@@ -1051,4 +1057,113 @@ html[data-window="shell"] .flex.h-screen {
 [data-theme="light"] .danger-zone {
   background: rgba(220, 38, 38, 0.06);
   outline-color: rgba(220, 38, 38, 0.22);
+}
+
+/* Account-save toast — liquid glass, theme-matched (not overlay purple). */
+.app-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(440px, calc(100vw - 32px));
+  padding: 12px 16px 12px 12px;
+  border-radius: 16px;
+  pointer-events: none;
+  color: var(--ms-text);
+  border: 1px solid var(--ms-hairline);
+  backdrop-filter: blur(22px) saturate(1.35);
+  -webkit-backdrop-filter: blur(22px) saturate(1.35);
+  box-shadow:
+    var(--ms-card-shadow),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1);
+}
+
+[data-theme="dark"] .app-toast {
+  background: linear-gradient(
+    155deg,
+    rgba(24, 24, 24, 0.82) 0%,
+    rgba(0, 0, 0, 0.92) 100%
+  );
+  border-color: rgba(255, 255, 255, 0.1);
+  box-shadow:
+    0 12px 40px rgba(0, 0, 0, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+[data-theme="gray"] .app-toast {
+  background: linear-gradient(
+    155deg,
+    rgba(58, 58, 62, 0.78) 0%,
+    rgba(28, 28, 30, 0.92) 100%
+  );
+  border-color: rgba(255, 255, 255, 0.12);
+  box-shadow:
+    0 12px 36px rgba(0, 0, 0, 0.38),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1);
+}
+
+[data-theme="light"] .app-toast {
+  background: linear-gradient(
+    155deg,
+    rgba(255, 255, 255, 0.9) 0%,
+    rgba(244, 245, 247, 0.88) 100%
+  );
+  border-color: rgba(15, 23, 42, 0.1);
+  box-shadow:
+    0 12px 32px rgba(15, 23, 42, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.95);
+}
+
+.app-toast-check {
+  flex-shrink: 0;
+  display: flex;
+  color: #22c55e;
+  filter: drop-shadow(0 0 8px rgba(34, 197, 94, 0.5));
+}
+
+[data-theme="light"] .app-toast-check {
+  color: #16a34a;
+  filter: drop-shadow(0 0 6px rgba(22, 163, 74, 0.32));
+}
+
+.app-toast-copy {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: -0.015em;
+  line-height: 1.35;
+  color: var(--ms-text);
+}
+
+.app-toast--in {
+  animation: appToastIn 0.38s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.app-toast--out {
+  animation: appToastOut 0.22s cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+@keyframes appToastIn {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(14px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0) scale(1);
+  }
+}
+
+@keyframes appToastOut {
+  from {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(-50%) translateY(8px) scale(0.98);
+  }
 }

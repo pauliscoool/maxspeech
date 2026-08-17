@@ -235,6 +235,10 @@ fn fix_common_asr(text: &str) -> String {
         ("git lab", "GitLab"),
         ("vs code", "VS Code"),
         ("curse forge", "CurseForge"),
+        ("covenant court", "Covenant Core"),
+        ("covenant corner", "Covenant Core"),
+        ("covenant core", "Covenant Core"),
+        ("covenantcore", "Covenant Core"),
         ("graph ql", "GraphQL"),
         ("mongo db", "MongoDB"),
         ("a ws", "AWS"),
@@ -434,6 +438,21 @@ mod tests {
         assert_eq!(fix_common_asr("edit in vs code"), "edit in VS Code");
         assert_eq!(fix_common_asr("on the clout"), "on the cloud");
         assert_eq!(fix_common_asr("install CurseForge"), "install CurseForge");
+    }
+
+    #[test]
+    fn fixes_covenant_core_mishears() {
+        assert_eq!(fix_common_asr("open Covenant court"), "open Covenant Core");
+        assert_eq!(fix_common_asr("open covenant court"), "open Covenant Core");
+        assert_eq!(fix_common_asr("Covenant Court"), "Covenant Core");
+        assert_eq!(fix_common_asr("try Covenant corner"), "try Covenant Core");
+        assert_eq!(fix_common_asr("Covenant Corner"), "Covenant Core");
+        assert_eq!(fix_common_asr("covenant core"), "Covenant Core");
+        assert_eq!(fix_common_asr("Covenant Core"), "Covenant Core");
+        assert_eq!(fix_common_asr("CovenantCore"), "Covenant Core");
+        // Unrelated "court" / "corner" stay put.
+        assert_eq!(fix_common_asr("see you in court"), "see you in court");
+        assert_eq!(fix_common_asr("around the corner"), "around the corner");
     }
 
     #[test]

@@ -13,6 +13,7 @@ const TranscriberPage = lazy(() => import("./pages/TranscriberPage"));
 const SettingsPage = lazy(() => import("./pages/SettingsPage"));
 import PlanModal from "../components/PlanModal";
 import ThemeWipe from "../components/ThemeWipe";
+import AppToast from "../components/AppToast";
 import {
   checkForUpdate,
   installAvailableUpdate,
@@ -22,6 +23,13 @@ import { formatWeeklyUsage, weeklyUsagePct, planLabel, type PlanStatus } from ".
 import type { AuthUser } from "../lib/auth";
 import { pushHistoryIfMax, type HistoryPayload } from "../lib/cloudSync";
 import { formatHotkey as formatHotkeyOs } from "../lib/platform";
+import {
+  PROFILE_CHANGED_EVENT,
+  formatFullName,
+  loadProfileIdentity,
+  profileInitials,
+  type ProfileIdentity,
+} from "../lib/profileIdentity";
 
 export type PageId =
   | "home"
@@ -68,6 +76,7 @@ export default function Shell({ authUser }: { authUser: AuthUser | null }) {
   const [updatePct, setUpdatePct] = useState<number | null>(null);
   const [plan, setPlan] = useState<PlanStatus | null>(null);
   const [plansOpen, setPlansOpen] = useState(false);
+  const [identity, setIdentity] = useState<ProfileIdentity | null>(null);
 
   function goToPage(next: PageId) {
     if (next !== "home") setSelectDeleteMode(false);
@@ -81,6 +90,24 @@ export default function Shell({ authUser }: { authUser: AuthUser | null }) {
   useEffect(() => {
     refresh();
   }, [page]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadIdentity = () => {
+      void loadProfileIdentity({
+        username: authUser?.username,
+        email: authUser?.email,
+      }).then((next) => {
+        if (!cancelled) setIdentity(next);
+      });
+    };
+    loadIdentity();
+    window.addEventListener(PROFILE_CHANGED_EVENT, loadIdentity);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(PROFILE_CHANGED_EVENT, loadIdentity);
+    };
+  }, [authUser?.email, authUser?.username]);
 
   // Refresh stats / plan when the window is focused again.
   useEffect(() => {
@@ -207,6 +234,7 @@ export default function Shell({ authUser }: { authUser: AuthUser | null }) {
   return (
     <div className="flex h-screen bg-[var(--ms-bg)] text-[var(--ms-text)] overflow-hidden flex-col relative">
       <ThemeWipe />
+      <AppToast />
       <div className="ms-shell-chrome">
       <PlanModal
         open={plansOpen}
@@ -298,48 +326,12 @@ export default function Shell({ authUser }: { authUser: AuthUser | null }) {
           className="p-3 space-y-2"
           style={{ borderTop: "1px solid var(--ms-hairline)" }}
         >
-          {plan?.weekly_limit != null && (
-            <button
-              onClick={openPlans}
-              className="w-full text-left p-3 rounded-2xl hover:bg-[var(--ms-surface)] transition-colors"
-              style={{ background: "var(--ms-fill-muted)" }}
-            >
-              <div className="flex items-baseline justify-between gap-2">
-                <div className="text-xs font-medium" style={{ color: "var(--ms-text-soft)" }}>
-                  {planLabel(plan.tier)} plan
-                </div>
-                <div
-                  className={`text-[11px] font-medium tabular-nums ${
-                    !plan.can_dictate
-                      ? "text-[var(--ms-orange)]"
-                      : "text-[var(--ms-turquoise)]"
-                  }`}
-                >
-                  {formatWeeklyUsage(plan)}
-                </div>
-              </div>
-              <div
-                className="h-1 rounded-full overflow-hidden mt-2"
-                style={{ background: "var(--ms-fill-track)" }}
-              >
-                <div
-                  className={`h-full rounded-full ${
-                    !plan.can_dictate
-                      ? "bg-[var(--ms-orange)]"
-                      : "bg-[var(--ms-turquoise)]"
-                  }`}
-                  style={{ width: `${weeklyUsagePct(plan) ?? 0}%` }}
-                />
-              </div>
-              <div className="text-[10px] text-[var(--ms-text-dim)] mt-1.5">
-                {!plan.can_dictate
-                  ? plan.tier === "max"
-                    ? "Limit reached — resets Monday"
-                    : "Limit reached — upgrade"
-                  : "words this week"}
-              </div>
-            </button>
-          )}
+          <ProfileNavButton
+            identity={identity}
+            email={authUser?.email ?? ""}
+            username={authUser?.username}
+            onOpen={() => goToPage("settings")}
+          />
           {updateInfo && (
             <button
               onClick={applyUpdate}
@@ -384,7 +376,9 @@ export default function Shell({ authUser }: { authUser: AuthUser | null }) {
         >
         {page === "home" && (
           <HomePage
-            displayName={authUser?.username}
+            displayName={
+              identity?.firstName || authUser?.username
+            }
             onNavigate={goToPage}
             onChanged={refresh}
             selectMode={selectDeleteMode}
@@ -523,6 +517,58 @@ export default function Shell({ authUser }: { authUser: AuthUser | null }) {
       </div>
       </div>
     </div>
+  );
+}
+
+function ProfileNavButton({
+  identity,
+  email,
+  username,
+  onOpen,
+}: {
+  identity: ProfileIdentity | null;
+  email: string;
+  username?: string;
+  onOpen: () => void;
+}) {
+  const first = identity?.firstName ?? "";
+  const last = identity?.lastName ?? "";
+  const fullName = formatFullName(first, last) || username || "Account";
+  const mail = (identity?.email || email).trim();
+  const avatar = identity?.avatarDataUrl;
+
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="w-full flex items-center gap-2 px-1.5 py-1.5 rounded-2xl text-left hover:bg-[var(--ms-surface)] transition-all"
+      aria-label="Open Settings"
+    >
+      {avatar ? (
+        <img
+          src={avatar}
+          alt=""
+          className="w-8 h-8 rounded-full object-cover shrink-0"
+        />
+      ) : (
+        <div
+          className="w-8 h-8 rounded-full shrink-0 flex items-center justify-center text-[10px] font-semibold text-[var(--ms-turquoise)]"
+          style={{ background: "var(--ms-surface-2)" }}
+        >
+          {profileInitials(first || fullName, last)}
+        </div>
+      )}
+      <div className="min-w-0 flex-1">
+        <div className="text-[12px] font-medium truncate leading-tight">
+          {fullName}
+        </div>
+        {mail ? (
+          <div className="text-[10px] text-[var(--ms-text-dim)] truncate leading-tight mt-0.5">
+            {mail}
+          </div>
+        ) : null}
+      </div>
+    </button>
   );
 }
 
