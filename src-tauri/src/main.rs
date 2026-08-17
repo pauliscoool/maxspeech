@@ -752,12 +752,13 @@ async fn remake_dictation(app: tauri::AppHandle, id: i64) -> Result<String, Stri
         .ok_or_else(|| "Recording file missing".to_string())?;
 
     let language = stt_language_from_store(&store);
-    let keyterms: Vec<String> = store
+    let dict_terms: Vec<String> = store
         .get_dictionary()
         .unwrap_or_default()
         .into_iter()
         .map(|w| w.word)
         .collect();
+    let keyterms = stt::deepgram::merge_keyterms(dict_terms.clone());
     let result =
         stt::batch::transcribe_with_language_and_keyterms(&wav_path, &language, &keyterms)
             .await
@@ -799,7 +800,7 @@ async fn remake_dictation(app: tauri::AppHandle, id: i64) -> Result<String, Stri
             &tone_name,
             false,
             multilingual,
-            &keyterms,
+            &dict_terms,
         )
         .await
         .unwrap_or(corrected.clone())
@@ -1135,18 +1136,15 @@ fn main() {
 
             hotkey::register_hotkeys(&handle);
 
-            // Warm Deepgram ASAP; create overlay shortly after first paint so the
-            // hotkey isn't blocked spinning up a second WebView2.
+            // Warm Deepgram TLS/DNS and the overlay WebView2 off the hotkey path.
+            // Queue overlay on the next UI tick (after this setup returns) so the
+            // first press does not create a WebView2 while opening WASAPI.
             tauri::async_runtime::spawn(async move {
                 stt::deepgram::prewarm().await;
             });
             let warm_ui = handle.clone();
-            tauri::async_runtime::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_millis(450)).await;
-                let thread = warm_ui.clone();
-                let _ = warm_ui.run_on_main_thread(move || {
-                    ensure_overlay_window(&thread);
-                });
+            let _ = handle.run_on_main_thread(move || {
+                ensure_overlay_window(&warm_ui);
             });
 
             Ok(())
@@ -1228,8 +1226,9 @@ fn open_window(app: &tauri::AppHandle, label: &str, title: &str, width: u32, hei
     }
 }
 
-/// Create the listening overlay on demand. Kept out of first-paint so opening
-/// the main window only boots one WebView2.
+/// Create the listening overlay on demand. Startup queues this on the next UI
+/// tick so the first hotkey does not have to boot WebView2. If it is still
+/// missing, `show_overlay_fast` creates it *after* mic + Deepgram have started.
 pub(crate) fn ensure_overlay_window(app: &tauri::AppHandle) {
     if app.get_webview_window("overlay").is_some() {
         return;

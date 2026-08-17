@@ -39,7 +39,25 @@ const BUILTIN_KEYTERMS: &[&str] = &[
     "TypeScript",
     "JavaScript",
     "PostgreSQL",
+    "Postgres",
     "SQLite",
+    "GraphQL",
+    "Docker",
+    "Kubernetes",
+    "AWS",
+    "React",
+    "Next.js",
+    "Node.js",
+    "Python",
+    "Rust",
+    "VS Code",
+    "Copilot",
+    "Anthropic",
+    "OAuth",
+    "Redis",
+    "MongoDB",
+    "npm",
+    "Vite",
     "Windows",
     "macOS",
     "Linux",
@@ -68,23 +86,39 @@ pub struct DeepgramConfig {
 }
 
 /// Merge user dictionary terms with built-in keyterms (deduped, capped for URL size).
+/// User terms come first so personal names win; builtins always get reserved slots
+/// so a large dictionary cannot drop Git / TypeScript / CurseForge / etc.
 pub fn merge_keyterms(user: Vec<String>) -> Vec<String> {
+    const MAX: usize = 80;
     let mut out: Vec<String> = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    for term in user
-        .into_iter()
-        .chain(BUILTIN_KEYTERMS.iter().map(|s| (*s).to_string()))
-    {
-        let t = term.trim().to_string();
+
+    let builtin_n = BUILTIN_KEYTERMS.len().min(MAX);
+    let user_cap = MAX.saturating_sub(builtin_n);
+
+    for term in user {
+        if out.len() >= user_cap {
+            break;
+        }
+        let t = term.trim();
         if t.is_empty() {
             continue;
         }
-        let key = t.to_lowercase();
-        if seen.insert(key) {
-            out.push(t);
+        if seen.insert(t.to_lowercase()) {
+            out.push(t.to_string());
         }
-        if out.len() >= 80 {
+    }
+
+    for term in BUILTIN_KEYTERMS {
+        if out.len() >= MAX {
             break;
+        }
+        let t = term.trim();
+        if t.is_empty() {
+            continue;
+        }
+        if seen.insert(t.to_lowercase()) {
+            out.push(t.to_string());
         }
     }
     out
@@ -232,6 +266,7 @@ struct DgResponse {
     _msg_type: Option<String>,
     channel: Option<DgChannel>,
     is_final: Option<bool>,
+    speech_final: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -257,8 +292,8 @@ type WsStream = tokio_tungstenite::WebSocketStream<
 fn build_url(config: &DeepgramConfig) -> String {
     // endpointing: wait for a short silence before speech_final.
     // Keep this moderate — too low chops quiet ends; too high feels laggy.
-    // Quiet speakers benefit from a slightly longer window so soft endings land.
-    let endpointing = if config.language == "multi" { 300 } else { 500 };
+    // Quiet / soft last syllables need a bit more than 500ms on English.
+    let endpointing = if config.language == "multi" { 350 } else { 650 };
     let mut url = format!(
         "wss://api.deepgram.com/v1/listen?model={}&language={}&punctuate=true&interim_results=true&smart_format=true&numerals=true&endpointing={}&encoding=linear16&sample_rate=16000&channels=1",
         config.model, config.language, endpointing
@@ -336,6 +371,39 @@ async fn connect_ws(
     Ok(ws_stream)
 }
 
+fn pcm_binary(chunk: &[i16]) -> Message {
+    let bytes: Vec<u8> = chunk.iter().flat_map(|&s| s.to_le_bytes()).collect();
+    Message::Binary(bytes.into())
+}
+
+async fn connect_with_fallback(
+    config: &mut DeepgramConfig,
+    candidates: Vec<String>,
+) -> Result<WsStream, Box<dyn std::error::Error + Send + Sync>> {
+    let mut last_err: Option<Box<dyn std::error::Error + Send + Sync>> = None;
+    for (i, key) in candidates.into_iter().enumerate() {
+        config.api_key = key;
+        match connect_ws(config).await {
+            Ok(ws) => {
+                if i > 0 {
+                    log::warn!("Deepgram connect failed with primary key; using app fallback");
+                } else {
+                    log::info!("Deepgram WebSocket connected");
+                }
+                let _ = LAST_GOOD_KEY
+                    .lock()
+                    .map(|mut g| *g = Some(config.api_key.clone()));
+                return Ok(ws);
+            }
+            Err(e) => {
+                log::warn!("Deepgram connect attempt {} failed: {e}", i + 1);
+                last_err = Some(e);
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| "Deepgram connect failed".into()))
+}
+
 pub async fn stream_audio(
     mut config: DeepgramConfig,
     mut audio_rx: mpsc::UnboundedReceiver<Vec<i16>>,
@@ -363,45 +431,38 @@ pub async fn stream_audio(
         }
     }
 
-    let mut last_err: Option<Box<dyn std::error::Error + Send + Sync>> = None;
-    let mut ws_stream = None;
-    for (i, key) in candidates.into_iter().enumerate() {
-        config.api_key = key;
-        match connect_ws(&config).await {
-            Ok(ws) => {
-                if i > 0 {
-                    log::warn!("Deepgram connect failed with primary key; using app fallback");
-                } else {
-                    log::info!("Deepgram WebSocket connected");
-                }
-                let _ = LAST_GOOD_KEY
-                    .lock()
-                    .map(|mut g| *g = Some(config.api_key.clone()));
-                ws_stream = Some(ws);
-                break;
-            }
-            Err(e) => {
-                log::warn!("Deepgram connect attempt {} failed: {e}", i + 1);
-                last_err = Some(e);
-            }
+    // Drain mic PCM *during* TLS/WS so the first seconds are not sitting
+    // unconsumed (and never dropped) while the handshake runs.
+    let mut pending: Vec<Vec<i16>> = Vec::new();
+    let connect = connect_with_fallback(&mut config, candidates);
+    tokio::pin!(connect);
+    let ws_stream = loop {
+        tokio::select! {
+            biased;
+            res = &mut connect => break res?,
+            Some(chunk) = audio_rx.recv() => pending.push(chunk),
         }
+    };
+    if !pending.is_empty() {
+        let samples: usize = pending.iter().map(|c| c.len()).sum();
+        log::info!(
+            "Deepgram handshake complete; flushing {samples} pre-connect PCM samples ({} chunks)",
+            pending.len()
+        );
     }
-
-    let ws_stream = ws_stream.ok_or_else(|| {
-        last_err.unwrap_or_else(|| "Deepgram connect failed".into())
-    })?;
 
     let (mut write, mut read) = ws_stream.split();
 
     let send_task = tokio::spawn(async move {
+        for chunk in pending {
+            if write.send(pcm_binary(&chunk)).await.is_err() {
+                return;
+            }
+        }
         loop {
             tokio::select! {
                 Some(audio_chunk) = audio_rx.recv() => {
-                    let bytes: Vec<u8> = audio_chunk
-                        .iter()
-                        .flat_map(|&s| s.to_le_bytes())
-                        .collect();
-                    if write.send(Message::Binary(bytes.into())).await.is_err() {
+                    if write.send(pcm_binary(&audio_chunk)).await.is_err() {
                         break;
                     }
                 }
@@ -416,11 +477,7 @@ pub async fn stream_audio(
                         .await
                         {
                             Ok(Some(audio_chunk)) => {
-                                let bytes: Vec<u8> = audio_chunk
-                                    .iter()
-                                    .flat_map(|&s| s.to_le_bytes())
-                                    .collect();
-                                if write.send(Message::Binary(bytes.into())).await.is_err() {
+                                if write.send(pcm_binary(&audio_chunk)).await.is_err() {
                                     break;
                                 }
                             }
@@ -432,7 +489,8 @@ pub async fn stream_audio(
                     let _ = write
                         .send(Message::Text(r#"{"type":"Finalize"}"#.into()))
                         .await;
-                    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                    // Give Deepgram a moment to flush the last syllable after Finalize.
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                     let _ = write
                         .send(Message::Text(r#"{"type":"CloseStream"}"#.into()))
                         .await;
@@ -449,9 +507,11 @@ pub async fn stream_audio(
                     if let Some(channel) = resp.channel {
                         if let Some(alt) = channel.alternatives.first() {
                             if !alt.transcript.is_empty() {
+                                let is_final = resp.is_final.unwrap_or(false)
+                                    || resp.speech_final.unwrap_or(false);
                                 let _ = transcript_tx.send(TranscriptChunk {
                                     text: alt.transcript.clone(),
-                                    is_final: resp.is_final.unwrap_or(false),
+                                    is_final,
                                 });
                             }
                         }
@@ -504,7 +564,7 @@ mod tests {
 
     #[test]
     fn resolve_off_uses_first() {
-        let langs = vec!["ru".into(), "en".into()];
+        let langs = vec!["ru".into(), "de".into()];
         assert_eq!(resolve_language(false, &langs), "ru");
     }
 
@@ -527,5 +587,45 @@ mod tests {
     fn monolingual_keeps_intentional_russian() {
         let langs = vec!["ru".into()];
         assert_eq!(resolve_language(false, &langs), "ru");
+    }
+
+    #[test]
+    fn merge_keyterms_includes_builtins() {
+        let merged = merge_keyterms(vec![]);
+        let lower: Vec<String> = merged.iter().map(|s| s.to_lowercase()).collect();
+        assert!(lower.iter().any(|s| s == "git"));
+        assert!(lower.iter().any(|s| s == "typescript"));
+        assert!(lower.iter().any(|s| s == "curseforge"));
+        assert!(lower.iter().any(|s| s == "percent"));
+        assert!(lower.iter().any(|s| s == "postgres"));
+    }
+
+    #[test]
+    fn merge_keyterms_keeps_user_names_and_builtins() {
+        let user = vec!["Sandra".into(), "Maximus".into()];
+        let merged = merge_keyterms(user);
+        assert_eq!(merged[0], "Sandra");
+        assert_eq!(merged[1], "Maximus");
+        assert!(merged.iter().any(|s| s.eq_ignore_ascii_case("GitHub")));
+    }
+
+    #[test]
+    fn merge_keyterms_large_dictionary_still_keeps_builtins() {
+        let user: Vec<String> = (0..100).map(|i| format!("Name{i}")).collect();
+        let merged = merge_keyterms(user);
+        assert!(merged.len() <= 80);
+        let lower: Vec<String> = merged.iter().map(|s| s.to_lowercase()).collect();
+        assert!(lower.iter().any(|s| s == "git"));
+        assert!(lower.iter().any(|s| s == "curseforge"));
+        assert!(lower.iter().any(|s| s == "name0"));
+    }
+
+    #[test]
+    fn pcm_binary_is_little_endian_i16() {
+        let msg = pcm_binary(&[0x1234, -2]);
+        match msg {
+            Message::Binary(b) => assert_eq!(&b[..], &[0x34, 0x12, 0xFE, 0xFF]),
+            other => panic!("expected binary, got {other:?}"),
+        }
     }
 }

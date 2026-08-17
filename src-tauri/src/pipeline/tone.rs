@@ -62,6 +62,8 @@ Examples (input → output): \
    → 'The deadline is through Tuesday I mean it can slip' (unchanged — discourse) \
 6) 'The meeting is tomorrow no wait Friday' \
    → 'The meeting is Friday' \
+7) 'Daniel walked out. I meant Samuel walked out' \
+   → 'Samuel walked out' \
 Never leave both the mistake and the correction in the output.";
 
 const GRAMMAR_RULES: &str = "\
@@ -104,6 +106,22 @@ Prefer the reading that makes the sentence sensible. Examples: \
   a percentage (at/by/of/about/only/discount/rate/tax/tip), NOT repetition \
   ('do it 10 times') or comparison ('10 times faster'). \
   'ten percent' / '10 percent' → '10%'. \
+- contractions: ASR drops apostrophes — dont→don't, doesnt→doesn't, im→I'm, \
+  ive→I've, thats→that's, youre→you're, theyre→they're, wont→won't, cant→can't. \
+  'lets go/see/try' → 'let's …'. 'id like' → 'I'd like' (not user id). \
+- numeral homophones (numerals=true): 'thanks 4 the'→'thanks for the', \
+  'need 2 go'→'need to go', '2 much'→'too much', '1 of'→'one of', 'no 1'→'no one'. \
+  Keep real quantities, times, and codes ('room 2', 'meet at 4pm', 'version 2'). \
+- split product names: 'type script'→TypeScript, 'java script'→JavaScript, \
+  'super base'→Supabase, 'verse cell'→Vercel, 'cloud flare'→Cloudflare, \
+  'chat gpt'→ChatGPT, 'open ai'→OpenAI, 'vs code'→VS Code, \
+  'curse forge'→CurseForge (not Cursor), 'post grass'→Postgres. \
+- 'could of'/'would of'/'should of' → could've/would've/should've \
+  (unless 'of the/a/course'). \
+- comparatives: 'better then' / 'more then' / 'rather then' → than. \
+- 'to much' / 'to many' / 'to late' → too. \
+- 'its a' / 'its not' / 'its been' → it's; 'your going' / 'your welcome' → you're. \
+- possessives: if a known name appears as Names, restore Name's. \
 Do NOT invent new content. Only swap clearly wrong ASR tokens. \
 Do NOT change ordinary English 'get' ('I want to get coffee'). \
 If both readings are plausible, keep the transcript as-is.";
@@ -162,7 +180,7 @@ fn dictionary_prompt_block(terms: &[String]) -> String {
         return String::new();
     }
     format!(
-        "\n\nPreferred vocabulary (spell and capitalize exactly when the user says these): {}.",
+        "\n\nPreferred vocabulary (spell and capitalize exactly when the user says these; restore Name's possessives): {}.",
         cleaned.join(", ")
     )
 }
@@ -325,8 +343,381 @@ pub fn local_self_correct(text: &str) -> String {
 
 /// Fix common ASR mangling that shouldn't wait on an LLM (quick sessions skip enhance).
 pub fn local_asr_cleanup(text: &str) -> String {
-    let after_percent_word = fix_spoken_percent_word(text);
+    let after_contractions = fix_spoken_contractions(text);
+    let after_numerals = fix_numeral_homophones(&after_contractions);
+    let after_homophones = fix_common_homophones(&after_numerals);
+    let after_percent_word = fix_spoken_percent_word(&after_homophones);
     fix_percent_heard_as_times(&after_percent_word)
+}
+
+fn split_word_punct(w: &str) -> (&str, &str, &str) {
+    let leading_len = w
+        .chars()
+        .take_while(|c| matches!(c, ',' | '.' | ';' | ':' | '!' | '?' | '"' | '(' | '['))
+        .map(|c| c.len_utf8())
+        .sum::<usize>();
+    let trailing_len = w[leading_len..]
+        .chars()
+        .rev()
+        .take_while(|c| matches!(c, ',' | '.' | ';' | ':' | '!' | '?' | '"' | ')' | ']'))
+        .map(|c| c.len_utf8())
+        .sum::<usize>();
+    let mid_end = w.len() - trailing_len;
+    (&w[..leading_len], &w[leading_len..mid_end], &w[mid_end..])
+}
+
+fn copy_casing(src: &str, dest: &str) -> String {
+    let alpha: String = src.chars().filter(|c| c.is_alphabetic()).collect();
+    if !alpha.is_empty() && alpha.chars().all(|c| c.is_uppercase()) {
+        return dest.to_uppercase();
+    }
+    let Some(first) = src.chars().find(|c| c.is_alphabetic()) else {
+        return dest.to_string();
+    };
+    if first.is_uppercase() {
+        let mut chars = dest.chars();
+        if let Some(d0) = chars.next() {
+            return d0.to_uppercase().collect::<String>() + chars.as_str();
+        }
+    }
+    dest.to_string()
+}
+
+fn next_bare_lower(words: &[&str], i: usize) -> String {
+    words
+        .get(i + 1)
+        .map(|n| split_word_punct(n).1.to_ascii_lowercase())
+        .unwrap_or_default()
+}
+
+fn fix_spoken_contractions(text: &str) -> String {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if words.is_empty() {
+        return text.to_string();
+    }
+    let mut out: Vec<String> = Vec::with_capacity(words.len());
+    for (i, w) in words.iter().enumerate() {
+        let (lead, bare, trail) = split_word_punct(w);
+        if bare.chars().all(|c| !c.is_alphabetic() || c.is_ascii_uppercase())
+            && matches!(bare, "IM" | "ID" | "OK")
+        {
+            out.push((*w).to_string());
+            continue;
+        }
+        let lower = bare.to_ascii_lowercase();
+        if let Some(repl) = contraction_for(&lower, &next_bare_lower(&words, i)) {
+            out.push(format!("{lead}{}{trail}", copy_casing(bare, repl)));
+        } else {
+            out.push((*w).to_string());
+        }
+    }
+    out.join(" ")
+}
+
+fn contraction_for(lower: &str, next: &str) -> Option<&'static str> {
+    if lower == "lets" {
+        return matches!(
+            next,
+            "go" | "see" | "try" | "make" | "get" | "do" | "start" | "talk"
+                | "look" | "check" | "wait" | "say" | "take" | "put" | "add"
+                | "keep" | "move" | "open" | "use" | "run" | "build" | "fix"
+                | "test" | "ship" | "meet" | "eat" | "play" | "watch" | "read"
+                | "write" | "call" | "ask" | "stop" | "begin"
+        )
+        .then_some("let's");
+    }
+    if lower == "id" {
+        return matches!(
+            next,
+            "like" | "love" | "rather" | "be" | "have" | "want" | "prefer"
+                | "say" | "go" | "do" | "suggest" | "recommend"
+        )
+        .then_some("I'd");
+    }
+    Some(match lower {
+        "dont" => "don't",
+        "doesnt" => "doesn't",
+        "didnt" => "didn't",
+        "wont" => "won't",
+        "cant" => "can't",
+        "isnt" => "isn't",
+        "arent" => "aren't",
+        "wasnt" => "wasn't",
+        "werent" => "weren't",
+        "havent" => "haven't",
+        "hasnt" => "hasn't",
+        "hadnt" => "hadn't",
+        "wouldnt" => "wouldn't",
+        "couldnt" => "couldn't",
+        "shouldnt" => "shouldn't",
+        "mustnt" => "mustn't",
+        "im" => "I'm",
+        "ive" => "I've",
+        "youre" => "you're",
+        "theyre" => "they're",
+        "weve" => "we've",
+        "youve" => "you've",
+        "theyve" => "they've",
+        "thats" => "that's",
+        "whats" => "what's",
+        "whos" => "who's",
+        "wheres" => "where's",
+        "heres" => "here's",
+        "theres" => "there's",
+        "shes" => "she's",
+        "hes" => "he's",
+        _ => return None,
+    })
+}
+
+fn is_quantity_prev(prev: &str) -> bool {
+    matches!(
+        prev,
+        "at" | "around" | "about" | "room" | "page" | "version" | "v"
+            | "chapter" | "item" | "number" | "line" | "port" | "issue"
+            | "age" | "aged" | "volume" | "size" | "count" | "plus" | "minus"
+            | "versus" | "vs" | "episode" | "season" | "track" | "level"
+            | "floor" | "apartment" | "apt" | "suite" | "gate" | "build"
+            | "revision" | "model" | "of" | "no" | "than" | "between" | "over"
+            | "under" | "from" | "last" | "next" | "first" | "step" | "part"
+            | "day" | "days" | "hour" | "hours" | "minute" | "minutes" | "week"
+            | "weeks" | "month" | "months" | "year" | "years" | "dollar"
+            | "dollars" | "pound" | "pounds" | "euro" | "euros" | "percent"
+    )
+}
+
+fn is_unit_or_quantity_next(next: &str) -> bool {
+    if next.chars().all(|c| c.is_ascii_digit()) && !next.is_empty() {
+        return true;
+    }
+    matches!(
+        next,
+        "times" | "time" | "percent" | "percentage" | "pm" | "am" | "st"
+            | "nd" | "rd" | "th" | "dollars" | "cents" | "minutes" | "hours"
+            | "seconds" | "days" | "weeks" | "months" | "years" | "people"
+            | "items" | "plus" | "minus" | "bucks" | "km" | "miles" | "meters"
+            | "kg" | "lbs" | "gb" | "mb" | "kb" | "tb" | "ghz" | "mhz" | "px"
+            | "bit" | "bits" | "bytes"
+    )
+}
+
+fn is_for_next(next: &str) -> bool {
+    matches!(
+        next,
+        "the" | "a" | "an" | "you" | "me" | "us" | "them" | "him" | "her"
+            | "it" | "this" | "that" | "those" | "these" | "my" | "your" | "our"
+            | "their" | "his" | "now" | "later" | "today" | "tomorrow" | "tonight"
+            | "example" | "instance" | "sure" | "real" | "once" | "all" | "each"
+            | "every" | "some" | "any" | "more" | "less" | "good" | "better"
+            | "worse" | "work" | "school" | "dinner" | "lunch" | "breakfast"
+            | "meeting" | "everyone" | "somebody" | "someone" | "anyone"
+            | "anybody" | "both" | "either" | "neither" | "free" | "sale"
+            | "what" | "which" | "whom" | "whose" | "why" | "how" | "reference"
+            | "context" | "review" | "approval" | "testing" | "production"
+            | "monday" | "tuesday" | "wednesday" | "thursday" | "friday"
+            | "saturday" | "sunday"
+    )
+}
+
+fn is_too_next(next: &str) -> bool {
+    matches!(
+        next,
+        "much" | "many" | "late" | "bad" | "far" | "soon" | "long" | "short"
+            | "early" | "hard" | "easy" | "close" | "big" | "small" | "often"
+            | "fast" | "slow" | "high" | "low" | "old" | "young" | "tired"
+            | "busy" | "good" | "well" | "loud" | "quiet" | "hot" | "cold"
+            | "expensive" | "cheap" | "heavy" | "light" | "few" | "little"
+    )
+}
+
+fn is_to_next(next: &str) -> bool {
+    matches!(
+        next,
+        "the" | "a" | "an" | "be" | "do" | "go" | "get" | "make" | "see"
+            | "say" | "have" | "know" | "think" | "try" | "find" | "take"
+            | "come" | "give" | "keep" | "let" | "put" | "use" | "work" | "me"
+            | "you" | "us" | "them" | "him" | "her" | "it" | "this" | "that"
+            | "my" | "your" | "our" | "their" | "his" | "who" | "whom" | "which"
+            | "what" | "where" | "when" | "why" | "how" | "everyone" | "someone"
+            | "anyone" | "anybody" | "somebody" | "everybody" | "check"
+            | "confirm" | "ask" | "tell" | "call" | "send" | "write" | "read"
+            | "open" | "close" | "start" | "stop" | "run" | "build" | "deploy"
+            | "test" | "fix" | "add" | "remove" | "update" | "install" | "launch"
+            | "join" | "leave" | "meet" | "eat" | "drink" | "sleep" | "wait"
+            | "talk" | "listen" | "look" | "watch" | "play" | "help" | "show"
+            | "pick" | "choose" | "decide" | "finish" | "complete"
+    )
+}
+
+fn capitalize_if_needed(prev_orig: Option<&str>, word: &str) -> String {
+    let start = match prev_orig {
+        None => true,
+        Some(p) => {
+            let t = p.trim_end_matches(|c: char| matches!(c, '"' | '\'' | ')' | ']'));
+            t.ends_with('.') || t.ends_with('!') || t.ends_with('?')
+        }
+    };
+    if !start {
+        return word.to_string();
+    }
+    let mut chars = word.chars();
+    match chars.next() {
+        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+        None => word.to_string(),
+    }
+}
+
+fn fix_numeral_homophones(text: &str) -> String {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if words.is_empty() {
+        return text.to_string();
+    }
+    let mut out: Vec<String> = Vec::with_capacity(words.len());
+    for i in 0..words.len() {
+        let w = words[i];
+        let (lead, bare, trail) = split_word_punct(w);
+        let next = next_bare_lower(&words, i);
+        let prev = out
+            .last()
+            .map(|p| split_word_punct(p).1.to_ascii_lowercase())
+            .unwrap_or_default();
+
+        let mapped = if prev == "no" && bare == "1" {
+            Some("one")
+        } else if matches!(bare, "1" | "2" | "4")
+            && !is_quantity_prev(&prev)
+            && !is_unit_or_quantity_next(&next)
+        {
+            match bare {
+                "4" if is_for_next(&next) => Some("for"),
+                "2" if is_too_next(&next) => Some("too"),
+                "2" if is_to_next(&next) => Some("to"),
+                "1" if next == "of" => Some("one"),
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        if let Some(word) = mapped {
+            let cased = capitalize_if_needed(out.last().map(|s| s.as_str()), word);
+            out.push(format!("{lead}{cased}{trail}"));
+        } else {
+            out.push(w.to_string());
+        }
+    }
+    out.join(" ")
+}
+
+fn is_its_contraction_next(next: &str) -> bool {
+    matches!(
+        next,
+        "a" | "an" | "the" | "not" | "been" | "going" | "gonna" | "ok"
+            | "okay" | "just" | "really" | "already" | "always" | "never"
+            | "still" | "also" | "only" | "actually" | "currently" | "probably"
+    )
+}
+
+fn is_youre_next(next: &str) -> bool {
+    matches!(
+        next,
+        "going" | "gonna" | "not" | "welcome" | "being" | "doing" | "getting"
+            | "looking" | "trying" | "having" | "making" | "coming"
+    )
+}
+
+fn is_theyre_next(next: &str) -> bool {
+    matches!(
+        next,
+        "going" | "gonna" | "not" | "being" | "doing" | "getting" | "looking"
+            | "trying" | "here" | "there"
+    )
+}
+
+fn of_after_modal_ok(after: &str) -> bool {
+    !matches!(
+        after,
+        "course" | "the" | "a" | "an" | "this" | "that" | "it" | "his" | "her"
+            | "our" | "my" | "your" | "their"
+    ) && !after.is_empty()
+}
+
+fn fix_common_homophones(text: &str) -> String {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if words.is_empty() {
+        return text.to_string();
+    }
+    let mut out: Vec<String> = Vec::with_capacity(words.len());
+    let mut i = 0;
+    while i < words.len() {
+        let w = words[i];
+        let (lead, bare, trail) = split_word_punct(w);
+        let lower = bare.to_ascii_lowercase();
+        let next = next_bare_lower(&words, i);
+        let prev = out
+            .last()
+            .map(|p| split_word_punct(p).1.to_ascii_lowercase())
+            .unwrap_or_default();
+
+        if matches!(prev.as_str(), "could" | "would" | "should" | "must")
+            && lower == "of"
+            && of_after_modal_ok(&next)
+        {
+            let modal = out.pop().unwrap();
+            let (m_lead, m_bare, m_trail) = split_word_punct(&modal);
+            let repl = match prev.as_str() {
+                "could" => "could've",
+                "would" => "would've",
+                "should" => "should've",
+                _ => "must've",
+            };
+            out.push(format!(
+                "{m_lead}{}{m_trail}",
+                copy_casing(m_bare, repl)
+            ));
+            i += 1;
+            continue;
+        }
+
+        if lower == "then"
+            && matches!(
+                prev.as_str(),
+                "better" | "worse" | "rather" | "less" | "more" | "other"
+            )
+        {
+            out.push(format!("{lead}{}{trail}", copy_casing(bare, "than")));
+            i += 1;
+            continue;
+        }
+
+        if lower == "to" && is_too_next(&next) {
+            out.push(format!("{lead}{}{trail}", copy_casing(bare, "too")));
+            i += 1;
+            continue;
+        }
+
+        if lower == "its" && is_its_contraction_next(&next) {
+            out.push(format!("{lead}{}{trail}", copy_casing(bare, "it's")));
+            i += 1;
+            continue;
+        }
+
+        if lower == "your" && is_youre_next(&next) {
+            out.push(format!("{lead}{}{trail}", copy_casing(bare, "you're")));
+            i += 1;
+            continue;
+        }
+
+        if (lower == "their" || lower == "there") && is_theyre_next(&next) {
+            out.push(format!("{lead}{}{trail}", copy_casing(bare, "they're")));
+            i += 1;
+            continue;
+        }
+
+        out.push(w.to_string());
+        i += 1;
+    }
+    out.join(" ")
 }
 
 fn fix_spoken_percent_word(text: &str) -> String {
@@ -444,75 +835,20 @@ fn fix_percent_heard_as_times(text: &str) -> String {
 }
 
 fn local_self_correct_markers(text: &str) -> String {
-    let markers = [
-        "oh no i meant ",
-        "oh no, i meant ",
-        "oh wait i meant ",
-        "oh wait, i meant ",
-        "no wait i meant ",
-        "no, i meant ",
-        "no i meant ",
-        "wait i meant ",
-        "wait, i meant ",
-        "actually i meant ",
-        "sorry i meant ",
-        "scratch that i meant ",
-        "correction: ",
-        "correction ",
-        "i meant ",
-        "i mean ",
-        "or rather ",
-    ];
-
     let lower = text.to_lowercase();
-    let mut best: Option<(usize, usize)> = None; // (byte start, marker len)
-
-    for m in markers {
-        if let Some(idx) = lower.rfind(m) {
-            let end = idx + m.len();
-            match best {
-                None => best = Some((idx, m.len())),
-                Some((bi, bl)) => {
-                    let bend = bi + bl;
-                    // Prefer the match that ends latest; on a tie, prefer the longer marker
-                    // so "oh no i meant" wins over nested "i meant".
-                    if end > bend || (end == bend && m.len() > bl) {
-                        best = Some((idx, m.len()));
-                    }
-                }
-            }
-        }
-    }
-
-    // Also: "… no wait Friday" / "… wait no Friday" where correction is the rest
-    let alt_markers = [" no wait ", " wait no ", " wait actually "];
-    for m in alt_markers {
-        if let Some(idx) = lower.rfind(m) {
-            let end = idx + m.len();
-            match best {
-                None => best = Some((idx, m.len())),
-                Some((bi, bl)) => {
-                    let bend = bi + bl;
-                    if end > bend || (end == bend && m.len() > bl) {
-                        best = Some((idx, m.len()));
-                    }
-                }
-            }
-        }
-    }
-
-    let Some((idx, mlen)) = best else {
+    let Some((idx, content_start, kind)) = find_last_correction_marker(&lower) else {
         return text.to_string();
     };
 
-    // Need char-safe slicing via the same indices on original (ASCII markers only)
-    if !text.is_char_boundary(idx) || !text.is_char_boundary(idx + mlen) {
+    // ASCII markers / punctuation skips — indices are byte-safe on the original.
+    if !text.is_char_boundary(idx) || !text.is_char_boundary(content_start) {
         return text.to_string();
     }
 
-    let marker_slice = &lower[idx..idx + mlen];
     let before = text[..idx].trim_end();
-    let mut correction = text[idx + mlen..].trim();
+    let mut correction = text[content_start..].trim();
+    correction = correction.trim_start_matches(|c: char| matches!(c, ',' | ':' | ';' | '.'));
+    correction = correction.trim();
     correction = correction.trim_end_matches(|c: char| matches!(c, '.' | '!' | '?' | ','));
     correction = correction.trim();
 
@@ -521,7 +857,13 @@ fn local_self_correct_markers(text: &str) -> String {
     }
 
     // "I mean it can slip" is discourse, not a word swap — leave the sentence alone.
-    if marker_slice.trim() == "i mean" && looks_like_discourse_filler(correction) {
+    if kind == CorrectionMarkerKind::IMean && looks_like_discourse_filler(correction) {
+        return text.to_string();
+    }
+
+    // "I met …" is often ASR for "I meant …". Only treat it as a correction when
+    // the tail clearly restates / renames something from the preceding clause.
+    if kind == CorrectionMarkerKind::IMet && !looks_like_restatement(before, correction) {
         return text.to_string();
     }
 
@@ -533,10 +875,11 @@ fn local_self_correct_markers(text: &str) -> String {
 
     let corr_words: Vec<&str> = correction.split_whitespace().collect();
 
-    // Weekday corrections: replace the last weekday earlier in the sentence
-    // (handles "for Tuesday … I meant Monday", not only end-position mistakes).
-    if !apply_weekday_correction(&mut words, &corr_words) {
-        // Fallback: replace the last N words with the correction.
+    // Weekday → name/restatement → last-N fallback.
+    if !apply_weekday_correction(&mut words, &corr_words)
+        && !apply_single_name_correction(&mut words, &corr_words)
+        && !apply_suffix_restatement(&mut words, &corr_words)
+    {
         let n = corr_words.len().min(words.len());
         words.truncate(words.len() - n);
         for w in corr_words {
@@ -547,6 +890,280 @@ fn local_self_correct_markers(text: &str) -> String {
     let mut out = words.join(" ");
     out.push_str(trailing_punct);
     out
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CorrectionMarkerKind {
+    Generic,
+    IMean,
+    IMet,
+}
+
+/// Find the last spoken-correction marker. Allows Deepgram punctuation such as
+/// "I meant, Samuel…" (comma after the marker) and mid-sentence "…out. I meant…".
+fn find_last_correction_marker(lower: &str) -> Option<(usize, usize, CorrectionMarkerKind)> {
+    // Phrases only — trailing comma/space is handled after the match.
+    let markers: &[(&str, CorrectionMarkerKind)] = &[
+        ("oh no i meant", CorrectionMarkerKind::Generic),
+        ("oh no, i meant", CorrectionMarkerKind::Generic),
+        ("oh wait i meant", CorrectionMarkerKind::Generic),
+        ("oh wait, i meant", CorrectionMarkerKind::Generic),
+        ("no wait i meant", CorrectionMarkerKind::Generic),
+        ("no, i meant", CorrectionMarkerKind::Generic),
+        ("no i meant", CorrectionMarkerKind::Generic),
+        ("wait i meant", CorrectionMarkerKind::Generic),
+        ("wait, i meant", CorrectionMarkerKind::Generic),
+        ("actually i meant", CorrectionMarkerKind::Generic),
+        ("actually, i meant", CorrectionMarkerKind::Generic),
+        ("sorry i meant", CorrectionMarkerKind::Generic),
+        ("sorry, i meant", CorrectionMarkerKind::Generic),
+        ("scratch that i meant", CorrectionMarkerKind::Generic),
+        ("correction:", CorrectionMarkerKind::Generic),
+        ("correction", CorrectionMarkerKind::Generic),
+        ("i meant", CorrectionMarkerKind::Generic),
+        ("i mean", CorrectionMarkerKind::IMean),
+        ("i met", CorrectionMarkerKind::IMet),
+        ("or rather", CorrectionMarkerKind::Generic),
+    ];
+
+    let mut best: Option<(usize, usize, CorrectionMarkerKind, usize)> = None;
+    // tuple: (marker_start, content_start, kind, marker_phrase_len)
+
+    for &(phrase, kind) in markers {
+        let mut search_from = 0;
+        while let Some(rel) = lower[search_from..].find(phrase) {
+            let idx = search_from + rel;
+            let after_phrase = idx + phrase.len();
+
+            // Word boundary before the phrase (avoid "semi meant").
+            if idx > 0 {
+                let prev = lower[..idx].chars().next_back().unwrap_or('\0');
+                if prev.is_alphanumeric() {
+                    search_from = idx + 1;
+                    continue;
+                }
+            }
+
+            // After the phrase: optional comma/colon, then whitespace, then content.
+            let Some(content_start) = marker_content_start(lower, after_phrase, phrase) else {
+                search_from = idx + 1;
+                continue;
+            };
+
+            match best {
+                None => best = Some((idx, content_start, kind, phrase.len())),
+                Some((bi, bcontent, _, blen)) => {
+                    // Prefer the match whose correction content starts latest; on a
+                    // tie, prefer the longer phrase ("oh no i meant" over "i meant").
+                    if content_start > bcontent
+                        || (content_start == bcontent && phrase.len() > blen)
+                        || (content_start == bcontent && phrase.len() == blen && idx < bi)
+                    {
+                        best = Some((idx, content_start, kind, phrase.len()));
+                    }
+                }
+            }
+            search_from = idx + 1;
+        }
+    }
+
+    // Bare "… no wait Friday" / "… wait no Friday" (no "I meant").
+    let alt = [" no wait ", " wait no ", " wait actually "];
+    for m in alt {
+        if let Some(idx) = lower.rfind(m) {
+            let content_start = idx + m.len();
+            if content_start >= lower.len() {
+                continue;
+            }
+            match best {
+                None => {
+                    best = Some((idx, content_start, CorrectionMarkerKind::Generic, m.len()))
+                }
+                Some((_, bcontent, _, blen)) => {
+                    if content_start > bcontent
+                        || (content_start == bcontent && m.len() > blen)
+                    {
+                        best = Some((idx, content_start, CorrectionMarkerKind::Generic, m.len()));
+                    }
+                }
+            }
+        }
+    }
+
+    best.map(|(idx, content_start, kind, _)| (idx, content_start, kind))
+}
+
+fn marker_content_start(lower: &str, after_phrase: usize, phrase: &str) -> Option<usize> {
+    if after_phrase > lower.len() {
+        return None;
+    }
+    let rest = &lower[after_phrase..];
+    if rest.is_empty() {
+        return None;
+    }
+
+    // "correction:" already includes the colon in the phrase.
+    if phrase.ends_with(':') {
+        let trimmed = rest.trim_start();
+        if trimmed.is_empty() {
+            return None;
+        }
+        return Some(after_phrase + (rest.len() - trimmed.len()));
+    }
+
+    // Require a break after the phrase so "meantimes" / "meetup" don't match.
+    let first = rest.chars().next()?;
+    if first.is_alphanumeric() {
+        return None;
+    }
+
+    // Skip punctuation Deepgram inserts after markers ("I meant, Samuel").
+    let mut i = 0;
+    for c in rest.chars() {
+        if matches!(c, ',' | ':' | ';' | '.' | '!' | '?' | '"' | '\'') || c.is_whitespace() {
+            i += c.len_utf8();
+        } else {
+            break;
+        }
+    }
+    if i == 0 || i >= rest.len() {
+        return None;
+    }
+    // Must have consumed at least one whitespace (possibly after a comma).
+    let consumed = &rest[..i];
+    if !consumed.chars().any(|c| c.is_whitespace()) {
+        return None;
+    }
+    Some(after_phrase + i)
+}
+
+fn looks_like_name_token(word: &str) -> bool {
+    let bare: String = word
+        .chars()
+        .filter(|c| c.is_alphabetic() || *c == '-')
+        .collect();
+    if bare.len() < 2 || bare.len() > 40 {
+        return false;
+    }
+    let mut chars = bare.chars();
+    match chars.next() {
+        Some(c) if c.is_uppercase() => chars.all(|c| c.is_alphabetic() || c == '-'),
+        _ => false,
+    }
+}
+
+/// True when `correction` restates / renames something in `before` (shared tail,
+/// single name swap, or near-equal length with few diffs).
+fn looks_like_restatement(before: &str, correction: &str) -> bool {
+    let a: Vec<String> = before
+        .split_whitespace()
+        .map(bare_alpha)
+        .filter(|w| !w.is_empty())
+        .collect();
+    let b: Vec<String> = correction
+        .split_whitespace()
+        .map(bare_alpha)
+        .filter(|w| !w.is_empty())
+        .collect();
+    if a.is_empty() || b.is_empty() {
+        return false;
+    }
+
+    let mut overlap = 0usize;
+    while overlap < a.len()
+        && overlap < b.len()
+        && a[a.len() - 1 - overlap] == b[b.len() - 1 - overlap]
+    {
+        overlap += 1;
+    }
+    if overlap >= 1 && (a.len() > overlap || b.len() > overlap) {
+        return true;
+    }
+
+    // Single-name fix after ASR "I met": require a proper name in a multi-word
+    // clause so "Yesterday I met Samuel" is not treated as a correction.
+    if b.len() == 1 {
+        let rep = &b[0];
+        let before_words: Vec<&str> = before.split_whitespace().collect();
+        if before_words.len() >= 2 {
+            let has_non_initial_name = before_words.iter().skip(1).any(|w| {
+                looks_like_name_token(w) && !bare_alpha(w).eq_ignore_ascii_case(rep)
+            });
+            let has_leading_name_clause = looks_like_name_token(before_words[0])
+                && before_words.len() >= 3
+                && !bare_alpha(before_words[0]).eq_ignore_ascii_case(rep);
+            if has_non_initial_name || has_leading_name_clause {
+                return true;
+            }
+        }
+    }
+
+    if a.len() == b.len() && a.len() >= 2 {
+        let diffs = a.iter().zip(b.iter()).filter(|(x, y)| x != y).count();
+        return (1..=2).contains(&diffs);
+    }
+
+    false
+}
+
+/// "Daniel walked out. I meant Samuel" → replace the name token, keep the clause.
+fn apply_single_name_correction(words: &mut Vec<String>, corr_words: &[&str]) -> bool {
+    if corr_words.len() != 1 {
+        return false;
+    }
+    let rep = corr_words[0];
+    let rep_bare = bare_alpha(rep);
+    if rep_bare.is_empty() {
+        return false;
+    }
+
+    let Some(i) = words.iter().rposition(|w| {
+        looks_like_name_token(w) && bare_alpha(w) != rep_bare
+    }) else {
+        return false;
+    };
+
+    words[i] = rep.to_string();
+    true
+}
+
+/// "Daniel walked out" / "Samuel walked out" → keep the shared tail, take the fix.
+fn apply_suffix_restatement(words: &mut Vec<String>, corr_words: &[&str]) -> bool {
+    if corr_words.is_empty() {
+        return false;
+    }
+
+    let mut overlap = 0usize;
+    while overlap < words.len() && overlap < corr_words.len() {
+        if bare_alpha(&words[words.len() - 1 - overlap])
+            == bare_alpha(corr_words[corr_words.len() - 1 - overlap])
+        {
+            overlap += 1;
+        } else {
+            break;
+        }
+    }
+
+    if overlap == 0 {
+        return false;
+    }
+
+    let a_head = words.len() - overlap;
+    let b_head = corr_words.len() - overlap;
+    if a_head == 0 && b_head == 0 {
+        return false;
+    }
+
+    // Shared content ("walked out") plus a short changed head → take the restatement.
+    if overlap >= 2 || (overlap >= 1 && a_head <= 2 && b_head <= 2) {
+        words.clear();
+        for w in corr_words {
+            words.push((*w).to_string());
+        }
+        return true;
+    }
+
+    false
 }
 
 fn strip_trailing_punct(s: &str) -> (&str, &str) {
@@ -731,6 +1348,47 @@ mod tests {
     }
 
     #[test]
+    fn restores_missing_contractions() {
+        assert_eq!(local_asr_cleanup("dont worry"), "don't worry");
+        assert_eq!(local_asr_cleanup("thats fine"), "that's fine");
+        assert_eq!(local_asr_cleanup("im ready now"), "I'm ready now");
+        assert_eq!(local_asr_cleanup("lets go"), "let's go");
+        assert_eq!(local_asr_cleanup("lets the user in"), "lets the user in");
+        assert_eq!(local_asr_cleanup("id like coffee"), "I'd like coffee");
+        assert_eq!(local_asr_cleanup("user id is 7"), "user id is 7");
+        assert_eq!(local_asr_cleanup("Doesnt work"), "Doesn't work");
+    }
+
+    #[test]
+    fn reverses_numeral_homophones() {
+        assert_eq!(local_asr_cleanup("thanks 4 the update"), "thanks for the update");
+        assert_eq!(local_asr_cleanup("I need 2 go"), "I need to go");
+        assert_eq!(local_asr_cleanup("2 much work"), "Too much work");
+        assert_eq!(local_asr_cleanup("1 of us"), "One of us");
+        assert_eq!(local_asr_cleanup("no 1 else"), "no one else");
+        assert_eq!(local_asr_cleanup("4 the meeting"), "For the meeting");
+        // Real quantities / times stay digits.
+        assert_eq!(local_asr_cleanup("meet at 4pm"), "meet at 4pm");
+        assert_eq!(local_asr_cleanup("room 2"), "room 2");
+        assert_eq!(local_asr_cleanup("version 2"), "version 2");
+        assert_eq!(local_asr_cleanup("I have 2 apples"), "I have 2 apples");
+    }
+
+    #[test]
+    fn fixes_common_english_homophones() {
+        assert_eq!(local_asr_cleanup("its a bug"), "it's a bug");
+        assert_eq!(local_asr_cleanup("its own place"), "its own place");
+        assert_eq!(local_asr_cleanup("your going to love this"), "you're going to love this");
+        assert_eq!(local_asr_cleanup("your laptop"), "your laptop");
+        assert_eq!(local_asr_cleanup("to much work"), "too much work");
+        assert_eq!(local_asr_cleanup("better then that"), "better than that");
+        assert_eq!(local_asr_cleanup("could of been worse"), "could've been worse");
+        assert_eq!(local_asr_cleanup("could of course"), "could of course");
+        assert_eq!(local_asr_cleanup("their going home"), "they're going home");
+        assert_eq!(local_asr_cleanup("and then we left"), "and then we left");
+    }
+
+    #[test]
     fn trailing_comma_becomes_period() {
         assert_eq!(
             normalize_terminal_punctuation("This is a finished sentence,", "default"),
@@ -825,5 +1483,73 @@ mod tests {
         let out = local_self_correct("Send it to Sarah I mean Sandra");
         assert!(out.to_lowercase().contains("sandra"), "{out}");
         assert!(!out.to_lowercase().contains("sarah"), "{out}");
+    }
+
+    #[test]
+    fn corrects_full_sentence_restatement_after_period() {
+        let out = local_self_correct("Daniel walked out. I meant Samuel walked out");
+        let lower = out.to_lowercase();
+        assert!(lower.contains("samuel"), "{out}");
+        assert!(lower.contains("walked out"), "{out}");
+        assert!(!lower.contains("daniel"), "{out}");
+        assert!(!lower.contains("meant"), "{out}");
+    }
+
+    #[test]
+    fn corrects_full_sentence_restatement_without_period() {
+        let out = local_self_correct("Daniel walked out I meant Samuel walked out");
+        let lower = out.to_lowercase();
+        assert!(lower.contains("samuel"), "{out}");
+        assert!(!lower.contains("daniel"), "{out}");
+        assert!(!lower.contains("meant"), "{out}");
+    }
+
+    #[test]
+    fn corrects_i_meant_with_comma_after_marker() {
+        // Deepgram punctuate often inserts a comma after transitional phrases.
+        let out = local_self_correct("Daniel walked out. I meant, Samuel walked out");
+        let lower = out.to_lowercase();
+        assert!(lower.contains("samuel"), "{out}");
+        assert!(!lower.contains("daniel"), "{out}");
+        assert!(!lower.contains("meant"), "{out}");
+    }
+
+    #[test]
+    fn corrects_prefixed_restatement() {
+        let out = local_self_correct("So Daniel walked out. I meant Samuel walked out");
+        let lower = out.to_lowercase();
+        assert!(lower.contains("samuel"), "{out}");
+        assert!(lower.contains("walked out"), "{out}");
+        assert!(!lower.contains("daniel"), "{out}");
+        assert!(!lower.contains("meant"), "{out}");
+    }
+
+    #[test]
+    fn corrects_single_name_after_i_meant() {
+        let out = local_self_correct("Daniel walked out. I meant Samuel");
+        let lower = out.to_lowercase();
+        assert!(lower.contains("samuel"), "{out}");
+        assert!(lower.contains("walked out"), "{out}");
+        assert!(!lower.contains("daniel"), "{out}");
+        assert!(!lower.contains("meant"), "{out}");
+    }
+
+    #[test]
+    fn corrects_asr_i_met_when_restating() {
+        let out = local_self_correct("Daniel walked out. I met Samuel walked out");
+        let lower = out.to_lowercase();
+        assert!(lower.contains("samuel"), "{out}");
+        assert!(!lower.contains("daniel"), "{out}");
+        // Genuine meeting chatter should not leave "i met" if we applied a fix.
+        assert!(!lower.contains("i met"), "{out}");
+    }
+
+    #[test]
+    fn keeps_genuine_i_met_meeting() {
+        let out = local_self_correct("Yesterday I met Samuel at noon");
+        let lower = out.to_lowercase();
+        assert!(lower.contains("yesterday"), "{out}");
+        assert!(lower.contains("i met"), "{out}");
+        assert!(lower.contains("samuel"), "{out}");
     }
 }

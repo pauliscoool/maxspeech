@@ -26,13 +26,15 @@ pub fn expand_macros(text: &str, store: &Store) -> String {
     // Putting "cloud" in the dictionary forces "Cloud"/"CLOUD" → preferred casing,
     // and also helps when ASR returns a differently-cased product name.
     let dict = store.get_dictionary().unwrap_or_default();
-    for word in &dict {
-        let want = word.word.trim();
-        if want.is_empty() {
-            continue;
-        }
+    let dict_words: Vec<String> = dict
+        .iter()
+        .map(|w| w.word.trim().to_string())
+        .filter(|w| !w.is_empty())
+        .collect();
+    for want in &dict_words {
         result = replace_whole_word_ci(&result, want);
     }
+    result = apply_learned_possessives(&result, &dict_words);
 
     fix_common_asr(&result)
 }
@@ -166,6 +168,28 @@ fn is_stop_word(lower: &str) -> bool {
     STOP.contains(&lower)
 }
 
+/// Restore `Name's` when the dictionary has `Name` and ASR emitted `Names`.
+fn apply_learned_possessives(text: &str, names: &[String]) -> String {
+    let mut result = text.to_string();
+    let mut candidates: Vec<&str> = names
+        .iter()
+        .map(|n| n.trim())
+        .filter(|n| {
+            looks_like_name_term(n)
+                && !n.contains('\'')
+                && !n.ends_with('s')
+                && !n.ends_with('S')
+        })
+        .collect();
+    candidates.sort_by(|a, b| b.len().cmp(&a.len()));
+    for name in candidates {
+        let from = format!("{name}s");
+        let to = format!("{name}'s");
+        result = replace_phrase_ci(&result, &from, &to);
+    }
+    result
+}
+
 /// Deterministic fixes for frequent English ASR near-homophones (esp. Git ↔ get).
 fn fix_common_asr(text: &str) -> String {
     let mut result = text.to_string();
@@ -191,6 +215,29 @@ fn fix_common_asr(text: &str) -> String {
         ("branch on get", "branch on Git"),
         ("repo on get", "repo on Git"),
         ("repository on get", "repository on Git"),
+        ("type script", "TypeScript"),
+        ("java script", "JavaScript"),
+        ("node js", "Node.js"),
+        ("next js", "Next.js"),
+        ("postgres ql", "PostgreSQL"),
+        ("post grass", "Postgres"),
+        ("verse cell", "Vercel"),
+        ("super base", "Supabase"),
+        ("cloud flare", "Cloudflare"),
+        ("clout flare", "Cloudflare"),
+        ("clout storage", "cloud storage"),
+        ("on the clout", "on the cloud"),
+        ("deep grammar", "Deepgram"),
+        ("deep gram", "Deepgram"),
+        ("chat gpt", "ChatGPT"),
+        ("chat gbt", "ChatGPT"),
+        ("open ai", "OpenAI"),
+        ("git lab", "GitLab"),
+        ("vs code", "VS Code"),
+        ("curse forge", "CurseForge"),
+        ("graph ql", "GraphQL"),
+        ("mongo db", "MongoDB"),
+        ("a ws", "AWS"),
     ] {
         result = replace_phrase_ci(&result, from, to);
     }
@@ -350,7 +397,7 @@ fn replace_whole_word_ci(text: &str, want: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{fix_common_asr, replace_whole_word_ci};
+    use super::{apply_learned_possessives, fix_common_asr, replace_whole_word_ci};
 
     #[test]
     fn replaces_whole_word_casing() {
@@ -374,6 +421,35 @@ mod tests {
         assert_eq!(
             fix_common_asr("I want to get coffee"),
             "I want to get coffee"
+        );
+    }
+
+    #[test]
+    fn fixes_split_product_names() {
+        assert_eq!(fix_common_asr("write it in type script"), "write it in TypeScript");
+        assert_eq!(fix_common_asr("deploy on verse cell"), "deploy on Vercel");
+        assert_eq!(fix_common_asr("open super base"), "open Supabase");
+        assert_eq!(fix_common_asr("ask chat gpt"), "ask ChatGPT");
+        assert_eq!(fix_common_asr("install curse forge"), "install CurseForge");
+        assert_eq!(fix_common_asr("edit in vs code"), "edit in VS Code");
+        assert_eq!(fix_common_asr("on the clout"), "on the cloud");
+        assert_eq!(fix_common_asr("install CurseForge"), "install CurseForge");
+    }
+
+    #[test]
+    fn restores_possessive_from_learned_name() {
+        let names = vec!["Sandra".to_string(), "Paul".to_string()];
+        assert_eq!(
+            apply_learned_possessives("Send it to Sandras desk", &names),
+            "Send it to Sandra's desk"
+        );
+        assert_eq!(
+            apply_learned_possessives("Pauls laptop is here", &names),
+            "Paul's laptop is here"
+        );
+        assert_eq!(
+            apply_learned_possessives("the reports are ready", &names),
+            "the reports are ready"
         );
     }
 }

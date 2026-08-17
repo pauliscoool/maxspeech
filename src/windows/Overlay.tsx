@@ -39,9 +39,11 @@ export default function Overlay() {
   const [toast, setToast] = useState<EnhanceEvent | null>(null);
   const [toastLeaving, setToastLeaving] = useState(false);
   const [pillLeaving, setPillLeaving] = useState(false);
+  const [hearing, setHearing] = useState(false);
   const smoothed = useRef<number[]>(Array(BAR_COUNT).fill(0.14));
   const raf = useRef<number | null>(null);
   const listening = useRef(false);
+  const hearingRef = useRef(false);
   const toastTimer = useRef<number | null>(null);
   const toastActive = useRef(false);
   const pillOutTimer = useRef<number | null>(null);
@@ -65,15 +67,21 @@ export default function Overlay() {
   }, []);
 
   useEffect(() => {
-    const animateBars = state === "listening" || state === "processing";
-    if (!animateBars) {
+    // Processing: loading wave. Listening: wait for real audio-level events —
+    // do not breathe as if the mic is live while WASAPI/WS are still opening.
+    if (state !== "listening" && state !== "processing") {
       if (raf.current) cancelAnimationFrame(raf.current);
       raf.current = null;
       listening.current = false;
+      hearingRef.current = false;
       return;
     }
     listening.current = state === "listening";
-    const enhancing = state === "processing";
+    if (state !== "processing") {
+      if (raf.current) cancelAnimationFrame(raf.current);
+      raf.current = null;
+      return;
+    }
     let t0 = performance.now();
     let lastTick = 0;
     const FRAME_MS = 1000 / 30;
@@ -86,33 +94,15 @@ export default function Overlay() {
       }
       lastTick = now;
       const t = (now - t0) / 1000;
-
-      if (enhancing) {
-        // Loading wave: a soft peak travels left → right while processing.
-        const next = Array.from({ length: BAR_COUNT }, (_, i) => {
-          const phase = t * 2.0 - i * 0.45;
-          const envelope = 0.5 + 0.5 * Math.sin(phase);
-          const peak = Math.pow(envelope, 1.8);
-          return 0.14 + peak * 0.55;
-        });
-        smoothed.current = next;
-        setLevels(next);
-      } else {
-        // Quiet mic: light idle breathe so the pill still feels alive.
-        const avg =
-          smoothed.current.reduce((a, b) => a + b, 0) / smoothed.current.length;
-        if (avg < 0.20) {
-          const next = smoothed.current.map((v, i) => {
-            const wave =
-              0.12 +
-              0.10 * (0.5 + 0.5 * Math.sin(t * 2.2 + i * 0.5)) *
-                (0.55 + 0.45 * Math.sin(t * 1.2 + i * 0.7));
-            return v + (Math.max(v, wave) - v) * 0.12;
-          });
-          smoothed.current = next;
-          setLevels([...next]);
-        }
-      }
+      // Loading wave: a soft peak travels left → right while processing.
+      const next = Array.from({ length: BAR_COUNT }, (_, i) => {
+        const phase = t * 2.0 - i * 0.45;
+        const envelope = 0.5 + 0.5 * Math.sin(phase);
+        const peak = Math.pow(envelope, 1.8);
+        return 0.14 + peak * 0.55;
+      });
+      smoothed.current = next;
+      setLevels(next);
       raf.current = requestAnimationFrame(tick);
     };
     raf.current = requestAnimationFrame(tick);
@@ -171,15 +161,22 @@ export default function Overlay() {
       const next = e.payload as DictationState;
       setState(next);
       if (next === "idle") {
+        listening.current = false;
+        hearingRef.current = false;
+        setHearing(false);
         smoothed.current = Array(BAR_COUNT).fill(0.14);
         setLevels(Array(BAR_COUNT).fill(0.14));
         if (limitTimer.current) window.clearTimeout(limitTimer.current);
         if (errorTimer.current) window.clearTimeout(errorTimer.current);
         if (!toastActive.current) hidePillSoon();
       } else if (next === "done") {
+        listening.current = false;
         // Instant vanish — don't sit on "Done" while history/WAV saves.
         if (!toastActive.current) hidePillSoon();
       } else if (next === "limit") {
+        listening.current = false;
+        hearingRef.current = false;
+        setHearing(false);
         setToast(null);
         setToastLeaving(false);
         setPillLeaving(false);
@@ -190,6 +187,9 @@ export default function Overlay() {
         void resizeForState("limit");
         clearLimitSoon();
       } else if (next === "error") {
+        listening.current = false;
+        hearingRef.current = false;
+        setHearing(false);
         setToast(null);
         setToastLeaving(false);
         setPillLeaving(false);
@@ -212,6 +212,20 @@ export default function Overlay() {
         }
         if (limitTimer.current) window.clearTimeout(limitTimer.current);
         if (errorTimer.current) window.clearTimeout(errorTimer.current);
+        if (next === "listening") {
+          // Connecting only on a fresh session. Replays for a late WebView
+          // must not reset live bars back to the dim idle state.
+          const alreadyListening = listening.current;
+          listening.current = true;
+          if (!alreadyListening) {
+            hearingRef.current = false;
+            setHearing(false);
+            smoothed.current = Array(BAR_COUNT).fill(0.1);
+            setLevels(Array(BAR_COUNT).fill(0.1));
+          }
+        } else {
+          listening.current = false;
+        }
         // Rust owns listening geometry (show_overlay_fast). Re-sizing here races
         // the clear color and flashes white + adds multi-IPC delay.
         void clearOverlayChrome();
@@ -246,6 +260,10 @@ export default function Overlay() {
     listen<number[]>("audio-level", (e) => {
       // Don't fight the Enhancing… loading wave with stale mic levels.
       if (!listening.current) return;
+      if (!hearingRef.current) {
+        hearingRef.current = true;
+        setHearing(true);
+      }
       const incoming = Array.isArray(e.payload) ? e.payload : [];
       const next = Array.from({ length: BAR_COUNT }, (_, i) => {
         const src =
@@ -294,6 +312,7 @@ export default function Overlay() {
     ? truncate(toast.original, 36) + " → " + truncate(toast.enhanced, 36)
     : "";
 
+  const connecting = state === "listening" && !hearing;
   const pillActive =
     state === "listening" ||
     state === "processing" ||
@@ -364,9 +383,11 @@ export default function Overlay() {
               ? "liquid-glass-pill--out"
               : state === "idle"
                 ? "liquid-glass-pill--idle"
-                : pillActive
-                  ? "liquid-glass-pill--in"
-                  : ""
+                : connecting
+                  ? "liquid-glass-pill--connecting liquid-glass-pill--in"
+                  : pillActive
+                    ? "liquid-glass-pill--in"
+                    : ""
           }`}
         >
           {!showLimit && (
