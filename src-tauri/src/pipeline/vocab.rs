@@ -35,8 +35,9 @@ pub fn expand_macros(text: &str, store: &Store) -> String {
         result = replace_whole_word_ci(&result, want);
     }
     result = apply_learned_possessives(&result, &dict_words);
-
-    fix_common_asr(&result)
+    result = fix_common_asr(&result);
+    // User-learned pairs win over builtins so a correction sticks next time.
+    super::learn_substitutions::apply(&result, store)
 }
 
 /// Expand `{clipboard}`, `{date}`, `{time}` in snippet templates.
@@ -239,6 +240,11 @@ fn fix_common_asr(text: &str) -> String {
         ("covenant corner", "Covenant Core"),
         ("covenant core", "Covenant Core"),
         ("covenantcore", "Covenant Core"),
+        ("tale scale", "Tailscale"),
+        ("tale-scale", "Tailscale"),
+        ("tail scale", "Tailscale"),
+        ("tail-scale", "Tailscale"),
+        ("tailscale", "Tailscale"),
         ("graph ql", "GraphQL"),
         ("mongo db", "MongoDB"),
         ("a ws", "AWS"),
@@ -453,6 +459,20 @@ mod tests {
         // Unrelated "court" / "corner" stay put.
         assert_eq!(fix_common_asr("see you in court"), "see you in court");
         assert_eq!(fix_common_asr("around the corner"), "around the corner");
+    }
+
+    #[test]
+    fn fixes_tailscale_mishears() {
+        assert_eq!(fix_common_asr("open tail scale"), "open Tailscale");
+        assert_eq!(fix_common_asr("open Tail Scale"), "open Tailscale");
+        assert_eq!(fix_common_asr("connect via tailscale"), "connect via Tailscale");
+        assert_eq!(fix_common_asr("connect via Tailscale"), "connect via Tailscale");
+        assert_eq!(fix_common_asr("use tale scale"), "use Tailscale");
+        assert_eq!(fix_common_asr("Tale Scale VPN"), "Tailscale VPN");
+        assert_eq!(fix_common_asr("tail-scale funnel"), "Tailscale funnel");
+        // Unrelated "tail" / "scale" stay put.
+        assert_eq!(fix_common_asr("the dog wagged its tail"), "the dog wagged its tail");
+        assert_eq!(fix_common_asr("scale the image"), "scale the image");
     }
 
     #[test]

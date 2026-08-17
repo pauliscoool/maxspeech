@@ -649,7 +649,17 @@ Section Install
  !insertmacro NSIS_HOOK_PREINSTALL
  !endif
 
- !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
+ ; Interactive wizard: prompt to close a running instance.
+ ; Silent / passive / in-app /UPDATE: never show "Please close it first then
+ ; try again." PREINSTALL already retried KillProcess; if the exe is still
+ ; locked, File below fails with a real error instead of a restart instruction.
+ ${If} ${Silent}
+ ${OrIf} $PassiveMode = 1
+ ${OrIf} $UpdateMode = 1
+   !insertmacro ForceQuitRunningApp
+ ${Else}
+   !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
+ ${EndIf}
 
  ; Copy main executable
  File "${MAINBINARYSRCPATH}"
@@ -908,7 +918,10 @@ Function Skip
 FunctionEnd
 
 Function SkipIfPassive
- ${IfThen} $PassiveMode = 1 ${|} Abort ${|}
+ ${If} $PassiveMode = 1
+ ${OrIf} $UpdateMode = 1
+   Abort
+ ${EndIf}
 FunctionEnd
 Function un.SkipIfPassive
  ${IfThen} $PassiveMode = 1 ${|} Abort ${|}

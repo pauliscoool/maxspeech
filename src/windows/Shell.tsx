@@ -225,7 +225,6 @@ export default function Shell({ authUser }: { authUser: AuthUser | null }) {
       await installAvailableUpdate((pct) => setUpdatePct(pct));
     } catch (e) {
       console.error(e);
-      // Manifest fallback opens the download in the browser.
       setUpdating(false);
       setUpdatePct(null);
     }
@@ -258,7 +257,7 @@ export default function Shell({ authUser }: { authUser: AuthUser | null }) {
               Update available — v{updateInfo.version}
             </div>
             <div className="text-xs text-[var(--ms-text-dim)] truncate">
-              Installs the update, then MaxSpeech closes and reopens
+              Downloads, installs, and restarts MaxSpeech automatically
             </div>
           </div>
           <button
@@ -267,9 +266,11 @@ export default function Shell({ authUser }: { authUser: AuthUser | null }) {
             className="btn-primary px-3.5 py-1.5 text-xs shrink-0 disabled:opacity-70"
           >
             {updating
-              ? updatePct != null
-                ? `${updatePct}%`
-                : "Working…"
+              ? updatePct != null && updatePct >= 100
+                ? "Restarting…"
+                : updatePct != null
+                  ? `${updatePct}%`
+                  : "Restarting…"
               : "Update now"}
           </button>
         </div>
@@ -348,7 +349,11 @@ export default function Shell({ authUser }: { authUser: AuthUser | null }) {
               </div>
               <div className="text-[11px] text-[var(--ms-text-dim)] mt-1">
                 {updating
-                  ? "Closing and reopening MaxSpeech…"
+                  ? updatePct != null && updatePct >= 100
+                    ? "Restarting…"
+                    : updatePct != null
+                      ? `Downloading… ${updatePct}%`
+                      : "Restarting…"
                   : `v${updateInfo.version} — tap to install`}
               </div>
             </button>

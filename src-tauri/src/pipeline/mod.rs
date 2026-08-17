@@ -1,4 +1,5 @@
 pub mod commands;
+pub mod learn_substitutions;
 pub mod tone;
 pub mod vocab;
 
@@ -20,6 +21,8 @@ const MAX_RECORDING: Duration = Duration::from_secs(120);
 pub struct PipelineState {
     pub active: Mutex<bool>,
     pub last_insertion: Mutex<Option<LastInsertion>>,
+    /// Previous paste text if the new recording started within the learn window.
+    pending_learn_from: Mutex<Option<String>>,
     stop_tx: Mutex<Option<mpsc::Sender<()>>>,
     audio_capture: Mutex<AudioCapture>,
     /// Wall-clock start of the current recording session.
@@ -43,6 +46,7 @@ impl Default for PipelineState {
         Self {
             active: Mutex::new(false),
             last_insertion: Mutex::new(None),
+            pending_learn_from: Mutex::new(None),
             stop_tx: Mutex::new(None),
             audio_capture: Mutex::new(AudioCapture::new()),
             started_at: Mutex::new(None),
@@ -272,6 +276,17 @@ pub fn start_dictation(app: &tauri::AppHandle) {
     *state.started_at.lock().unwrap() = Some(Instant::now());
     // Snapshot focus now — enhance/history must not use a later app switch.
     *state.session_fg.lock().unwrap() = context::get_foreground_app();
+    {
+        let last = state.last_insertion.lock().unwrap();
+        let pending = last.as_ref().and_then(|ins| {
+            if learn_substitutions::elapsed_within_window(ins.pasted_at.elapsed()) {
+                Some(ins.text.clone())
+            } else {
+                None
+            }
+        });
+        *state.pending_learn_from.lock().unwrap() = pending;
+    }
 
     log::info!(
         "Dictation started session={session_id} paste={paste_token} (max {}s wall-clock)",
@@ -504,6 +519,7 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                                 let _ = inject::undo_insertion(&LastInsertion {
                                     text: old.clone(),
                                     char_count: count,
+                                    pasted_at: Instant::now(),
                                 });
                                 match inject::inject_text(&rewritten) {
                                     Ok(new_ins) => {
@@ -550,6 +566,7 @@ pub fn start_dictation(app: &tauri::AppHandle) {
             // Whisper Flow–style: remember name fixes from spoken self-corrections.
             if corrected.trim() != expanded.trim() {
                 vocab::learn_name_corrections(&expanded, &corrected, &store);
+                learn_substitutions::learn_from_edit(&expanded, &corrected, &store);
             }
 
             let has_llm_key = secrets::has_llm_api_key();
@@ -672,6 +689,14 @@ pub fn start_dictation(app: &tauri::AppHandle) {
             }
 
             if let Ok(ins) = inject::inject_text(&final_output) {
+                let prev = pipeline_state.pending_learn_from.lock().unwrap().take();
+                if let Some(prev_text) = prev {
+                    learn_substitutions::learn_from_redictate(
+                        &prev_text,
+                        &final_output,
+                        &store,
+                    );
+                }
                 *pipeline_state.last_insertion.lock().unwrap() = Some(ins);
             }
 

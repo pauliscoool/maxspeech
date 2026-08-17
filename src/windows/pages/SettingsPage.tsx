@@ -511,10 +511,14 @@ export default function SettingsPage({
       await installAvailableUpdate((pct) => {
         setUpdatePct(pct);
         setUpdateMsg(
-          pct != null ? `Downloading update… ${pct}%` : "Downloading update…",
+          pct != null && pct >= 100
+            ? "Restarting…"
+            : pct != null
+              ? `Downloading update… ${pct}%`
+              : "Downloading update…",
         );
       });
-      setUpdateMsg("Installer launched — finish the setup to complete the update.");
+      setUpdateMsg("Restarting…");
     } catch (e) {
       const msg = String(e).replace(/^Error:\s*/i, "");
       if (msg.includes("latest version")) {
@@ -1125,9 +1129,11 @@ export default function SettingsPage({
                 className="btn-primary px-4 py-2 text-xs"
               >
                 {updating
-                  ? updatePct != null
-                    ? `Installing ${updatePct}%…`
-                    : "Installing…"
+                  ? updatePct != null && updatePct >= 100
+                    ? "Restarting…"
+                    : updatePct != null
+                      ? `Installing ${updatePct}%…`
+                      : "Restarting…"
                   : "Update now"}
               </button>
             </div>

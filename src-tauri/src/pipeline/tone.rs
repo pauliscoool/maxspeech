@@ -92,7 +92,7 @@ Prefer the reading that makes the sentence sensible. Examples: \
   'push it to get' → 'push it to Git'; 'get hub' → 'GitHub' \
 - tech/cloud: 'clout'→'cloud', 'a WS'→'AWS', 'verse cell'→'Vercel', \
   'type script'→'TypeScript', 'post grass'→'Postgres' \
-- product names: Deepgram, Claude, ChatGPT, Notion, Slack, CurseForge, Covenant Core \
+- product names: Deepgram, Claude, ChatGPT, Notion, Slack, CurseForge, Covenant Core, Tailscale \
   (do NOT rewrite 'curse forge' / 'CurseForge' to 'Cursor' — different product) \
   Cursor only when clearly the editor/IDE, not gaming/modding context \
   (do NOT assume the speaker means the MaxSpeech app itself unless truly unambiguous — \
@@ -100,6 +100,8 @@ Prefer the reading that makes the sentence sensible. Examples: \
   'Covenant court' / 'Covenant Court' → 'Covenant Core'; \
   'Covenant corner' / 'Covenant Corner' → 'Covenant Core' \
   (do NOT rewrite to 'Covenant Corner' — the product is Covenant Core) \
+  'tail scale' / 'tailscale' / 'tale scale' → 'Tailscale' \
+  (do NOT rewrite unrelated 'tail' or 'scale') \
 - common: 'there'/'their'/'they're', 'to'/'too'/'two', 'its'/'it's' by grammar \
 - numbers: ASR often inserts digits for homophones ('for'→'4', 'to'→'2', 'won'→'1'). \
   Prefer the word that fits the sentence; only use digits when the speaker clearly \
@@ -119,7 +121,8 @@ Prefer the reading that makes the sentence sensible. Examples: \
   'super base'→Supabase, 'verse cell'→Vercel, 'cloud flare'→Cloudflare, \
   'chat gpt'→ChatGPT, 'open ai'→OpenAI, 'vs code'→VS Code, \
   'curse forge'→CurseForge (not Cursor), 'post grass'→Postgres, \
-  'covenant court'/'covenant corner'/'covenant core'→Covenant Core. \
+  'covenant court'/'covenant corner'/'covenant core'→Covenant Core, \
+  'tail scale'/'tale scale'/'tailscale'→Tailscale. \
 - 'could of'/'would of'/'should of' → could've/would've/should've \
   (unless 'of the/a/course'). \
 - comparatives: 'better then' / 'more then' / 'rather then' → than. \

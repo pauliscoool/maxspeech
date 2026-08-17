@@ -201,7 +201,26 @@
     }
   }
 
+  const HTTPS_PLAYGROUND = "https://maxspeech.vercel.app/#playground";
+
+  function insecureOriginHint() {
+    return (
+      "Browser dictation needs HTTPS (or localhost). Open " +
+      HTTPS_PLAYGROUND +
+      " to try the mic, or download the desktop app."
+    );
+  }
+
+  function isInsecureOriginError(err) {
+    const msg = String(err?.message || err?.error || err || "");
+    return /https|insecure|secure origin|not a secure context/i.test(msg);
+  }
+
   function startListening() {
+    if (!window.isSecureContext) {
+      if (micHint) micHint.textContent = insecureOriginHint();
+      return;
+    }
     if (!SpeechRecognition) {
       if (micHint) {
         micHint.textContent =
@@ -226,19 +245,25 @@
         }
         setPreview(finalTranscript, interim);
       };
-      recognition.onerror = () => {
+      recognition.onerror = (event) => {
         setListeningUI(false);
-        if (micHint) {
-          micHint.textContent =
-            "Mic permission blocked or unavailable. You can still browse scenarios below, or download the desktop app.";
+        if (!micHint) return;
+        if (!window.isSecureContext || isInsecureOriginError(event)) {
+          micHint.textContent = insecureOriginHint();
+          return;
         }
+        micHint.textContent =
+          "Mic permission blocked or unavailable. You can still browse scenarios below, or download the desktop app.";
       };
       recognition.onend = () => {
         if (listening) {
           try {
             recognition.start();
-          } catch {
+          } catch (err) {
             setListeningUI(false);
+            if (micHint && isInsecureOriginError(err)) {
+              micHint.textContent = insecureOriginHint();
+            }
           }
         }
       };
@@ -246,8 +271,11 @@
     try {
       recognition.start();
       setListeningUI(true);
-    } catch {
+    } catch (err) {
       setListeningUI(false);
+      if (micHint && isInsecureOriginError(err)) {
+        micHint.textContent = insecureOriginHint();
+      }
     }
   }
 

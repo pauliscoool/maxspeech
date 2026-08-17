@@ -68,6 +68,11 @@ impl Store {
                  word TEXT NOT NULL UNIQUE,
                  boost REAL NOT NULL DEFAULT 1.0
              );
+             CREATE TABLE IF NOT EXISTS learned_substitutions (
+                 from_phrase TEXT PRIMARY KEY,
+                 to_phrase TEXT NOT NULL,
+                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );
              CREATE TABLE IF NOT EXISTS macros (
                  id INTEGER PRIMARY KEY AUTOINCREMENT,
                  trigger TEXT NOT NULL UNIQUE,
@@ -179,6 +184,14 @@ impl Store {
                  INSERT OR REPLACE INTO meta (key, value) VALUES ('profiles_deduped', '1');",
             )?;
         }
+
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS learned_substitutions (
+                 from_phrase TEXT PRIMARY KEY,
+                 to_phrase TEXT NOT NULL,
+                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );",
+        )?;
 
         Ok(())
     }
@@ -409,6 +422,53 @@ impl Store {
     pub fn delete_dict_word(&self, id: i64) -> Result<(), rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM dictionary WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    /// Learned ASR substitutions (from_phrase is stored lowercase).
+    pub fn get_substitutions(&self) -> Result<Vec<(String, String)>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt =
+            conn.prepare("SELECT from_phrase, to_phrase FROM learned_substitutions")?;
+        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        rows.collect()
+    }
+
+    pub fn upsert_substitution(
+        &self,
+        from_phrase: &str,
+        to_phrase: &str,
+    ) -> Result<(), rusqlite::Error> {
+        const MAX_LEARNED: i64 = 400;
+        let from_phrase = from_phrase.trim();
+        let to_phrase = to_phrase.trim();
+        if from_phrase.is_empty() || to_phrase.is_empty() {
+            return Ok(());
+        }
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO learned_substitutions (from_phrase, to_phrase, updated_at)
+             VALUES (?1, ?2, datetime('now'))
+             ON CONFLICT(from_phrase) DO UPDATE SET
+               to_phrase = excluded.to_phrase,
+               updated_at = datetime('now')",
+            params![from_phrase, to_phrase],
+        )?;
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM learned_substitutions",
+            [],
+            |row| row.get(0),
+        )?;
+        if count > MAX_LEARNED {
+            let extra = count - MAX_LEARNED;
+            conn.execute(
+                "DELETE FROM learned_substitutions WHERE rowid IN (
+                   SELECT rowid FROM learned_substitutions
+                   ORDER BY updated_at ASC LIMIT ?1
+                 )",
+                params![extra],
+            )?;
+        }
         Ok(())
     }
 

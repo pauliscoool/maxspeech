@@ -78,6 +78,9 @@ const BUILTIN_KEYTERMS: &[&str] = &[
     // Product — ASR hears "Covenant Core" as Court / Corner.
     "Covenant Core",
     "CovenantCore",
+    // Product — ASR hears "Tailscale" as "tail scale" / "tale scale".
+    "Tailscale",
+    "Tail Scale",
 ];
 
 #[derive(Debug, Clone)]
@@ -602,6 +605,7 @@ mod tests {
         assert!(lower.iter().any(|s| s == "percent"));
         assert!(lower.iter().any(|s| s == "postgres"));
         assert!(lower.iter().any(|s| s == "covenant core"));
+        assert!(lower.iter().any(|s| s == "tailscale"));
         assert!(!lower.iter().any(|s| s.contains("corner")));
     }
 

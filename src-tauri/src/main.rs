@@ -630,6 +630,38 @@ async fn preview_sound_cue(app: tauri::AppHandle, volume: Option<String>) -> Res
     Ok(())
 }
 
+#[cfg(windows)]
+fn spawn_detached_nsis_updater(installer: &std::path::Path) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    // CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB | CREATE_NO_WINDOW
+    const FLAGS: u32 = 0x0000_0200 | 0x0000_0008 | 0x0100_0000 | 0x0800_0000;
+    std::process::Command::new(installer)
+        .args(["/S", "/UPDATE"])
+        .creation_flags(FLAGS)
+        .spawn()
+        .map_err(|e| format!("Could not launch installer: {e}"))?;
+    Ok(())
+}
+
+/// Terminate any other maxspeech.exe so NSIS can overwrite. Leaves this PID
+/// alone; `process::exit` finishes the job. Overlay lives in this process.
+#[cfg(windows)]
+fn kill_other_maxspeech_processes() {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let pid = std::process::id();
+    let _ = std::process::Command::new("taskkill")
+        .args([
+            "/F",
+            "/IM",
+            "maxspeech.exe",
+            "/FI",
+            &format!("PID ne {pid}"),
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+}
+
 /// Download the latest installer from `url`, emit progress, then launch it.
 /// Used when the signed Tauri updater isn't available yet.
 #[tauri::command]
@@ -682,17 +714,25 @@ async fn download_and_run_installer(app: tauri::AppHandle, url: String) -> Resul
 
     #[cfg(target_os = "windows")]
     {
+        // Brief pause so the UI can show "Restarting…" before we die.
+        tokio::time::sleep(std::time::Duration::from_millis(1400)).await;
+
         // Silent + update mode. Do NOT pass /R: Tauri's RunAsUser waits until
         // the tray app exits and hangs the installer. POSTINSTALL ShellExecute
         // launches the app asynchronously instead. /UPDATE skips uninstall-first.
-        std::process::Command::new(&path)
-            .args(["/S", "/UPDATE"])
-            .spawn()
-            .map_err(|e| format!("Could not launch installer: {e}"))?;
+        //
+        // Detach from our job/process group so exiting MaxSpeech cannot take
+        // the installer down with it (WebView2 job objects).
+        spawn_detached_nsis_updater(&path)?;
+        for (_, w) in app.webview_windows() {
+            let _ = w.hide();
+        }
+        kill_other_maxspeech_processes();
         // Hard-quit so NSIS can overwrite the running binary. `app.exit` can
         // race with tray keep-alive; process::exit is definitive. PREINSTALL
         // also KillProcess as a backup; POSTINSTALL starts the new build.
-        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        // Do not return Ok(()) — the IPC completing lets the frontend think
+        // install finished while this process is still locking the exe.
         std::process::exit(0);
     }
 
@@ -786,6 +826,7 @@ async fn remake_dictation(app: tauri::AppHandle, id: i64) -> Result<String, Stri
     };
     if corrected.trim() != expanded.trim() {
         pipeline::vocab::learn_name_corrections(&expanded, &corrected, &store);
+        pipeline::learn_substitutions::learn_from_edit(&expanded, &corrected, &store);
     }
 
     let fg = context::get_foreground_app();
@@ -855,6 +896,7 @@ async fn update_history_text(
         .ok_or_else(|| "Dictation not found".to_string())?;
     let cleaned = text.trim().to_string();
     pipeline::vocab::learn_name_corrections(&entry.text, &cleaned, &store);
+    pipeline::learn_substitutions::learn_from_edit(&entry.text, &cleaned, &store);
     store
         .update_history_text(id, &cleaned)
         .map_err(|e| e.to_string())?;

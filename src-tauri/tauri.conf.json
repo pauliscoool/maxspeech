@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicovince/tauri/HEAD/crates/tauri-config-schema/schema.json",
   "productName": "MaxSpeech",
-  "version": "0.1.49",
+  "version": "0.1.50",
   "identifier": "com.maxspeech.app",
   "build": {
     "frontendDist": "../dist",
@@ -84,7 +84,7 @@
         "https://github.com/pauliscoool/maxspeech/releases/latest/download/latest.json"
       ],
       "windows": {
-        "installMode": "passive"
+        "installMode": "quiet"
       }
     }
   }
