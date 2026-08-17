@@ -19,7 +19,7 @@ import {
   installAvailableUpdate,
   type UpdateInfo,
 } from "../lib/updater";
-import { formatWeeklyUsage, weeklyUsagePct, planLabel, type PlanStatus } from "../lib/plan";
+import { type PlanStatus } from "../lib/plan";
 import type { AuthUser } from "../lib/auth";
 import { pushHistoryIfMax, type HistoryPayload } from "../lib/cloudSync";
 import { formatHotkey as formatHotkeyOs } from "../lib/platform";
@@ -42,13 +42,6 @@ export type PageId =
   | "transcriber"
   | "settings";
 
-interface Stats {
-  total_words: number;
-  total_entries: number;
-  days_active: number;
-  avg_wpm: number;
-}
-
 const NAV: { id: PageId; label: string; icon: (active: boolean) => ReactNode }[] = [
   { id: "home", label: "Home", icon: (a) => <IconHome active={a} /> },
   { id: "insights", label: "Insights", icon: (a) => <IconChart active={a} /> },
@@ -63,14 +56,6 @@ const NAV: { id: PageId; label: string; icon: (active: boolean) => ReactNode }[]
 export default function Shell({ authUser }: { authUser: AuthUser | null }) {
   const [page, setPage] = useState<PageId>("home");
   const [selectDeleteMode, setSelectDeleteMode] = useState(false);
-  const [stats, setStats] = useState<Stats>({
-    total_words: 0,
-    total_entries: 0,
-    days_active: 0,
-    avg_wpm: 0,
-  });
-  const [hotkeyLabel, setHotkeyLabel] = useState(formatHotkeyOs("ctrl+super"));
-  const [hotkeyMode, setHotkeyMode] = useState("hold");
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [updating, setUpdating] = useState(false);
   const [updatePct, setUpdatePct] = useState<number | null>(null);
@@ -201,19 +186,9 @@ export default function Shell({ authUser }: { authUser: AuthUser | null }) {
 
   async function refresh() {
     try {
-      const s = await invoke<Stats>("get_stats");
-      setStats(s);
-      const hk = await invoke<string>("get_hotkey");
-      setHotkeyLabel(formatHotkey(hk));
-      const mode = await invoke<string>("get_hotkey_mode");
-      setHotkeyMode(mode);
-      try {
-        setPlan(await invoke<PlanStatus>("get_plan_status"));
-      } catch {
-        setPlan(null);
-      }
+      setPlan(await invoke<PlanStatus>("get_plan_status"));
     } catch {
-      // ignore during boot
+      setPlan(null);
     }
   }
 
@@ -396,117 +371,6 @@ export default function Shell({ authUser }: { authUser: AuthUser | null }) {
         )}
         </Suspense>
       </main>
-
-      {(page === "home" || page === "insights") && (
-        <aside
-          className="shrink-0 bg-[var(--ms-bg-soft)] p-3 space-y-3 rail-scroll page-enter"
-          style={{
-            borderLeft: "1px solid var(--ms-hairline)",
-            width: "clamp(210px, 22.5%, 280px)",
-          }}
-        >
-          <div className="surface-card p-5 space-y-5">
-            <StatBlock
-              value={formatCount(stats.total_words)}
-              label="total words"
-              accent="turquoise"
-            />
-            <StatBlock
-              value={stats.avg_wpm > 0 ? String(stats.avg_wpm) : "—"}
-              label="wpm"
-              accent="orange"
-            />
-            <StatBlock
-              value={String(stats.days_active)}
-              label="day streak"
-              accent="turquoise"
-            />
-          </div>
-
-          {plan?.weekly_limit != null && (
-            <div className="surface-card p-4 space-y-3">
-              <div className="flex items-baseline justify-between gap-2">
-                <div className="text-sm font-medium">Weekly words</div>
-                <div
-                  className={`text-xs font-medium tabular-nums ${
-                    !plan.can_dictate
-                      ? "text-[var(--ms-orange)]"
-                      : "text-[var(--ms-turquoise)]"
-                  }`}
-                >
-                  {formatWeeklyUsage(plan)}
-                </div>
-              </div>
-              <div
-                className="h-1.5 rounded-full overflow-hidden"
-                style={{ background: "var(--ms-fill-track)" }}
-              >
-                <div
-                  className={`h-full rounded-full ${
-                    !plan.can_dictate
-                      ? "bg-[var(--ms-orange)]"
-                      : "bg-[var(--ms-turquoise)]"
-                  }`}
-                  style={{ width: `${weeklyUsagePct(plan) ?? 0}%` }}
-                />
-              </div>
-              <p className="text-xs text-[var(--ms-text-dim)] leading-relaxed">
-                {!plan.can_dictate
-                  ? plan.tier === "max"
-                    ? "You've hit your weekly limit. It resets every Monday (UTC)."
-                    : "You've hit your weekly limit. Upgrade to keep dictating."
-                  : `${planLabel(plan.tier)} includes ${plan.weekly_limit.toLocaleString()} words per week.`}
-              </p>
-              <button
-                onClick={openPlans}
-                className="btn-primary w-full px-3 py-2 text-xs"
-              >
-                View plans
-              </button>
-            </div>
-          )}
-
-          {updateInfo && (
-            <div className="surface-card p-4 space-y-3">
-              <div className="text-sm font-medium text-[var(--ms-turquoise)]">
-                Update ready
-              </div>
-              <p className="text-xs text-[var(--ms-text-dim)] leading-relaxed">
-                Version {updateInfo.version} is available
-                {updateInfo.body ? ` — ${updateInfo.body.slice(0, 80)}` : ""}.
-              </p>
-              <button
-                onClick={applyUpdate}
-                disabled={updating}
-                className="btn-primary w-full px-3 py-2 text-xs"
-              >
-                {updating
-                  ? updatePct != null
-                    ? `Installing ${updatePct}%`
-                    : "Installing…"
-                  : "Update now"}
-              </button>
-            </div>
-          )}
-
-          <div className="surface-card p-4 space-y-3">
-            <div className="text-sm font-medium">
-              {hotkeyMode === "toggle" ? "Toggle to dictate" : "Hold to dictate"}
-            </div>
-            <p className="text-xs text-[var(--ms-text-dim)] leading-relaxed">
-              {hotkeyMode === "toggle" ? "Press" : "Hold"}{" "}
-              <kbd
-                className="px-1.5 py-0.5 rounded-md text-[var(--ms-turquoise)] text-[10px]"
-                style={{ background: "var(--ms-kbd-bg)" }}
-              >
-                {hotkeyLabel}
-              </kbd>{" "}
-              anywhere. The bar appears at the bottom of your screen.
-            </p>
-          </div>
-
-        </aside>
-      )}
       </div>
       </div>
     </div>
@@ -573,35 +437,6 @@ function ProfileNavButton({
       </div>
     </button>
   );
-}
-
-function StatBlock({
-  value,
-  label,
-  accent,
-}: {
-  value: string;
-  label: string;
-  accent: "turquoise" | "orange";
-}) {
-  return (
-    <div>
-      <div
-        className={`text-3xl font-semibold tracking-tight ${
-          accent === "orange" ? "text-[var(--ms-orange)]" : "text-[var(--ms-turquoise)]"
-        }`}
-      >
-        {value}
-      </div>
-      <div className="text-xs text-[var(--ms-text-dim)] mt-1">{label}</div>
-    </div>
-  );
-}
-
-function formatCount(n: number) {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-  return String(n);
 }
 
 export function formatHotkey(raw: string) {

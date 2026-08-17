@@ -114,6 +114,8 @@ export default function SettingsPage({
   const avatarInputRef = useRef<HTMLInputElement>(null);
   const profileLoadedRef = useRef(false);
   const savedNamesRef = useRef({ first: "", last: "" });
+  const [userIdVisible, setUserIdVisible] = useState(false);
+  const userIdHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     refresh();
@@ -151,6 +153,14 @@ export default function SettingsPage({
     const onSaved = () => setProfileMsg("Photo saved.");
     window.addEventListener(PROFILE_AVATAR_SAVED_EVENT, onSaved);
     return () => window.removeEventListener(PROFILE_AVATAR_SAVED_EVENT, onSaved);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (userIdHideTimer.current) {
+        clearTimeout(userIdHideTimer.current);
+      }
+    };
   }, []);
 
   useEffect(() => {
@@ -540,6 +550,25 @@ export default function SettingsPage({
     onNavigate?.("home");
   }
 
+  function hideUserId() {
+    if (userIdHideTimer.current) {
+      clearTimeout(userIdHideTimer.current);
+      userIdHideTimer.current = null;
+    }
+    setUserIdVisible(false);
+  }
+
+  function revealUserId() {
+    if (userIdHideTimer.current) {
+      clearTimeout(userIdHideTimer.current);
+    }
+    setUserIdVisible(true);
+    userIdHideTimer.current = setTimeout(() => {
+      setUserIdVisible(false);
+      userIdHideTimer.current = null;
+    }, 15_000);
+  }
+
   async function persistNames() {
     if (!profileLoadedRef.current || savingNames) return;
     const first = firstName.trim();
@@ -708,12 +737,30 @@ export default function SettingsPage({
               ) : null}
             </div>
             <div className="settings-row">
-              <div className="settings-row-text">
+              <div className="settings-row-text min-w-0">
                 <div className="settings-row-title">User ID</div>
-                <div className="settings-row-desc font-mono text-[11px] break-all">
-                  {authUser.id}
-                </div>
+                {userIdVisible ? (
+                  <div className="settings-row-desc font-mono text-[11px] break-all">
+                    {authUser.id}
+                  </div>
+                ) : (
+                  <div className="ms-id-mosaic" aria-hidden="true">
+                    <span className="ms-id-mosaic-text">
+                      xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+                    </span>
+                  </div>
+                )}
               </div>
+              <button
+                type="button"
+                onClick={() => (userIdVisible ? hideUserId() : revealUserId())}
+                className="px-3.5 py-1.5 text-xs rounded-full font-semibold shrink-0 transition-colors text-[var(--ms-text-dim)] hover:text-[var(--ms-hover-fg)]"
+                style={{ background: "var(--ms-fill-muted)" }}
+                aria-pressed={userIdVisible}
+                aria-label={userIdVisible ? "Hide user ID" : "Show user ID for 15 seconds"}
+              >
+                {userIdVisible ? "Hide" : "Show"}
+              </button>
             </div>
           </div>
         </section>

@@ -126,15 +126,46 @@
   scrollbar-color: var(--ms-scrollbar-thumb) var(--ms-scrollbar-track);
 }
 
-/* Right stats rail: keep overflow reachable, hide scrollbar chrome. */
-.rail-scroll {
-  overflow-y: auto;
-  scrollbar-width: none;
+/* Pixelated User ID mask — unreadable on a screen share; not bullet dots. */
+.ms-id-mosaic {
+  position: relative;
+  overflow: hidden;
+  max-width: 100%;
+  user-select: none;
+  pointer-events: none;
+  line-height: 1.35;
 }
-.rail-scroll::-webkit-scrollbar {
-  display: none;
-  width: 0;
-  height: 0;
+.ms-id-mosaic-text {
+  display: block;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  word-break: break-all;
+  color: var(--ms-text-dim);
+  filter: blur(7px) contrast(3.2) brightness(1.15) saturate(0);
+  transform: scale(1.12);
+  transform-origin: left center;
+}
+.ms-id-mosaic::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    repeating-linear-gradient(
+      0deg,
+      color-mix(in srgb, var(--ms-bg) 55%, transparent) 0 2px,
+      transparent 2px 5px
+    ),
+    repeating-linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--ms-surface-2) 80%, transparent) 0 4px,
+      color-mix(in srgb, var(--ms-text-dim) 35%, transparent) 4px 7px
+    );
+  background-size: 100% 100%, 7px 7px;
+  image-rendering: pixelated;
+  mix-blend-mode: normal;
+  opacity: 0.78;
 }
 
 *::-webkit-scrollbar {
