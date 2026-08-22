@@ -177,7 +177,7 @@ export default function PlanModal({
 
         <p className="text-[11px] text-[var(--ms-text-dim)] leading-relaxed">
           {isOwnerFreePlanEmail(authUser?.email)
-            ? "Owner access: Free, Starter, and Pro are selectable on this account. Max stays locked until checkout ships."
+            ? "Owner access: all plans including Max are selectable on this account — your devices sync settings, dictionary, snippets, and style automatically. Cloud history sync included with Max."
             : "Free plan is available now. Paid plans unlock when checkout ships. Cloud history sync is included with Max."}
         </p>
         {planMsg ? (

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { pushCloudSettings } from "../../lib/cloudSync";
 
 interface Macro {
   id: number;
@@ -33,11 +34,13 @@ export default function SnippetsPage() {
     setTrigger("");
     setExpansion("");
     await load();
+    void pushCloudSettings();
   }
 
   async function remove(id: number) {
     await invoke("delete_macro", { id });
     await load();
+    void pushCloudSettings();
   }
 
   return (

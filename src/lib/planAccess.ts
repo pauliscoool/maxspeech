@@ -13,6 +13,6 @@ export function canSelectTierWithoutPayment(
   tier: PlanTier,
 ): boolean {
   if (tier === "free") return true;
-  if (tier === "max") return false;
-  return isOwnerFreePlanEmail(email) && (tier === "starter" || tier === "pro");
+  if (isOwnerFreePlanEmail(email)) return true;
+  return false;
 }

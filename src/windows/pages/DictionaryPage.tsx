@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { pushCloudSettings } from "../../lib/cloudSync";
 
 interface DictWord {
   id: number;
@@ -29,11 +30,13 @@ export default function DictionaryPage() {
     await invoke("add_dict_word", { word: w });
     setInput("");
     await load();
+    void pushCloudSettings();
   }
 
   async function remove(id: number) {
     await invoke("delete_dict_word", { id });
     await load();
+    void pushCloudSettings();
   }
 
   return (
