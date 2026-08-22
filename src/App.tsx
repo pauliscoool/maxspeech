@@ -86,6 +86,7 @@ export default function App() {
       setAuthUser(u);
       setAuthReady(true);
       void syncDictationAuth(u);
+      if (u && !u.local) void pullCloudSettings();
     });
     return () => {
       cancelled = true;

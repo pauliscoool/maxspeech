@@ -549,13 +549,8 @@ async fn set_plan_tier(app: tauri::AppHandle, tier: String) -> Result<plan::Plan
 
     match parsed {
         plan::PlanTier::Free => {}
-        plan::PlanTier::Max => {
-            return Err(
-                "Max isn't available as a free plan. Payment checkout is coming soon.".into(),
-            );
-        }
-        plan::PlanTier::Starter | plan::PlanTier::Pro => {
-            if email != OWNER {
+        plan::PlanTier::Starter | plan::PlanTier::Pro | plan::PlanTier::Max => {
+            if (email != OWNER) {
                 return Err(
                     "Payment checkout coming soon for paid plans. Free plan stays available."
                         .into(),

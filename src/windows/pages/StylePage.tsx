@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { friendlyAppName } from "../../lib/appNames";
 import Toggle from "../../components/Toggle";
+import { pushCloudSettings } from "../../lib/cloudSync";
 
 interface AppProfile {
   id: number;
@@ -137,6 +138,7 @@ export default function StylePage() {
       setProfiles((prev) =>
         prev.map((p) => (idSet.has(p.id) ? { ...p, tone } : p)),
       );
+      void pushCloudSettings();
     } finally {
       setSavingKey(null);
     }
@@ -154,6 +156,7 @@ export default function StylePage() {
       setProfiles((prev) =>
         prev.map((p) => (idSet.has(p.id) ? { ...p, enabled } : p)),
       );
+      void pushCloudSettings();
     } finally {
       setSavingKey(null);
     }
