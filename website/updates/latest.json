@@ -1,13 +1,15 @@
 {
-    "version":  "0.1.28",
-    "download":  "https://maxspeech.vercel.app/downloads/MaxSpeech_0.1.28_x64-setup.exe",
+    "url":  "https://maxspeech.vercel.app/downloads/MaxSpeech_x64-setup.exe",
+    "filename":  "MaxSpeech_0.1.52_x64-setup.exe",
+    "size":  221325727,
+    "version":  "0.1.52",
+    "notes":  "MaxSpeech 0.1.52 - full Windows installer with embedded WebView2",
     "github":  "https://github.com/pauliscoool/maxspeech/releases/latest",
+    "sha256":  "2cbe315b1ca9424ebe715e8fe13b6327f589b36762fe66120f2e674a7925dceb",
     "platforms":  {
                       "linux":  "https://maxspeech.vercel.app/downloads/MaxSpeech_0.1.1_amd64.AppImage",
                       "macos":  "https://maxspeech.vercel.app/mac",
-                      "windows":  "https://maxspeech.vercel.app/downloads/MaxSpeech_0.1.28_x64-setup.exe"
+                      "windows":  "https://maxspeech.vercel.app/downloads/MaxSpeech_x64-setup.exe"
                   },
-    "filename":  "MaxSpeech_0.1.28_x64-setup.exe",
-    "url":  "https://maxspeech.vercel.app/downloads/MaxSpeech_x64-setup.exe",
-    "notes":  "MaxSpeech 0.1.28"
+    "download":  "https://maxspeech.vercel.app/downloads/MaxSpeech_x64-setup.exe"
 }

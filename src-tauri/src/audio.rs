@@ -8,26 +8,48 @@ use tauri::Emitter;
 const TARGET_RATE: u32 = 16000;
 const BAR_COUNT: usize = 20;
 
-// Visual meter only — slight gain so bars jump cleanly without looking clipped.
-const NOISE_GATE: f32 = 0.0008;
-const LEVEL_GAIN: f32 = 11.0;
+// Visual meter — tuned so quiet PC / USB mics still drive a lively swell
+// (laptop built-ins are louder; metering post-AGC equalizes them).
+const NOISE_GATE: f32 = 0.00035;
+const LEVEL_GAIN: f32 = 12.0;
 
-// Stronger AGC for quiet laptop / PC mics — lift soft speech to a usable
-// Deepgram level without hard-clipping peaks.
-const AGC_PREAMP: f32 = 1.9;
+// AGC: lift quiet mics for STT without blasting room noise into speech.
+const AGC_PREAMP: f32 = 1.95;
 const AGC_TARGET_RMS: f32 = 0.14;
-const AGC_MAX_GAIN: f32 = 5.5;
-const AGC_NOISE_FLOOR: f32 = 0.0007;
+const AGC_MAX_GAIN: f32 = 5.2;
+const AGC_NOISE_FLOOR: f32 = 0.0006;
 const AGC_ATTACK: f32 = 0.32;
-const AGC_RELEASE: f32 = 0.07;
+const AGC_RELEASE: f32 = 0.08;
 
-/// Near-field gate for STT: open easily for quiet laptop/PC mics; still mute
-/// much quieter room / call background via relative hysteresis.
-const STT_GATE_FLOOR_OPEN: f32 = 0.0035;
-const STT_GATE_FLOOR_CLOSE: f32 = 0.0016;
-const STT_GATE_REL_OPEN: f32 = 0.14;
-const STT_GATE_REL_CLOSE: f32 = 0.07;
-const STT_GATE_PEAK_DECAY: f32 = 0.996;
+/// Near-field gate: open for normal close-mic speech; stay closed for quieter
+/// room / behind-you talk once a speech peak is established.
+/// Relative open/close are vs an RMS-heavy envelope (not raw plosive peak) so a
+/// loud start cannot mute the rest of a long hold.
+const STT_GATE_FLOOR_OPEN: f32 = 0.0032;
+const STT_GATE_FLOOR_CLOSE: f32 = 0.0015;
+const STT_GATE_REL_OPEN: f32 = 0.12;
+const STT_GATE_REL_CLOSE: f32 = 0.055;
+const STT_GATE_PEAK_ATTACK: f32 = 0.28;
+const STT_GATE_PEAK_DECAY_OPEN: f32 = 0.996;
+const STT_GATE_PEAK_DECAY_CLOSED: f32 = 0.97;
+const STT_GATE_HANGOVER_MS: u32 = 220;
+const STT_GATE_START_PEAK: f32 = 0.012;
+
+struct SttGate {
+    open: bool,
+    peak: f32,
+    hangover_samples: u32,
+}
+
+impl SttGate {
+    fn new() -> Self {
+        Self {
+            open: false,
+            peak: STT_GATE_START_PEAK,
+            hangover_samples: 0,
+        }
+    }
+}
 
 /// Empty / "default" means follow the OS default input device.
 pub const MIC_DEVICE_DEFAULT: &str = "default";
@@ -103,10 +125,11 @@ impl AudioCapture {
         let resample_state_clone = resample_state.clone();
         let agc_gain = Arc::new(Mutex::new(1.0f32));
         let agc_gain_clone = agc_gain.clone();
-        let gate_open = Arc::new(Mutex::new(true));
-        let gate_open_clone = gate_open.clone();
-        let gate_peak = Arc::new(Mutex::new(0.02f32));
-        let gate_peak_clone = gate_peak.clone();
+        // Low starter peak so the *first* utterance opens on the absolute floor
+        // (easy for the user). After they speak, an RMS envelope + hangover
+        // keeps the same talker open through pauses / quieter continuation.
+        let gate = Arc::new(Mutex::new(SttGate::new()));
+        let gate_clone = gate.clone();
         let ratio = native_rate as f64 / TARGET_RATE as f64;
 
         let err_fn = |err| log::error!("Audio stream error: {err}");
@@ -123,8 +146,7 @@ impl AudioCapture {
                             ratio,
                             &resample_state_clone,
                             &agc_gain_clone,
-                            &gate_open_clone,
-                            &gate_peak_clone,
+                            &gate_clone,
                             &buffer_clone,
                             chunk_size,
                             &sender,
@@ -148,8 +170,7 @@ impl AudioCapture {
                             ratio,
                             &resample_state_clone,
                             &agc_gain_clone,
-                            &gate_open_clone,
-                            &gate_peak_clone,
+                            &gate_clone,
                             &buffer_clone,
                             chunk_size,
                             &sender,
@@ -175,8 +196,7 @@ impl AudioCapture {
                             ratio,
                             &resample_state_clone,
                             &agc_gain_clone,
-                            &gate_open_clone,
-                            &gate_peak_clone,
+                            &gate_clone,
                             &buffer_clone,
                             chunk_size,
                             &sender,
@@ -202,8 +222,7 @@ impl AudioCapture {
                             ratio,
                             &resample_state_clone,
                             &agc_gain_clone,
-                            &gate_open_clone,
-                            &gate_peak_clone,
+                            &gate_clone,
                             &buffer_clone,
                             chunk_size,
                             &sender,
@@ -363,8 +382,7 @@ fn process_f32(
     ratio: f64,
     resample_pos: &Arc<Mutex<f64>>,
     agc_gain: &Arc<Mutex<f32>>,
-    gate_open: &Arc<Mutex<bool>>,
-    gate_peak: &Arc<Mutex<f32>>,
+    gate: &Arc<Mutex<SttGate>>,
     buffer: &Arc<Mutex<Vec<i16>>>,
     chunk_size: usize,
     sender: &tokio::sync::mpsc::UnboundedSender<Vec<i16>>,
@@ -377,12 +395,13 @@ fn process_f32(
     }
 
     // Gate quieter room / call voices before AGC so gain can't lift them up.
-    let gated = apply_near_field_gate(&mono, gate_open, gate_peak);
+    let native_rate = (TARGET_RATE as f64 * ratio).round().max(1.0) as u32;
+    let gated = apply_near_field_gate(&mono, gate, native_rate);
     let gained = apply_soft_agc(&gated, agc_gain);
 
     let frame = FRAME.fetch_add(1, Ordering::Relaxed);
-    // Meter from pre-AGC gated signal so bars reflect what STT hears.
-    let bars = compute_bars(&gated, BAR_COUNT, frame);
+    // Meter the AGC'd signal so quiet PC/USB mics animate like loud laptop mics.
+    let bars = compute_bars(&gained, BAR_COUNT, frame);
     let _ = app.emit("audio-level", bars);
 
     let resampled = if (ratio - 1.0).abs() < 0.001 {
@@ -402,12 +421,21 @@ fn process_f32(
     }
 }
 
-/// Mute frames that are soft relative to the user's recent speech peak.
-/// Close talkers open the gate; quieter background (call speakers, room) stays out.
+/// Mute frames that are soft relative to the user's recent speech envelope.
+/// Close talkers stay open through pauses; quieter background (call speakers, room) stays out.
 fn apply_near_field_gate(
     samples: &[f32],
-    gate_open: &Arc<Mutex<bool>>,
-    gate_peak: &Arc<Mutex<f32>>,
+    gate: &Arc<Mutex<SttGate>>,
+    sample_rate: u32,
+) -> Vec<f32> {
+    let mut g = gate.lock().unwrap();
+    apply_near_field_gate_inner(samples, &mut g, sample_rate)
+}
+
+fn apply_near_field_gate_inner(
+    samples: &[f32],
+    gate: &mut SttGate,
+    sample_rate: u32,
 ) -> Vec<f32> {
     let rms = (samples.iter().map(|s| s * s).sum::<f32>() / samples.len().max(1) as f32).sqrt();
     let peak = samples
@@ -415,32 +443,47 @@ fn apply_near_field_gate(
         .copied()
         .map(f32::abs)
         .fold(0.0f32, f32::max);
-    let level = rms * 0.6 + peak * 0.4;
+    // Instantaneous decision uses some peak so plosives still open quickly;
+    // the *stored* envelope is RMS-heavy so one loud consonant cannot set an
+    // unreachable reopen bar for the rest of the hold.
+    let level = rms * 0.45 + peak * 0.55;
+    let env = rms * 0.8 + peak * 0.2;
 
-    let mut open = gate_open.lock().unwrap();
-    let mut speech_peak = gate_peak.lock().unwrap();
-
-    if level > *speech_peak {
-        *speech_peak = level;
+    if env > gate.peak {
+        gate.peak += (env - gate.peak) * STT_GATE_PEAK_ATTACK;
     } else {
-        *speech_peak *= STT_GATE_PEAK_DECAY;
+        let decay = if gate.open {
+            STT_GATE_PEAK_DECAY_OPEN
+        } else {
+            STT_GATE_PEAK_DECAY_CLOSED
+        };
+        gate.peak *= decay;
+        if gate.peak < STT_GATE_START_PEAK {
+            gate.peak = STT_GATE_START_PEAK;
+        }
     }
 
-    let open_thresh = STT_GATE_FLOOR_OPEN.max(*speech_peak * STT_GATE_REL_OPEN);
-    let close_thresh = STT_GATE_FLOOR_CLOSE.max(*speech_peak * STT_GATE_REL_CLOSE);
+    let open_thresh = STT_GATE_FLOOR_OPEN.max(gate.peak * STT_GATE_REL_OPEN);
+    let close_thresh = STT_GATE_FLOOR_CLOSE.max(gate.peak * STT_GATE_REL_CLOSE);
+    let hangover_max = sample_rate.saturating_mul(STT_GATE_HANGOVER_MS) / 1000;
 
-    if *open {
+    if gate.open {
         if level < close_thresh {
-            *open = false;
+            if gate.hangover_samples > samples.len() as u32 {
+                gate.hangover_samples -= samples.len() as u32;
+            } else {
+                gate.hangover_samples = 0;
+                gate.open = false;
+            }
+        } else {
+            gate.hangover_samples = hangover_max;
         }
     } else if level >= open_thresh {
-        *open = true;
+        gate.open = true;
+        gate.hangover_samples = hangover_max;
     }
 
-    let pass = *open;
-    drop(open);
-    drop(speech_peak);
-
+    let pass = gate.open;
     if pass {
         samples.to_vec()
     } else {
@@ -567,39 +610,25 @@ fn compute_bars(samples: &[f32], n: usize, frame: u64) -> Vec<f32> {
     let mut bars = Vec::with_capacity(n);
 
     if energy < NOISE_GATE {
-        for i in 0..n {
-            let phase = i as f32 * 0.55;
-            let breathe = 0.08 + 0.06 * ((t + phase).sin() * 0.5 + 0.5);
-            bars.push(breathe);
-        }
-        return bars;
+        // Flat idle — do not fabricate a jumping "hearing you" breathe from
+        // silence or a closed near-field gate. Overlay connecting vs live
+        // depends on real levels from this session.
+        return vec![0.08; n];
     }
 
-    let chunk = (samples.len() / n).max(1);
+    // One global loudness for the whole chunk — no per-slice chaos. A gentle
+    // symmetrical wave shaped by that level; peaks read as a smooth swell.
+    // Softer curve (0.58) so quiet devices jump earlier without clipping loud ones.
+    let level = ((energy - NOISE_GATE * 0.35).max(0.0) * LEVEL_GAIN)
+        .powf(0.58)
+        .clamp(0.12, 0.98);
     for i in 0..n {
-        let start = i * chunk;
-        let end = ((i + 1) * chunk).min(samples.len());
-        let slice = if start < samples.len() {
-            &samples[start..end]
-        } else {
-            &samples[..]
-        };
-        let rms = (slice.iter().map(|s| s * s).sum::<f32>() / slice.len().max(1) as f32).sqrt();
-        let local_peak = slice
-            .iter()
-            .copied()
-            .map(f32::abs)
-            .fold(0.0f32, f32::max);
-        let mixed = rms * 0.55 + local_peak * 0.45;
-
-        let mid = 1.0 - (i as f32 - (n as f32 - 1.0) / 2.0).abs() / ((n as f32 - 1.0) / 2.0) * 0.25;
-        let phase = i as f32 * 0.7 + t;
-        let jitter = 0.12 * (phase.sin() * 0.5 + 0.5);
-
-        let gated = ((mixed - NOISE_GATE * 0.5).max(0.0) * LEVEL_GAIN).clamp(0.0, 1.0);
-        // Slightly softer curve — peaks jump, but don't slam the top as hard.
-        let level = (gated.powf(0.68) * mid + jitter * gated).clamp(0.08, 1.0);
-        bars.push(level);
+        // Bell envelope: tallest in the middle, tapering to the capsule ends.
+        let center_dist = (i as f32 - (n as f32 - 1.0) / 2.0) / ((n as f32 - 1.0) / 2.0);
+        let bell = 1.0 - center_dist * center_dist * 0.40;
+        // Slow wave so neighboring bars differ slightly — calm, not jittery.
+        let wave = 0.82 + 0.18 * ((t * 1.6 + i as f32 * 0.5).sin() * 0.5 + 0.5);
+        bars.push((level * bell * wave).clamp(0.12, 0.98));
     }
     bars
 }
@@ -709,5 +738,99 @@ fn mic_test_callback(
     if let Some(app) = app {
         let meter = (level * 8.0).clamp(0.0, 1.0);
         let _ = app.emit("mic-test-level", meter);
+    }
+}
+
+#[cfg(test)]
+mod gate_tests {
+    use super::*;
+
+    fn tone(n: usize, amp: f32) -> Vec<f32> {
+        (0..n)
+            .map(|i| amp * (i as f32 * 0.31).sin())
+            .collect()
+    }
+
+    fn passed(out: &[f32]) -> bool {
+        out.iter().any(|s| s.abs() > 1e-6)
+    }
+
+    #[test]
+    fn quieter_continuation_stays_open_after_loud_start() {
+        let mut gate = SttGate::new();
+        let loud = tone(160, 0.55);
+        let cont = tone(160, 0.07);
+        for _ in 0..12 {
+            assert!(passed(&apply_near_field_gate_inner(&loud, &mut gate, 16000)));
+        }
+        for i in 0..80 {
+            let out = apply_near_field_gate_inner(&cont, &mut gate, 16000);
+            assert!(
+                passed(&out),
+                "gate muted continued speech at frame {i} (peak={:.3})",
+                gate.peak
+            );
+        }
+    }
+
+    #[test]
+    fn reopens_after_mid_hold_pause() {
+        let mut gate = SttGate::new();
+        let speech = tone(160, 0.22);
+        let silence = vec![0.0f32; 160];
+        for _ in 0..20 {
+            assert!(passed(&apply_near_field_gate_inner(&speech, &mut gate, 16000)));
+        }
+        // ~400ms of silence — longer than hangover, gate should close.
+        for _ in 0..40 {
+            let _ = apply_near_field_gate_inner(&silence, &mut gate, 16000);
+        }
+        assert!(!gate.open, "expected gate to close after a pause");
+        // Same talker resumes at a bit below the original level.
+        let resume = tone(160, 0.12);
+        let mut reopened = false;
+        for _ in 0..8 {
+            if passed(&apply_near_field_gate_inner(&resume, &mut gate, 16000)) {
+                reopened = true;
+                break;
+            }
+        }
+        assert!(reopened, "gate did not reopen for continued close-mic speech");
+    }
+
+    #[test]
+    fn behind_you_stays_closed_after_speech_peak() {
+        let mut gate = SttGate::new();
+        let close = tone(160, 0.28);
+        let behind = tone(160, 0.006);
+        for _ in 0..15 {
+            assert!(passed(&apply_near_field_gate_inner(&close, &mut gate, 16000)));
+        }
+        for _ in 0..40 {
+            let _ = apply_near_field_gate_inner(&vec![0.0; 160], &mut gate, 16000);
+        }
+        for _ in 0..20 {
+            let out = apply_near_field_gate_inner(&behind, &mut gate, 16000);
+            assert!(!passed(&out), "behind-you talk leaked through after peak");
+        }
+    }
+
+    #[test]
+    fn silence_meter_is_flat_not_a_fake_breathe() {
+        let quiet = vec![0.0f32; 320];
+        let a = compute_bars(&quiet, 20, 0);
+        let b = compute_bars(&quiet, 20, 17);
+        assert_eq!(a, b, "silence must not fabricate jumping bars across frames");
+        assert!(a.iter().all(|&v| (v - 0.08).abs() < 1e-5));
+    }
+
+    #[test]
+    fn speech_meter_rises_above_idle() {
+        let speech = tone(320, 0.22);
+        let bars = compute_bars(&speech, 20, 0);
+        assert!(
+            bars.iter().any(|&v| v > 0.2),
+            "close-mic speech should drive a live waveform, got {bars:?}"
+        );
     }
 }

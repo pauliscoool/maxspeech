@@ -1,5 +1,5 @@
-import { check, type Update } from "@tauri-apps/plugin-updater";
-import { relaunch } from "@tauri-apps/plugin-process";
+import { check, type DownloadEvent, type Update } from "@tauri-apps/plugin-updater";
+import { exit, relaunch } from "@tauri-apps/plugin-process";
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -313,21 +313,109 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
   return manifest;
 }
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** IPC dies when Rust `process::exit`s after spawning NSIS — not a failed install. */
+function isFatalInstallerError(err: unknown): boolean {
+  const msg = String(err).toLowerCase();
+  return (
+    msg.includes("download failed") ||
+    msg.includes("download interrupted") ||
+    msg.includes("could not launch") ||
+    msg.includes("could not write") ||
+    msg.includes("could not finish") ||
+    msg.includes("could not open") ||
+    msg.includes("http ") ||
+    msg.includes("outdated") ||
+    msg.includes("already on the latest") ||
+    msg.includes("no signed update")
+  );
+}
+
 async function downloadAndRunInstaller(
   url: string,
   onProgress?: (pct: number | null) => void,
 ): Promise<void> {
+  let reachedComplete = false;
   const unlisten = await listen<number>("installer-download-progress", (ev) => {
     const n = Number(ev.payload);
-    onProgress?.(Number.isFinite(n) ? n : null);
+    const pct = Number.isFinite(n) ? n : null;
+    if (pct != null && pct >= 100) reachedComplete = true;
+    onProgress?.(pct);
   });
   try {
     onProgress?.(0);
-    await invoke("download_and_run_installer", { url });
+    try {
+      await invoke("download_and_run_installer", { url });
+    } catch (err) {
+      // Process is exiting after a successful spawn; don't surface IPC death.
+      if (reachedComplete && !isFatalInstallerError(err)) return;
+      throw err;
+    }
     onProgress?.(100);
   } finally {
     unlisten();
   }
+}
+
+async function installSignedTauriUpdate(
+  onProgress?: (pct: number | null) => void,
+): Promise<void> {
+  if (!cached) {
+    throw new Error("No signed update is ready.");
+  }
+
+  let downloaded = 0;
+  let contentLength: number | null = null;
+  const handleEvent = (event: DownloadEvent) => {
+    switch (event.event) {
+      case "Started":
+        contentLength = event.data.contentLength ?? null;
+        onProgress?.(0);
+        break;
+      case "Progress":
+        downloaded += event.data.chunkLength;
+        if (contentLength && contentLength > 0) {
+          onProgress?.(
+            Math.min(99, Math.round((downloaded / contentLength) * 100)),
+          );
+        } else {
+          onProgress?.(null);
+        }
+        break;
+      case "Finished":
+        onProgress?.(100);
+        break;
+    }
+  };
+
+  const windows = detectHostOs() === "windows";
+
+  // Download first so we can show Restarting, then install (Windows NSIS
+  // ShellExecute + process::exit). Do not relaunch() on Windows — that
+  // restarts the *old* binary while the installer still needs the lock.
+  await cached.download(handleEvent);
+  onProgress?.(100);
+  if (windows) await delay(1200);
+  try {
+    await cached.install();
+  } catch (err) {
+    if (windows && !isFatalInstallerError(err)) return;
+    throw err;
+  }
+
+  if (windows) {
+    try {
+      await exit(0);
+    } catch {
+      // Process may already be exiting.
+    }
+    return;
+  }
+
+  await relaunch();
 }
 
 export async function installAvailableUpdate(
@@ -340,32 +428,7 @@ export async function installAvailableUpdate(
   }
 
   if (info.source === "tauri" && cached) {
-    let downloaded = 0;
-    let contentLength: number | null = null;
-
-    await cached.downloadAndInstall((event) => {
-      switch (event.event) {
-        case "Started":
-          contentLength = event.data.contentLength ?? null;
-          onProgress?.(0);
-          break;
-        case "Progress":
-          downloaded += event.data.chunkLength;
-          if (contentLength && contentLength > 0) {
-            onProgress?.(
-              Math.min(99, Math.round((downloaded / contentLength) * 100)),
-            );
-          } else {
-            onProgress?.(null);
-          }
-          break;
-        case "Finished":
-          onProgress?.(100);
-          break;
-      }
-    });
-
-    await relaunch();
+    await installSignedTauriUpdate(onProgress);
     return;
   }
 
@@ -388,12 +451,20 @@ export async function installAvailableUpdate(
       );
     }
     await downloadAndRunInstaller(url, onProgress);
+    if (detectHostOs() === "windows") {
+      // Rust hard-exits after spawning NSIS; backup if invoke returned.
+      try {
+        await exit(0);
+      } catch {
+        // Process may already be exiting.
+      }
+    }
     return;
   }
 
   // Landing page / releases page — open in browser.
   await openUrl(url);
   throw new Error(
-    "Opened the download page — install from there to finish updating.",
+    "Couldn't start the installer automatically. Opened the download page instead.",
   );
 }

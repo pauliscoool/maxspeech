@@ -324,10 +324,16 @@ Function PageLeaveReinstall
  ; $R1 holds the radio buttons state:
  ; 1 => first choice was selected
  ; 0 => second choice was selected
+ ; $R9 = 1 → after successful uninstall, Quit (do not fall through into reinstall).
+ ; Without this, same-version "Uninstall" removes MaxSpeech then continues the
+ ; wizard, reinstalls, and POSTINSTALL launches the app — feels like "uninstall
+ ; just opened the app."
+ StrCpy $R9 0
  ${If} $R0 = 0 ; Same version, proceed
  ${If} $R1 = 1 ; User chose to add/reinstall
  Goto reinst_done
  ${Else} ; User chose to uninstall
+ StrCpy $R9 1
  Goto reinst_uninstall
  ${EndIf}
  ${ElseIf} $R0 = 1 ; Upgrading
@@ -380,6 +386,11 @@ Function PageLeaveReinstall
  ; Other errors? show generic error message and return to select un/reinstall page
  MessageBox MB_ICONEXCLAMATION "$(unableToUninstall)"
  Abort
+ ${EndIf}
+
+ ; Same-version uninstall complete — exit the outer installer (do not reinstall).
+ ${If} $R9 = 1
+ Quit
  ${EndIf}
  reinst_done:
 FunctionEnd
@@ -595,6 +606,7 @@ Section WebView2
  DetailPrint "$(webview2InstallSuccess)"
  ${Else}
  DetailPrint "$(webview2InstallError)"
+ MessageBox MB_ICONEXCLAMATION|MB_OK "MaxSpeech needs the Microsoft Edge WebView2 Runtime.$\r$\n$\r$\n1. Connect to the internet$\r$\n2. Install WebView2 from:$\r$\n   https://go.microsoft.com/fwlink/p/?LinkId=2124703$\r$\n3. Run this MaxSpeech installer again.$\r$\n$\r$\n(Microphone / speakers are not required for install.)"
  Abort "$(webview2AbortError)"
  ${EndIf}
  webview2_done:
@@ -637,7 +649,17 @@ Section Install
  !insertmacro NSIS_HOOK_PREINSTALL
  !endif
 
- !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
+ ; Interactive wizard: prompt to close a running instance.
+ ; Silent / passive / in-app /UPDATE: never show "Please close it first then
+ ; try again." PREINSTALL already retried KillProcess; if the exe is still
+ ; locked, File below fails with a real error instead of a restart instruction.
+ ${If} ${Silent}
+ ${OrIf} $PassiveMode = 1
+ ${OrIf} $UpdateMode = 1
+   !insertmacro ForceQuitRunningApp
+ ${Else}
+   !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
+ ${EndIf}
 
  ; Copy main executable
  File "${MAINBINARYSRCPATH}"
@@ -718,12 +740,9 @@ Section Install
  Call CreateOrUpdateStartMenuShortcut
  !insertmacro MUI_STARTMENU_WRITE_END
 
- ; Create desktop shortcut for silent and passive installers
- ; because finish page will be skipped
- ${If} $PassiveMode = 1
- ${OrIf} ${Silent}
+ ; Always create a desktop shortcut so a fresh PC can launch MaxSpeech
+ ; without hunting Start Menu / tray.
  Call CreateOrUpdateDesktopShortcut
- ${EndIf}
 
  !ifmacrodef NSIS_HOOK_POSTINSTALL
  !insertmacro NSIS_HOOK_POSTINSTALL
@@ -899,7 +918,10 @@ Function Skip
 FunctionEnd
 
 Function SkipIfPassive
- ${IfThen} $PassiveMode = 1 ${|} Abort ${|}
+ ${If} $PassiveMode = 1
+ ${OrIf} $UpdateMode = 1
+   Abort
+ ${EndIf}
 FunctionEnd
 Function un.SkipIfPassive
  ${IfThen} $PassiveMode = 1 ${|} Abort ${|}

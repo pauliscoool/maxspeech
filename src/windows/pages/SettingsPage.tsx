@@ -23,9 +23,17 @@ import ConfirmModal from "../../components/ConfirmModal";
 import type { PageId } from "../Shell";
 import type { AuthUser } from "../../lib/auth";
 import { signOut } from "../../lib/auth";
+import { scheduleCloudSettingsPush, flushScheduledCloudSettingsPush } from "../../lib/cloudSync";
 import {
-  pushCloudSettings,
-} from "../../lib/cloudSync";
+  loadProfileIdentity,
+  scheduleProfileAvatarSave,
+  saveProfileNames,
+  cancelScheduledAvatarSave,
+  profileInitials,
+  formatFullName,
+  PROFILE_CHANGED_EVENT,
+  PROFILE_AVATAR_SAVED_EVENT,
+} from "../../lib/profileIdentity";
 import {
   DEFAULT_STT_LANGUAGES,
   MAX_STT_LANGUAGES,
@@ -97,6 +105,17 @@ export default function SettingsPage({
   const [micMsg, setMicMsg] = useState("");
   const [micTesting, setMicTesting] = useState(false);
   const [micLevel, setMicLevel] = useState(0);
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+  const [profileMsg, setProfileMsg] = useState("");
+  const [profileErr, setProfileErr] = useState("");
+  const [savingNames, setSavingNames] = useState(false);
+  const avatarInputRef = useRef<HTMLInputElement>(null);
+  const profileLoadedRef = useRef(false);
+  const savedNamesRef = useRef({ first: "", last: "" });
+  const [userIdVisible, setUserIdVisible] = useState(false);
+  const userIdHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     refresh();
@@ -105,6 +124,43 @@ export default function SettingsPage({
     void loadMicrophones();
     isEnabled().then(setAutostart).catch(() => {});
     getAppVersion().then(setAppVersion).catch(() => setAppVersion("0.1.0"));
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => {
+      void loadProfileIdentity({
+        username: authUser?.username,
+        email: authUser?.email,
+      }).then((id) => {
+        if (cancelled) return;
+        setFirstName(id.firstName);
+        setLastName(id.lastName);
+        setAvatarUrl(id.avatarDataUrl);
+        savedNamesRef.current = { first: id.firstName, last: id.lastName };
+        profileLoadedRef.current = true;
+      });
+    };
+    load();
+    window.addEventListener(PROFILE_CHANGED_EVENT, load);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(PROFILE_CHANGED_EVENT, load);
+    };
+  }, [authUser?.email, authUser?.username]);
+
+  useEffect(() => {
+    const onSaved = () => setProfileMsg("Photo saved.");
+    window.addEventListener(PROFILE_AVATAR_SAVED_EVENT, onSaved);
+    return () => window.removeEventListener(PROFILE_AVATAR_SAVED_EVENT, onSaved);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (userIdHideTimer.current) {
+        clearTimeout(userIdHideTimer.current);
+      }
+    };
   }, []);
 
   useEffect(() => {
@@ -150,7 +206,7 @@ export default function SettingsPage({
           await invoke("set_hotkey", { shortcut: combo });
           setHotkey(combo);
           setHotkeyMsg(`Hotkey set to ${formatHotkey(combo)}`);
-          void pushCloudSettings();
+          scheduleCloudSettingsPush();
           onChanged();
         } catch (err) {
           setHotkeyMsg(`Could not set hotkey: ${err}`);
@@ -177,7 +233,7 @@ export default function SettingsPage({
         await invoke("set_hotkey", { shortcut: combo });
         setHotkey(combo);
         setHotkeyMsg(`Hotkey set to ${formatHotkey(combo)}`);
-        void pushCloudSettings();
+        scheduleCloudSettingsPush();
         onChanged();
       } catch (err) {
         setHotkeyMsg(`Could not set hotkey: ${err}`);
@@ -306,7 +362,7 @@ export default function SettingsPage({
     try {
       const saved = await invoke<string>("set_microphone", { device: next });
       setMicDevice(saved || next);
-      void pushCloudSettings();
+      scheduleCloudSettingsPush();
       const label =
         (saved || next) === "default"
           ? "System default"
@@ -349,12 +405,12 @@ export default function SettingsPage({
       await disable();
       setAutostart(false);
       await invoke("set_setting", { key: "launch_at_startup", value: "false" });
-      void pushCloudSettings();
+      scheduleCloudSettingsPush();
     } else {
       await enable();
       setAutostart(true);
       await invoke("set_setting", { key: "launch_at_startup", value: "true" });
-      void pushCloudSettings();
+      scheduleCloudSettingsPush();
     }
   }
 
@@ -366,7 +422,7 @@ export default function SettingsPage({
     const next = !current;
     setter(next);
     await invoke("set_setting", { key, value: next ? "true" : "false" });
-    void pushCloudSettings();
+    scheduleCloudSettingsPush();
   }
 
   async function toggleMultilingual() {
@@ -392,7 +448,7 @@ export default function SettingsPage({
         value: JSON.stringify(one),
       });
     }
-    void pushCloudSettings();
+    scheduleCloudSettingsPush();
   }
 
   async function toggleSttLanguage(code: string) {
@@ -413,20 +469,20 @@ export default function SettingsPage({
       key: "stt_languages",
       value: JSON.stringify(next),
     });
-    void pushCloudSettings();
+    scheduleCloudSettingsPush();
   }
 
   async function applyMode(mode: "hold" | "toggle") {
     setHotkeyMode(mode);
     await invoke("set_hotkey_mode", { mode });
-    void pushCloudSettings();
+    scheduleCloudSettingsPush();
     onChanged();
   }
 
   async function applyThemeChoice(theme: UiTheme) {
     setUiTheme(theme);
     await persistTheme(theme);
-    void pushCloudSettings();
+    scheduleCloudSettingsPush();
   }
 
   async function applyPreset(combo: string) {
@@ -434,7 +490,7 @@ export default function SettingsPage({
       await invoke("set_hotkey", { shortcut: combo });
       setHotkey(combo);
       setHotkeyMsg(`Hotkey set to ${formatHotkey(combo)}`);
-      void pushCloudSettings();
+      scheduleCloudSettingsPush();
       onChanged();
     } catch (err) {
       setHotkeyMsg(`Could not set hotkey: ${err}`);
@@ -465,10 +521,14 @@ export default function SettingsPage({
       await installAvailableUpdate((pct) => {
         setUpdatePct(pct);
         setUpdateMsg(
-          pct != null ? `Downloading update… ${pct}%` : "Downloading update…",
+          pct != null && pct >= 100
+            ? "Restarting…"
+            : pct != null
+              ? `Downloading update… ${pct}%`
+              : "Downloading update…",
         );
       });
-      setUpdateMsg("Installer launched — finish the setup to complete the update.");
+      setUpdateMsg("Restarting…");
     } catch (e) {
       const msg = String(e).replace(/^Error:\s*/i, "");
       if (msg.includes("latest version")) {
@@ -490,10 +550,70 @@ export default function SettingsPage({
     onNavigate?.("home");
   }
 
+  function hideUserId() {
+    if (userIdHideTimer.current) {
+      clearTimeout(userIdHideTimer.current);
+      userIdHideTimer.current = null;
+    }
+    setUserIdVisible(false);
+  }
+
+  function revealUserId() {
+    if (userIdHideTimer.current) {
+      clearTimeout(userIdHideTimer.current);
+    }
+    setUserIdVisible(true);
+    userIdHideTimer.current = setTimeout(() => {
+      setUserIdVisible(false);
+      userIdHideTimer.current = null;
+    }, 15_000);
+  }
+
+  async function persistNames() {
+    if (!profileLoadedRef.current || savingNames) return;
+    const first = firstName.trim();
+    const last = lastName.trim();
+    if (
+      first === savedNamesRef.current.first &&
+      last === savedNamesRef.current.last
+    ) {
+      return;
+    }
+    setSavingNames(true);
+    setProfileErr("");
+    try {
+      await saveProfileNames(first, last);
+      savedNamesRef.current = { first, last };
+      setProfileMsg("Name saved.");
+      onChanged();
+    } catch (e) {
+      setProfileErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSavingNames(false);
+    }
+  }
+
+  async function onAvatarPicked(file: File | undefined) {
+    if (!file) return;
+    setProfileErr("");
+    setProfileMsg("");
+    try {
+      const url = await scheduleProfileAvatarSave(file);
+      setAvatarUrl(url);
+    } catch (e) {
+      if (e instanceof DOMException && e.name === "AbortError") return;
+      setProfileErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      if (avatarInputRef.current) avatarInputRef.current.value = "";
+    }
+  }
+
   async function confirmLogout() {
     if (loggingOut) return;
     setLoggingOut(true);
     try {
+      cancelScheduledAvatarSave();
+      await flushScheduledCloudSettingsPush({ toast: false });
       await signOut();
       await invoke("clear_session");
     } catch (e) {
@@ -518,21 +638,129 @@ export default function SettingsPage({
           <h2 className="settings-section-title">Account</h2>
           <div className="settings-group space-y-0">
             <div className="settings-row">
-              <div className="settings-row-text">
-                <div className="settings-row-title">{authUser.username}</div>
-                <div className="settings-row-desc">
-                {authUser.email}
-                {authUser.local ? " · local only" : ""}
-              </div>
-              </div>
-            </div>
-            <div className="settings-row">
-              <div className="settings-row-text">
-                <div className="settings-row-title">User ID</div>
-                <div className="settings-row-desc font-mono text-[11px] break-all">
-                  {authUser.id}
+              <div className="flex items-center gap-3 min-w-0 flex-1">
+                {avatarUrl ? (
+                  <img
+                    src={avatarUrl}
+                    alt=""
+                    className="w-12 h-12 rounded-full object-cover shrink-0"
+                  />
+                ) : (
+                  <div
+                    className="w-12 h-12 rounded-full shrink-0 flex items-center justify-center text-sm font-semibold text-[var(--ms-turquoise)]"
+                    style={{ background: "var(--ms-surface-2)" }}
+                  >
+                    {profileInitials(firstName, lastName) ||
+                      profileInitials(authUser.username, "")}
+                  </div>
+                )}
+                <div className="settings-row-text">
+                  <div className="settings-row-title">
+                    {formatFullName(firstName, lastName) || authUser.username}
+                  </div>
+                  <div className="settings-row-desc">
+                    {authUser.email}
+                    {authUser.local ? " · local only" : ""}
+                  </div>
                 </div>
               </div>
+              <div className="shrink-0">
+                <input
+                  ref={avatarInputRef}
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp,image/gif,.jpg,.jpeg,.png,.webp,.gif"
+                  className="hidden"
+                  onChange={(e) => void onAvatarPicked(e.target.files?.[0])}
+                />
+                <button
+                  type="button"
+                  onClick={() => avatarInputRef.current?.click()}
+                  className="btn-primary px-3.5 py-1.5 text-xs"
+                >
+                  {avatarUrl ? "Change photo" : "Upload photo"}
+                </button>
+              </div>
+            </div>
+            <div className="settings-row settings-row-stack gap-3">
+              <div className="grid grid-cols-2 gap-3 w-full">
+                <label className="block space-y-1.5 min-w-0">
+                  <span className="text-xs text-[var(--ms-text-dim)]">First name</span>
+                  <input
+                    type="text"
+                    autoComplete="given-name"
+                    value={firstName}
+                    maxLength={64}
+                    onChange={(e) => {
+                      setFirstName(e.target.value);
+                      setProfileMsg("");
+                    }}
+                    onBlur={() => void persistNames()}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.currentTarget.blur();
+                      }
+                    }}
+                    placeholder="First"
+                    className="w-full px-3 py-2 rounded-xl bg-[var(--ms-bg)] text-sm outline-none focus:shadow-[0_0_0_2px_var(--ms-turquoise-glow)]"
+                  />
+                </label>
+                <label className="block space-y-1.5 min-w-0">
+                  <span className="text-xs text-[var(--ms-text-dim)]">Last name</span>
+                  <input
+                    type="text"
+                    autoComplete="family-name"
+                    value={lastName}
+                    maxLength={64}
+                    onChange={(e) => {
+                      setLastName(e.target.value);
+                      setProfileMsg("");
+                    }}
+                    onBlur={() => void persistNames()}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.currentTarget.blur();
+                      }
+                    }}
+                    placeholder="Last"
+                    className="w-full px-3 py-2 rounded-xl bg-[var(--ms-bg)] text-sm outline-none focus:shadow-[0_0_0_2px_var(--ms-turquoise-glow)]"
+                  />
+                </label>
+              </div>
+              <p className="text-[11px] text-[var(--ms-text-dim)] leading-relaxed">
+                JPEG, PNG, WebP, or GIF — 1 MB max. Photo and name stay on this device
+                {authUser.local ? "" : " and sync to your account"}.
+              </p>
+              {profileErr ? (
+                <p className="text-xs text-[var(--ms-error)]">{profileErr}</p>
+              ) : profileMsg ? (
+                <p className="text-xs text-[var(--ms-turquoise)]">{profileMsg}</p>
+              ) : null}
+            </div>
+            <div className="settings-row">
+              <div className="settings-row-text min-w-0">
+                <div className="settings-row-title">User ID</div>
+                {userIdVisible ? (
+                  <div className="settings-row-desc font-mono text-[11px] break-all">
+                    {authUser.id}
+                  </div>
+                ) : (
+                  <div className="ms-id-mosaic" aria-hidden="true">
+                    <span className="ms-id-mosaic-text">
+                      xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+                    </span>
+                  </div>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => (userIdVisible ? hideUserId() : revealUserId())}
+                className="px-3.5 py-1.5 text-xs rounded-full font-semibold shrink-0 transition-colors text-[var(--ms-text-dim)] hover:text-[var(--ms-hover-fg)]"
+                style={{ background: "var(--ms-fill-muted)" }}
+                aria-pressed={userIdVisible}
+                aria-label={userIdVisible ? "Hide user ID" : "Show user ID for 15 seconds"}
+              >
+                {userIdVisible ? "Hide" : "Show"}
+              </button>
             </div>
           </div>
         </section>
@@ -766,7 +994,7 @@ export default function SettingsPage({
                           key: "sound_cue_volume",
                           value,
                         }).then(() => {
-                          void pushCloudSettings();
+                          scheduleCloudSettingsPush();
                           void invoke("preview_sound_cue", { volume: value });
                         });
                       }}
@@ -785,7 +1013,7 @@ export default function SettingsPage({
                     key: "sound_cue",
                     value: next ? "true" : "false",
                   }).then(() => {
-                    void pushCloudSettings();
+                    scheduleCloudSettingsPush();
                     if (next) {
                       void invoke("preview_sound_cue", {
                         volume: soundCueVolume,
@@ -948,9 +1176,11 @@ export default function SettingsPage({
                 className="btn-primary px-4 py-2 text-xs"
               >
                 {updating
-                  ? updatePct != null
-                    ? `Installing ${updatePct}%…`
-                    : "Installing…"
+                  ? updatePct != null && updatePct >= 100
+                    ? "Restarting…"
+                    : updatePct != null
+                      ? `Installing ${updatePct}%…`
+                      : "Restarting…"
                   : "Update now"}
               </button>
             </div>

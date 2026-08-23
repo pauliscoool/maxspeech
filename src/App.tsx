@@ -2,10 +2,10 @@ import { useState, useEffect } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import Shell from "./windows/Shell";
-import Overlay from "./windows/Overlay";
 import Onboarding from "./windows/Onboarding";
 import AuthPanel from "./components/AuthPanel";
-import { applyTheme, loadAndApplyTheme } from "./lib/theme";
+import ErrorBoundary from "./components/ErrorBoundary";
+import { loadAndApplyTheme } from "./lib/theme";
 import { getSessionUser, onAuthChange, type AuthUser } from "./lib/auth";
 import { pullCloudSettings } from "./lib/cloudSync";
 
@@ -20,12 +20,11 @@ async function syncDictationAuth(user: AuthUser | null) {
   }
 }
 
-type View = "overlay" | "shell" | "onboarding";
+type View = "shell" | "onboarding";
 
 function initialView(): View {
   try {
     const label = getCurrentWindow().label;
-    if (label === "overlay") return "overlay";
     if (label === "onboarding") return "onboarding";
   } catch {
     // Browser/dev without Tauri
@@ -43,22 +42,6 @@ export default function App() {
     try {
       label = getCurrentWindow().label;
     } catch {
-      setAuthReady(true);
-      return;
-    }
-    if (label === "overlay") {
-      document.documentElement.setAttribute("data-window", "overlay");
-      applyTheme("dark");
-      // Fully transparent chrome — charcoal RGB + A=0 so a failed clear
-      // flashes pill-matching dark instead of WebView2 white.
-      const clear = [18, 18, 18, 0] as [number, number, number, number];
-      void getCurrentWindow()
-        .setBackgroundColor(clear)
-        .catch(() => {});
-      void getCurrentWebview()
-        .setBackgroundColor(clear)
-        .catch(() => {});
-      setView("overlay");
       setAuthReady(true);
       return;
     }
@@ -85,15 +68,17 @@ export default function App() {
         const user = await getSessionUser();
         if (cancelled) return;
         setAuthUser(user);
-        await syncDictationAuth(user);
-        if (user) await pullCloudSettings();
+        setAuthReady(true);
+        void syncDictationAuth(user);
+        if (user) {
+          void pullCloudSettings().catch(() => {});
+        }
       } catch {
         if (!cancelled) {
           setAuthUser(null);
-          await syncDictationAuth(null);
+          setAuthReady(true);
+          void syncDictationAuth(null);
         }
-      } finally {
-        if (!cancelled) setAuthReady(true);
       }
     })();
 
@@ -108,8 +93,6 @@ export default function App() {
       unsub();
     };
   }, []);
-
-  if (view === "overlay") return <Overlay />;
 
   if (!authReady) {
     return (
@@ -143,6 +126,16 @@ export default function App() {
     );
   }
 
-  if (view === "onboarding") return <Onboarding />;
-  return <Shell authUser={authUser} />;
+  if (view === "onboarding") {
+    return (
+      <ErrorBoundary label="Settings could not load.">
+        <Onboarding />
+      </ErrorBoundary>
+    );
+  }
+  return (
+    <ErrorBoundary label="MaxSpeech could not load the main window.">
+      <Shell authUser={authUser} />
+    </ErrorBoundary>
+  );
 }

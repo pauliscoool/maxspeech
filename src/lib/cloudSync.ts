@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { supabase } from "./supabase";
 import type { PlanTier } from "./plan";
+import { showAccountSavedToast } from "./toast";
 
 /** Local settings keys mirrored to Supabase `user_settings.settings`. */
 export const SYNC_SETTING_KEYS = [
@@ -11,15 +12,23 @@ export const SYNC_SETTING_KEYS = [
   "sound_cue_volume",
   "ui_theme",
   "launch_at_startup",
+  "open_window_on_launch",
   "plan_tier",
   "stt_multilingual",
   "stt_languages",
   "mic_device",
+  "profile_first_name",
+  "profile_last_name",
+  "profile_avatar",
 ] as const;
+
+/** Debounce from last settings edit before pushing to the account. */
+export const ACCOUNT_SAVE_DEBOUNCE_MS = 5000;
 
 export type CloudSettings = Record<string, string>;
 
-// Collection keys stored as JSON strings inside user_settings.settings.
+// Collection keys stored as JSON strings inside user_settings.settings so
+// dictionary / snippets / style overrides follow the account across devices.
 const DICT_KEY = "dictionary_json";
 const MACROS_KEY = "macros_json";
 const PROFILES_KEY = "profiles_json";
@@ -30,14 +39,15 @@ async function readLocalCollections(): Promise<CloudSettings> {
     const dict = await invoke<{ word: string }[]>("get_dictionary");
     if (Array.isArray(dict)) out[DICT_KEY] = JSON.stringify(dict.map((d) => d.word));
   } catch {
-    /* ignore - not in Tauri */
+    /* ignore — not in Tauri */
   }
   try {
     const macros = await invoke<{ trigger: string; expansion: string }[]>("get_macros");
-    if (Array.isArray(macros))
+    if (Array.isArray(macros)) {
       out[MACROS_KEY] = JSON.stringify(
         macros.map((m) => ({ trigger: m.trigger, expansion: m.expansion })),
       );
+    }
   } catch {
     /* ignore */
   }
@@ -66,9 +76,9 @@ async function applyLocalCollections(settings: CloudSettings): Promise<void> {
     try {
       const target: string[] = JSON.parse(settings[DICT_KEY]);
       if (Array.isArray(target)) {
-        const local = (await invoke<{ id: number; word: string }[]>("get_dictionary").catch(
-          () => [],
-        )) as { id: number; word: string }[];
+        const local = (await invoke<{ id: number; word: string }[]>(
+          "get_dictionary",
+        ).catch(() => [])) as { id: number; word: string }[];
         const localSet = new Set(local.map((w) => w.word));
         const targetSet = new Set(target);
         for (const w of target) {
@@ -95,9 +105,13 @@ async function applyLocalCollections(settings: CloudSettings): Promise<void> {
         expansion: string;
       }[];
       if (Array.isArray(target)) {
-        const local = (await invoke<{ id: number; trigger: string; expansion: string }[]>(
-          "get_macros",
-        ).catch(() => [])) as { id: number; trigger: string; expansion: string }[];
+        const local = (await invoke<
+          { id: number; trigger: string; expansion: string }[]
+        >("get_macros").catch(() => [])) as {
+          id: number;
+          trigger: string;
+          expansion: string;
+        }[];
         const localByTrigger = new Map(local.map((m) => [m.trigger, m]));
         const targetByTrigger = new Map(target.map((m) => [m.trigger, m.expansion]));
         for (const t of target) {
@@ -133,7 +147,13 @@ async function applyLocalCollections(settings: CloudSettings): Promise<void> {
       }[];
       if (Array.isArray(target) && target.length > 0) {
         const local = (await invoke<
-          { id: number; exe_pattern: string; title_pattern: string; tone: string; enabled: boolean }[]
+          {
+            id: number;
+            exe_pattern: string;
+            title_pattern: string;
+            tone: string;
+            enabled: boolean;
+          }[]
         >("get_app_profiles").catch(() => [])) as {
           id: number;
           exe_pattern: string;
@@ -171,16 +191,21 @@ async function readLocalSettings(): Promise<CloudSettings> {
     try {
       const v = await invoke<string | null>("get_setting", { key });
       if (v != null && v !== "") out[key] = v;
-    } catch {}
+    } catch {
+      // ignore missing
+    }
   }
   try {
     out.hotkey = await invoke<string>("get_hotkey");
-  } catch {}
+  } catch {
+    /* ignore */
+  }
   try {
     out.hotkey_mode = await invoke<string>("get_hotkey_mode");
-  } catch {}
-  const collections = await readLocalCollections();
-  Object.assign(out, collections);
+  } catch {
+    /* ignore */
+  }
+  Object.assign(out, await readLocalCollections());
   return out;
 }
 
@@ -192,73 +217,179 @@ async function applyLocalSettings(settings: CloudSettings): Promise<void> {
       if (key === "plan_tier") {
         await invoke("set_plan_tier", { tier: v });
       } else if (key === "mic_device") {
+        // Validate / fuzzy-match against currently attached devices.
         await invoke("set_microphone", { device: v });
       } else {
         await invoke("set_setting", { key, value: v });
       }
-    } catch {}
+    } catch {
+      /* ignore */
+    }
   }
   if (settings.hotkey) {
     try {
       await invoke("set_hotkey", { shortcut: settings.hotkey });
-    } catch {}
+    } catch {
+      /* ignore */
+    }
   }
   if (settings.hotkey_mode) {
     try {
       await invoke("set_hotkey_mode", { mode: settings.hotkey_mode });
-    } catch {}
+    } catch {
+      /* ignore */
+    }
   }
   await applyLocalCollections(settings);
 }
 
-export async function pushCloudSettings(): Promise<void> {
+export async function hasCloudSession(): Promise<boolean> {
+  const { data: session } = await supabase.auth.getSession();
+  return Boolean(session.session?.user?.id);
+}
+
+/**
+ * Push local prefs (hotkey, theme, mic, …) to Supabase.
+ * No-ops for local-only / unsigned-in sessions. Returns true only when
+ * the upsert succeeded for a real cloud user.
+ */
+export async function pushCloudSettings(): Promise<boolean> {
   const { data: session } = await supabase.auth.getSession();
   const uid = session.session?.user?.id;
-  if (!uid) return;
+  if (!uid) return false;
+
   const local = await readLocalSettings();
   const tier = (local.plan_tier || "free") as PlanTier;
+
   await supabase
     .from("profiles")
-    .update({ plan_tier: tier, updated_at: new Date().toISOString() })
+    .update({
+      plan_tier: tier,
+      updated_at: new Date().toISOString(),
+    })
     .eq("id", uid);
-  let merged: CloudSettings = { ...local };
-  try {
-    const { data: existing } = await supabase
-      .from("user_settings")
-      .select("settings")
-      .eq("user_id", uid)
-      .maybeSingle();
-    const cloud = (existing?.settings as CloudSettings) || {};
-    merged = { ...cloud, ...local };
-  } catch {}
+
+  // Merge so a hotkey/theme push cannot wipe a stored avatar.
+  const { data: existing } = await supabase
+    .from("user_settings")
+    .select("settings")
+    .eq("user_id", uid)
+    .maybeSingle();
+  const settings: CloudSettings = {
+    ...((existing?.settings as CloudSettings) || {}),
+    ...local,
+  };
+
   const { error } = await supabase.from("user_settings").upsert(
-    { user_id: uid, settings: merged, updated_at: new Date().toISOString() },
+    {
+      user_id: uid,
+      settings,
+      updated_at: new Date().toISOString(),
+    },
     { onConflict: "user_id" },
   );
-  if (error) console.warn("pushCloudSettings:", error.message);
+  if (error) {
+    console.warn("pushCloudSettings:", error.message);
+    return false;
+  }
+  return true;
+}
+
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+let savePending = false;
+let saveChain: Promise<void> = Promise.resolve();
+let flushListenersBound = false;
+
+function bindSaveFlushListeners() {
+  if (flushListenersBound || typeof window === "undefined") return;
+  flushListenersBound = true;
+  const flushQuiet = () => {
+    void flushScheduledCloudSettingsPush({ toast: false });
+  };
+  window.addEventListener("pagehide", flushQuiet);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") flushQuiet();
+  });
+}
+
+/**
+ * Debounce account sync: local SQLite already saved; wait ~5s after the last
+ * edit, then push once and toast. Local-only users skip this (no account toast).
+ */
+export function scheduleCloudSettingsPush(): void {
+  bindSaveFlushListeners();
+  savePending = true;
+  if (saveTimer != null) {
+    clearTimeout(saveTimer);
+  }
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    void commitScheduledCloudSettings({ toast: true });
+  }, ACCOUNT_SAVE_DEBOUNCE_MS);
+}
+
+/** Flush a pending debounced push (e.g. window hidden). */
+export function flushScheduledCloudSettingsPush(
+  opts?: { toast?: boolean },
+): Promise<void> {
+  if (saveTimer != null) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+  return commitScheduledCloudSettings({ toast: opts?.toast === true });
+}
+
+function commitScheduledCloudSettings(opts: { toast: boolean }): Promise<void> {
+  saveChain = saveChain
+    .then(async () => {
+      if (!savePending) return;
+      savePending = false;
+      const ok = await pushCloudSettings();
+      // More edits arrived while we were pushing — let the next timer/flush toast.
+      if (savePending) return;
+      if (ok && opts.toast) showAccountSavedToast();
+    })
+    .catch((e) => {
+      console.warn("scheduleCloudSettingsPush:", e);
+    });
+  return saveChain;
 }
 
 export async function pullCloudSettings(): Promise<CloudSettings | null> {
   const { data: session } = await supabase.auth.getSession();
   const uid = session.session?.user?.id;
   if (!uid) return null;
+
   const { data: profile } = await supabase
     .from("profiles")
     .select("plan_tier")
     .eq("id", uid)
     .maybeSingle();
+
   const { data, error } = await supabase
     .from("user_settings")
     .select("settings")
     .eq("user_id", uid)
     .maybeSingle();
+
   if (error) {
     console.warn("pullCloudSettings:", error.message);
     return null;
   }
-  const settings = { ...((data?.settings as CloudSettings) || {}) };
-  if (profile?.plan_tier) settings.plan_tier = profile.plan_tier;
-  if (Object.keys(settings).length > 0) await applyLocalSettings(settings);
+
+  const settings = {
+    ...((data?.settings as CloudSettings) || {}),
+  };
+  if (profile?.plan_tier) {
+    settings.plan_tier = profile.plan_tier;
+  }
+
+  if (Object.keys(settings).length > 0) {
+    await applyLocalSettings(settings);
+  }
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event("maxspeech-profile-changed"));
+  }
   return settings;
 }
 
@@ -269,16 +400,20 @@ export type HistoryPayload = {
   created_at?: string;
 };
 
+/** Cloud history sync — Max plan only (also enforced by RLS). */
 export async function pushHistoryIfMax(entry: HistoryPayload): Promise<void> {
   const { data: session } = await supabase.auth.getSession();
   const uid = session.session?.user?.id;
   if (!uid) return;
+
   const { data: profile } = await supabase
     .from("profiles")
     .select("plan_tier")
     .eq("id", uid)
     .maybeSingle();
+
   if (profile?.plan_tier !== "max") return;
+
   const { error } = await supabase.from("dictation_history").insert({
     user_id: uid,
     local_id: entry.id,
@@ -286,38 +421,31 @@ export async function pushHistoryIfMax(entry: HistoryPayload): Promise<void> {
     app_name: entry.app_name,
     created_at: entry.created_at || new Date().toISOString(),
   });
-  if (error && !/duplicate|unique/i.test(error.message)) console.warn("pushHistoryIfMax:", error.message);
+  if (error && !/duplicate|unique/i.test(error.message)) {
+    console.warn("pushHistoryIfMax:", error.message);
+  }
 }
 
 export async function syncAllLocalHistoryIfMax(): Promise<void> {
   const { data: session } = await supabase.auth.getSession();
   const uid = session.session?.user?.id;
   if (!uid) return;
+
   const { data: profile } = await supabase
     .from("profiles")
     .select("plan_tier")
     .eq("id", uid)
     .maybeSingle();
   if (profile?.plan_tier !== "max") return;
+
   try {
-    const rows = await invoke<{ id: number; text: string; app_name: string; created_at: string }[]>(
-      "get_history",
-      { search: "", limit: 200, offset: 0 },
-    );
-    for (const row of rows) await pushHistoryIfMax(row);
+    const rows = await invoke<
+      { id: number; text: string; app_name: string; created_at: string }[]
+    >("get_history", { search: "", limit: 200, offset: 0 });
+    for (const row of rows) {
+      await pushHistoryIfMax(row);
+    }
   } catch (e) {
     console.warn("syncAllLocalHistoryIfMax:", e);
   }
-}
-
-export async function pullCloudHistoryIfMax(): Promise<void> {
-  const { data: session } = await supabase.auth.getSession();
-  const uid = session.session?.user?.id;
-  if (!uid) return;
-  const { data: profile } = await supabase
-    .from("profiles")
-    .select("plan_tier")
-    .eq("id", uid)
-    .maybeSingle();
-  if (profile?.plan_tier !== "max") return;
 }

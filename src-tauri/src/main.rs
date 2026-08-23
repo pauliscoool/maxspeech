@@ -17,9 +17,202 @@ mod stt;
 use store::Store;
 use tauri::{
     menu::{Menu, MenuItem},
-    tray::TrayIconBuilder,
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Emitter, Manager, WebviewUrl, WebviewWindowBuilder,
 };
+
+/// Native error dialog — works even when the WebView never starts.
+fn show_native_error(title: &str, message: &str) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows::core::PCWSTR;
+        use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+        let to_wide = |s: &str| {
+            std::ffi::OsStr::new(s)
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect::<Vec<u16>>()
+        };
+        let t = to_wide(title);
+        let m = to_wide(message);
+        unsafe {
+            let _ = MessageBoxW(
+                None,
+                PCWSTR(m.as_ptr()),
+                PCWSTR(t.as_ptr()),
+                MB_OK | MB_ICONERROR,
+            );
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        eprintln!("{title}: {message}");
+        let _ = (title, message);
+    }
+}
+
+fn logs_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from(store::data_dir()).join("logs")
+}
+
+fn ensure_logs_dir() {
+    let _ = std::fs::create_dir_all(logs_dir());
+}
+
+fn append_crash_log(text: &str) {
+    ensure_logs_dir();
+    let path = logs_dir().join("crash.log");
+    let stamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+    let line = format!("\n===== {stamp} =====\n{text}\n");
+    let _ = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .and_then(|mut f| {
+            use std::io::Write;
+            f.write_all(line.as_bytes())
+        });
+}
+
+fn install_panic_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        let loc = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "unknown".into());
+        let payload = if let Some(s) = info.payload().downcast_ref::<&str>() {
+            (*s).to_string()
+        } else if let Some(s) = info.payload().downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "unknown panic".into()
+        };
+        let msg = format!("MaxSpeech crashed at {loc}\n\n{payload}\n\nA crash log was written to:\n{}", logs_dir().join("crash.log").display());
+        append_crash_log(&msg);
+        show_native_error("MaxSpeech crashed", &msg);
+    }));
+}
+
+/// Returns WebView2 Evergreen Runtime version, if installed.
+fn webview2_runtime_version() -> Option<String> {
+    #[cfg(windows)]
+    {
+        use windows::core::PCWSTR;
+        use windows::Win32::System::Registry::{
+            RegCloseKey, RegGetValueW, RegOpenKeyExW, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE,
+            KEY_READ, RRF_RT_REG_SZ,
+        };
+
+        const GUID: &str = r"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}";
+        const GUID_NATIVE: &str =
+            r"SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}";
+
+        fn read_pv(root: windows::Win32::System::Registry::HKEY, subkey: &str) -> Option<String> {
+            unsafe {
+                let sub = subkey
+                    .encode_utf16()
+                    .chain(std::iter::once(0))
+                    .collect::<Vec<u16>>();
+                let mut hkey = Default::default();
+                if RegOpenKeyExW(root, PCWSTR(sub.as_ptr()), Some(0), KEY_READ, &mut hkey).is_err() {
+                    return None;
+                }
+                let name: Vec<u16> = "pv\0".encode_utf16().collect();
+                let mut buf = vec![0u16; 64];
+                let mut size = (buf.len() * 2) as u32;
+                let status = RegGetValueW(
+                    hkey,
+                    None,
+                    PCWSTR(name.as_ptr()),
+                    RRF_RT_REG_SZ,
+                    None,
+                    Some(buf.as_mut_ptr() as *mut _),
+                    Some(&mut size),
+                );
+                let _ = RegCloseKey(hkey);
+                if status.is_err() {
+                    return None;
+                }
+                let nul = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+                let s = String::from_utf16_lossy(&buf[..nul]).trim().to_string();
+                if s.is_empty() || s == "0.0.0.0" {
+                    None
+                } else {
+                    Some(s)
+                }
+            }
+        }
+
+        read_pv(HKEY_LOCAL_MACHINE, GUID)
+            .or_else(|| read_pv(HKEY_LOCAL_MACHINE, GUID_NATIVE))
+            .or_else(|| read_pv(HKEY_CURRENT_USER, GUID))
+            .or_else(|| read_pv(HKEY_CURRENT_USER, GUID_NATIVE))
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+fn preflight_webview2() -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        if webview2_runtime_version().is_some() {
+            return Ok(());
+        }
+        Err(
+            "Microsoft Edge WebView2 Runtime is not installed.\n\n\
+             MaxSpeech needs WebView2 to show its windows.\n\n\
+             1. Install it from:\n\
+                https://go.microsoft.com/fwlink/p/?LinkId=2124703\n\
+             2. Then run MaxSpeech again.\n\n\
+             (The full MaxSpeech installer also embeds WebView2.)"
+                .into(),
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(())
+    }
+}
+
+fn write_diagnose_report() -> Result<std::path::PathBuf, String> {
+    ensure_logs_dir();
+    let path = logs_dir().join("diagnose.txt");
+    let data = store::data_dir();
+    let db = std::path::Path::new(&data).join("maxspeech.db");
+    let exe = std::env::current_exe()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "(unknown)".into());
+    let wv = webview2_runtime_version().unwrap_or_else(|| "(not found)".into());
+    let onboarded = Store::new()
+        .ok()
+        .map(|s| s.is_onboarded())
+        .map(|b| b.to_string())
+        .unwrap_or_else(|| "(db unavailable)".into());
+    let body = format!(
+        "MaxSpeech diagnose\n\
+         time: {}\n\
+         exe: {exe}\n\
+         data_dir: {data}\n\
+         db_exists: {}\n\
+         db_path: {}\n\
+         webview2: {wv}\n\
+         onboarded: {onboarded}\n\
+         args: {:?}\n\
+         os: {}\n\
+         arch: {}\n",
+        chrono::Local::now().to_rfc3339(),
+        db.exists(),
+        db.display(),
+        std::env::args().collect::<Vec<_>>(),
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+    );
+    std::fs::write(&path, body).map_err(|e| e.to_string())?;
+    Ok(path)
+}
 
 fn stt_language_from_store(store: &Store) -> String {
     let tier = store
@@ -384,13 +577,35 @@ async fn open_plans_modal(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// Keep overlay chrome transparent. `apply` is ignored — GDI region clips
-/// make pill edges jagged; CSS border-radius handles the shape.
+/// Clip overlay HWND to a capsule, or drop the clip for toast/limit chrome.
 #[tauri::command]
 fn set_overlay_pill_clip(app: tauri::AppHandle, apply: bool) -> Result<(), String> {
-    let _ = apply;
     if let Some(w) = app.get_webview_window("overlay") {
-        overlay_win::clear_pill_region(&w);
+        if apply {
+            overlay_win::apply_pill_region(&w);
+        } else {
+            overlay_win::clear_pill_region(&w);
+        }
+    }
+    Ok(())
+}
+
+/// Park the overlay off-screen in one main-thread step (no white dismiss flash).
+#[tauri::command]
+fn park_overlay_idle(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(w) = app.get_webview_window("overlay") {
+        overlay_win::park_idle(&w);
+    }
+    Ok(())
+}
+
+/// Click-through toggle that never leaves the overlay `WS_EX_LAYERED`.
+/// The UI must use this instead of `setIgnoreCursorEvents`, which layers the
+/// HWND and makes every transparent pixel composite as opaque white.
+#[tauri::command]
+fn set_overlay_click_through(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    if let Some(w) = app.get_webview_window("overlay") {
+        overlay_win::set_click_through(&w, enabled);
     }
     Ok(())
 }
@@ -408,6 +623,38 @@ async fn preview_sound_cue(app: tauri::AppHandle, volume: Option<String>) -> Res
     let vol = sound::volume_from_setting(label.as_deref());
     sound::play_cue(sound::CueKind::Start, vol);
     Ok(())
+}
+
+#[cfg(windows)]
+fn spawn_detached_nsis_updater(installer: &std::path::Path) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    // CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB | CREATE_NO_WINDOW
+    const FLAGS: u32 = 0x0000_0200 | 0x0000_0008 | 0x0100_0000 | 0x0800_0000;
+    std::process::Command::new(installer)
+        .args(["/S", "/UPDATE"])
+        .creation_flags(FLAGS)
+        .spawn()
+        .map_err(|e| format!("Could not launch installer: {e}"))?;
+    Ok(())
+}
+
+/// Terminate any other maxspeech.exe so NSIS can overwrite. Leaves this PID
+/// alone; `process::exit` finishes the job. Overlay lives in this process.
+#[cfg(windows)]
+fn kill_other_maxspeech_processes() {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let pid = std::process::id();
+    let _ = std::process::Command::new("taskkill")
+        .args([
+            "/F",
+            "/IM",
+            "maxspeech.exe",
+            "/FI",
+            &format!("PID ne {pid}"),
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
 }
 
 /// Download the latest installer from `url`, emit progress, then launch it.
@@ -462,16 +709,26 @@ async fn download_and_run_installer(app: tauri::AppHandle, url: String) -> Resul
 
     #[cfg(target_os = "windows")]
     {
+        // Brief pause so the UI can show "Restarting…" before we die.
+        tokio::time::sleep(std::time::Duration::from_millis(1400)).await;
+
         // Silent + update mode. Do NOT pass /R: Tauri's RunAsUser waits until
         // the tray app exits and hangs the installer. POSTINSTALL ShellExecute
         // launches the app asynchronously instead. /UPDATE skips uninstall-first.
-        std::process::Command::new(&path)
-            .args(["/S", "/UPDATE"])
-            .spawn()
-            .map_err(|e| format!("Could not launch installer: {e}"))?;
-        // Give NSIS a moment to start, then unlock the running binary.
-        tokio::time::sleep(std::time::Duration::from_millis(900)).await;
-        app.exit(0);
+        //
+        // Detach from our job/process group so exiting MaxSpeech cannot take
+        // the installer down with it (WebView2 job objects).
+        spawn_detached_nsis_updater(&path)?;
+        for (_, w) in app.webview_windows() {
+            let _ = w.hide();
+        }
+        kill_other_maxspeech_processes();
+        // Hard-quit so NSIS can overwrite the running binary. `app.exit` can
+        // race with tray keep-alive; process::exit is definitive. PREINSTALL
+        // also KillProcess as a backup; POSTINSTALL starts the new build.
+        // Do not return Ok(()) — the IPC completing lets the frontend think
+        // install finished while this process is still locking the exe.
+        std::process::exit(0);
     }
 
     #[cfg(target_os = "macos")]
@@ -530,12 +787,13 @@ async fn remake_dictation(app: tauri::AppHandle, id: i64) -> Result<String, Stri
         .ok_or_else(|| "Recording file missing".to_string())?;
 
     let language = stt_language_from_store(&store);
-    let keyterms: Vec<String> = store
+    let dict_terms: Vec<String> = store
         .get_dictionary()
         .unwrap_or_default()
         .into_iter()
         .map(|w| w.word)
         .collect();
+    let keyterms = stt::deepgram::merge_keyterms(dict_terms.clone());
     let result =
         stt::batch::transcribe_with_language_and_keyterms(&wav_path, &language, &keyterms)
             .await
@@ -563,6 +821,7 @@ async fn remake_dictation(app: tauri::AppHandle, id: i64) -> Result<String, Stri
     };
     if corrected.trim() != expanded.trim() {
         pipeline::vocab::learn_name_corrections(&expanded, &corrected, &store);
+        pipeline::learn_substitutions::learn_from_edit(&expanded, &corrected, &store);
     }
 
     let fg = context::get_foreground_app();
@@ -577,7 +836,7 @@ async fn remake_dictation(app: tauri::AppHandle, id: i64) -> Result<String, Stri
             &tone_name,
             false,
             multilingual,
-            &keyterms,
+            &dict_terms,
         )
         .await
         .unwrap_or(corrected.clone())
@@ -632,6 +891,7 @@ async fn update_history_text(
         .ok_or_else(|| "Dictation not found".to_string())?;
     let cleaned = text.trim().to_string();
     pipeline::vocab::learn_name_corrections(&entry.text, &cleaned, &store);
+    pipeline::learn_substitutions::learn_from_edit(&entry.text, &cleaned, &store);
     store
         .update_history_text(id, &cleaned)
         .map_err(|e| e.to_string())?;
@@ -666,13 +926,85 @@ fn ensure_default_autostart(app: &tauri::AppHandle) {
 }
 
 fn main() {
-    env_logger::init();
+    install_panic_hook();
+    ensure_logs_dir();
 
-    tauri::Builder::default()
+    if std::env::args().any(|a| a == "--diagnose") {
+        match write_diagnose_report() {
+            Ok(path) => {
+                // Prefer opening the report over a blocking MessageBox so
+                // scripted installs / support sessions don't hang.
+                #[cfg(windows)]
+                {
+                    use std::os::windows::ffi::OsStrExt;
+                    use windows::core::PCWSTR;
+                    use windows::Win32::UI::WindowsAndMessaging::MessageBoxW;
+                    use windows::Win32::UI::WindowsAndMessaging::{MB_ICONINFORMATION, MB_OK};
+                    let msg = format!(
+                        "Wrote diagnostics to:\n{}\n\nClick OK to close.",
+                        path.display()
+                    );
+                    let to_wide = |s: &str| {
+                        std::ffi::OsStr::new(s)
+                            .encode_wide()
+                            .chain(std::iter::once(0))
+                            .collect::<Vec<u16>>()
+                    };
+                    let t = to_wide("MaxSpeech diagnose");
+                    let m = to_wide(&msg);
+                    unsafe {
+                        let _ = MessageBoxW(
+                            None,
+                            PCWSTR(m.as_ptr()),
+                            PCWSTR(t.as_ptr()),
+                            MB_OK | MB_ICONINFORMATION,
+                        );
+                    }
+                }
+                #[cfg(not(windows))]
+                {
+                    println!("Wrote diagnostics to {}", path.display());
+                }
+            }
+            Err(e) => show_native_error("MaxSpeech diagnose failed", &e),
+        }
+        return;
+    }
+
+    if let Err(e) = preflight_webview2() {
+        append_crash_log(&format!("WebView2 preflight failed: {e}"));
+        show_native_error("MaxSpeech needs WebView2", &e);
+        return;
+    }
+
+    let store = match Store::new() {
+        Ok(s) => s,
+        Err(e) => {
+            append_crash_log(&format!("Store init failed: {e}"));
+            show_native_error(
+                "MaxSpeech cannot start",
+                &format!("{e}\n\nLogs: {}", logs_dir().display()),
+            );
+            return;
+        }
+    };
+
+    let log_plugin = tauri_plugin_log::Builder::new()
+        .targets([
+            tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
+            tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Folder {
+                path: logs_dir(),
+                file_name: Some("maxspeech".into()),
+            }),
+        ])
+        .level(log::LevelFilter::Info)
+        .build();
+
+    let app = match tauri::Builder::default()
+        .plugin(log_plugin)
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            // So login launches can stay tray-only while manual opens still show the UI.
             Some(vec!["--autostart"]),
         ))
         .plugin(tauri_plugin_notification::init())
@@ -682,7 +1014,7 @@ fn main() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             open_window(app, "settings", "MaxSpeech", 935, 612);
         }))
-        .manage(Store::new().expect("Failed to initialize database"))
+        .manage(store)
         .manage(pipeline::PipelineState::default())
         .invoke_handler(tauri::generate_handler![
             save_secret,
@@ -720,6 +1052,8 @@ fn main() {
             open_settings_page,
             open_plans_modal,
             set_overlay_pill_clip,
+            park_overlay_idle,
+            set_overlay_click_through,
             preview_sound_cue,
             download_and_run_installer,
             remake_dictation,
@@ -727,54 +1061,102 @@ fn main() {
         ])
         .setup(|app| {
             let handle = app.handle().clone();
+            log::info!(
+                "MaxSpeech starting; data_dir={} webview2={:?}",
+                store::data_dir(),
+                webview2_runtime_version()
+            );
 
             let show_item = MenuItem::with_id(app, "show", "Open MaxSpeech", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
 
-            // Single tray icon only (do not also set trayIcon in tauri.conf.json)
-            let icon = app
-                .default_window_icon()
-                .cloned()
-                .ok_or("Missing default window icon")?;
-            let _tray = TrayIconBuilder::with_id("maxspeech-tray")
+            let icon = match app.default_window_icon().cloned() {
+                Some(i) => i,
+                None => {
+                    log::error!("Missing default window icon — continuing without tray");
+                    let store = handle.state::<Store>();
+                    if !store.is_onboarded() {
+                        open_window(&handle, "onboarding", "Welcome to MaxSpeech", 560, 520);
+                    } else {
+                        open_window(&handle, "settings", "MaxSpeech", 935, 612);
+                    }
+                    hotkey::register_hotkeys(&handle);
+                    return Ok(());
+                }
+            };
+
+            match TrayIconBuilder::with_id("maxspeech-tray")
                 .icon(icon)
                 .menu(&menu)
                 .tooltip("MaxSpeech - Voice to Text")
-                .show_menu_on_left_click(true)
-                .on_menu_event(move |app, event| match event.id().as_ref() {
-                    "show" => {
-                        open_window(app, "settings", "MaxSpeech", 935, 612);
+                .show_menu_on_left_click(false)
+                .on_menu_event({
+                    let handle = handle.clone();
+                    move |app, event| match event.id().as_ref() {
+                        "show" => {
+                            let store = handle.state::<Store>();
+                            if !store.is_onboarded() {
+                                open_window(app, "onboarding", "Welcome to MaxSpeech", 560, 520);
+                            } else {
+                                open_window(app, "settings", "MaxSpeech", 935, 612);
+                            }
+                        }
+                        "quit" => {
+                            app.exit(0);
+                        }
+                        _ => {}
                     }
-                    "quit" => {
-                        app.exit(0);
-                    }
-                    _ => {}
                 })
-                .build(app)?;
-
-            // Position floating dictation bar at bottom-center
-            position_overlay(&handle);
-
-            // Refresh Windows/macOS login item so it includes --autostart.
+                .on_tray_icon_event({
+                    let handle = handle.clone();
+                    move |tray, event| {
+                        if let TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            button_state: MouseButtonState::Up,
+                            ..
+                        } = event
+                        {
+                            let app = tray.app_handle();
+                            let store = handle.state::<Store>();
+                            if !store.is_onboarded() {
+                                open_window(app, "onboarding", "Welcome to MaxSpeech", 560, 520);
+                            } else {
+                                open_window(app, "settings", "MaxSpeech", 935, 612);
+                            }
+                        }
+                    }
+                })
+                .build(app)
             {
-                use tauri_plugin_autostart::ManagerExt;
-                let launcher = handle.autolaunch();
-                if launcher.is_enabled().unwrap_or(false) {
-                    let _ = launcher.disable();
-                    let _ = launcher.enable();
+                Ok(_tray) => {}
+                Err(e) => {
+                    log::error!("Tray icon failed (non-fatal): {e}");
                 }
             }
 
-            // Fresh installs default launch-at-startup ON; respect prior opt-out.
             ensure_default_autostart(&handle);
 
-            // Onboarding always shows. Login autostart respects "show window at login".
-            // Manual launches (Start menu / tray / second instance) always open the UI.
             let store = handle.state::<Store>();
             let from_autostart = std::env::args().any(|a| a == "--autostart");
             if !store.is_onboarded() {
                 open_window(&handle, "onboarding", "Welcome to MaxSpeech", 560, 520);
+                let already = store
+                    .get_setting("tray_tip_shown")
+                    .ok()
+                    .flatten()
+                    .map(|v| v == "true")
+                    .unwrap_or(false);
+                if !already {
+                    let _ = store.set_setting("tray_tip_shown", "true");
+                    use tauri_plugin_notification::NotificationExt;
+                    let _ = handle
+                        .notification()
+                        .builder()
+                        .title("MaxSpeech is running")
+                        .body("Look for the tray icon if the window is closed. Click it to reopen.")
+                        .show();
+                }
             } else if from_autostart {
                 let show_at_login = store
                     .get_setting("open_window_on_launch")
@@ -789,16 +1171,36 @@ fn main() {
                 open_window(&handle, "settings", "MaxSpeech", 935, 612);
             }
 
-            // Register global hotkeys
             hotkey::register_hotkeys(&handle);
+
+            // Warm Deepgram TLS/DNS and the overlay WebView2 off the hotkey path.
+            // Queue overlay on the next UI tick (after this setup returns) so the
+            // first press does not create a WebView2 while opening WASAPI.
+            tauri::async_runtime::spawn(async move {
+                stt::deepgram::prewarm().await;
+            });
+            let warm_ui = handle.clone();
+            let _ = handle.run_on_main_thread(move || {
+                ensure_overlay_window(&warm_ui);
+            });
 
             Ok(())
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                // Closing the UI hides to tray — do not kill the process.
                 match window.label() {
-                    "settings" | "onboarding" => {
+                    "onboarding" => {
+                        let store = window.app_handle().state::<Store>();
+                        if !store.is_onboarded() {
+                            api.prevent_close();
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                            return;
+                        }
+                        api.prevent_close();
+                        let _ = window.hide();
+                    }
+                    "settings" => {
                         api.prevent_close();
                         let _ = window.hide();
                     }
@@ -807,20 +1209,32 @@ fn main() {
             }
         })
         .build(tauri::generate_context!())
-        .expect("error while building MaxSpeech")
-        .run(|_app, event| {
-            if let tauri::RunEvent::ExitRequested { api, code, .. } = event {
-                // Closing the last window must not quit; tray Quit still exits (code = Some).
-                if code.is_none() {
-                    api.prevent_exit();
-                }
+    {
+        Ok(app) => app,
+        Err(e) => {
+            let msg = format!(
+                "MaxSpeech failed to start:\n{e}\n\nLogs: {}\n\n\
+                 If WebView2 is missing, install it from:\n\
+                 https://go.microsoft.com/fwlink/p/?LinkId=2124703",
+                logs_dir().display()
+            );
+            append_crash_log(&msg);
+            show_native_error("MaxSpeech failed to start", &msg);
+            return;
+        }
+    };
+
+    app.run(|_app, event| {
+        if let tauri::RunEvent::ExitRequested { api, code, .. } = event {
+            if code.is_none() {
+                api.prevent_exit();
             }
-        });
+        }
+    });
 }
 
 fn open_window(app: &tauri::AppHandle, label: &str, title: &str, width: u32, height: u32) {
     if let Some(w) = app.get_webview_window(label) {
-        // Keep main chrome opaque — transparent shells look soft/blurry under DWM.
         if label != "overlay" {
             let _ = w.set_background_color(Some(tauri::window::Color(0, 0, 0, 255)));
         }
@@ -835,31 +1249,46 @@ fn open_window(app: &tauri::AppHandle, label: &str, title: &str, width: u32, hei
     if label != "overlay" {
         builder = builder.background_color(tauri::window::Color(0, 0, 0, 255));
     }
-    let _ = builder.build();
-}
-
-fn position_overlay(app: &tauri::AppHandle) {
-    use tauri::{LogicalPosition, LogicalSize, Position, Size};
-    if let Some(w) = app.get_webview_window("overlay") {
-        overlay_win::clear_background(&w);
-        let _ = w.set_shadow(false);
-        // Park off-screen but keep shown — hide() cold-wakes WebView2 on hotkey.
-        let _ = w.set_size(Size::Logical(LogicalSize {
-            width: 1.0,
-            height: 1.0,
-        }));
-        let _ = w.set_position(Position::Logical(LogicalPosition {
-            x: -40_000.0,
-            y: -40_000.0,
-        }));
-        overlay_win::clear_pill_region(&w);
-        let _ = w.set_always_on_top(true);
-        let _ = w.set_ignore_cursor_events(true);
-        let _ = w.show();
-
-        // Warm TLS/DNS to Deepgram so the first dictation handshake is faster.
-        tauri::async_runtime::spawn(async {
-            stt::deepgram::prewarm().await;
-        });
+    if let Err(e) = builder.build() {
+        let msg = format!(
+            "Could not open the {label} window:\n{e}\n\n\
+             Logs: {}\n\n\
+             Try installing/repairing WebView2:\n\
+             https://go.microsoft.com/fwlink/p/?LinkId=2124703",
+            logs_dir().display()
+        );
+        log::error!("{msg}");
+        append_crash_log(&msg);
+        show_native_error("MaxSpeech window error", &msg);
     }
 }
+
+/// Create the listening overlay on demand. Startup queues this on the next UI
+/// tick so the first hotkey does not have to boot WebView2. If it is still
+/// missing, `show_overlay_fast` creates it *after* mic + Deepgram have started.
+pub(crate) fn ensure_overlay_window(app: &tauri::AppHandle) {
+    if app.get_webview_window("overlay").is_some() {
+        return;
+    }
+    let builder = WebviewWindowBuilder::new(app, "overlay", WebviewUrl::App("index.html?window=overlay".into()))
+        .title("MaxSpeech Overlay")
+        .inner_size(148.0, 36.0)
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .resizable(false)
+        .visible(false)
+        .shadow(false)
+        .background_color(tauri::window::Color(18, 18, 18, 0));
+    match builder.build() {
+        Ok(w) => {
+            overlay_win::park_idle(&w);
+            tauri::async_runtime::spawn(async {
+                stt::deepgram::prewarm().await;
+            });
+        }
+        Err(e) => log::warn!("Could not create overlay window: {e}"),
+    }
+}
+

@@ -112,9 +112,15 @@ button {
 .grain {
   position: absolute;
   inset: 0;
-  opacity: 0.04;
-  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-  mix-blend-mode: overlay;
+  opacity: 0.035;
+  background-image: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(255, 255, 255, 0.015) 2px,
+    rgba(255, 255, 255, 0.015) 3px
+  );
+  mix-blend-mode: soft-light;
   pointer-events: none;
 }
 
@@ -183,15 +189,16 @@ main,
 .hero-wrap {
   position: relative;
   isolation: isolate;
-  overflow: visible;
+  overflow: hidden;
   min-height: calc(100vh - 5.25rem);
   display: flex;
   align-items: center;
+  justify-content: center;
 }
 
 .hero {
   position: relative;
-  z-index: 1;
+  z-index: 2;
   width: 100%;
   max-width: 1080px;
   margin: 0 auto;
@@ -204,29 +211,35 @@ main,
 
 .hero-copy {
   position: relative;
+  z-index: 3;
   width: min(100%, 52rem);
   text-align: center;
   margin: 0 auto;
   overflow: visible;
 }
 
+/* Soft scrim so decorative widgets stay visually under readable copy */
 .hero-copy::before {
   content: "";
   position: absolute;
-  inset: -2.5rem -3rem;
-  background: radial-gradient(
-    ellipse at 50% 45%,
-    rgba(7, 14, 17, 0.82) 0%,
-    rgba(7, 14, 17, 0.45) 48%,
-    transparent 74%
-  );
+  inset: -2.5rem -4rem;
   z-index: -1;
   pointer-events: none;
+  background: radial-gradient(
+    ellipse 72% 68% at 50% 42%,
+    rgba(7, 9, 12, 0.88) 0%,
+    rgba(7, 9, 12, 0.55) 42%,
+    transparent 72%
+  );
 }
 
 @media (max-width: 719px) {
   .hero {
     padding: 3.5rem 1.25rem 3rem;
+  }
+
+  .hero-copy::before {
+    inset: -1.5rem -1.25rem;
   }
 }
 
@@ -280,7 +293,7 @@ main,
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 0.45rem;
+  gap: 0.55rem;
   animation: title-in 0.9s ease 0.16s both;
 }
 
@@ -289,6 +302,58 @@ main,
   flex-wrap: wrap;
   gap: 0.65rem;
   justify-content: center;
+}
+
+.btn-os {
+  gap: 0.7rem;
+  min-width: 15.5rem;
+}
+
+.os-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.cta-auto {
+  margin: 0;
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(232, 242, 244, 0.45);
+}
+
+.cta-platforms {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  justify-content: center;
+}
+
+.btn-platform {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.45rem 0.85rem;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  color: rgba(232, 242, 244, 0.82);
+  background: rgba(232, 242, 244, 0.06);
+  border: 1px solid rgba(232, 242, 244, 0.1);
+  transition: background 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
+}
+
+.btn-platform:hover {
+  background: rgba(46, 211, 198, 0.12);
+  border-color: rgba(46, 211, 198, 0.35);
+  transform: translateY(-1px);
+}
+
+.btn-platform.is-active {
+  background: rgba(46, 211, 198, 0.18);
+  border-color: rgba(46, 211, 198, 0.45);
+  color: #fff;
 }
 
 .btn-secondary-dl {
@@ -308,12 +373,11 @@ main,
   font-weight: 600;
   font-size: 1rem;
   box-shadow: 0 12px 40px rgba(46, 211, 198, 0.28);
-  transition: transform 0.2s ease, filter 0.2s ease;
+  transition: transform 0.2s ease;
 }
 
 .btn-primary:hover {
   transform: translateY(-2px);
-  filter: brightness(1.06);
 }
 
 .btn-primary:focus-visible,
@@ -352,15 +416,20 @@ main,
   letter-spacing: -0.01em;
 }
 
-/* —— Wispr-style curve stage + MaxSpeech liquid glass —— */
+/* —— Full-bleed parallel ribbon behind hero copy —— */
 .hero-flow-stage {
-  position: relative;
-  width: min(100%, 56rem);
-  height: clamp(10.5rem, 26vw, 14.5rem);
-  margin: 0.65rem auto 0.25rem;
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -52%);
+  width: min(96vw, 92rem);
+  height: clamp(14rem, 42vh, 22rem);
+  margin: 0;
   pointer-events: none;
   user-select: none;
   overflow: visible;
+  z-index: 0;
+  opacity: 0.42;
 }
 
 .flow-curve {
@@ -370,11 +439,11 @@ main,
 }
 
 .flow-curve.is-left {
-  opacity: 1;
+  opacity: 0.85;
 }
 
 .flow-curve.is-right {
-  opacity: 1;
+  opacity: 0.75;
 }
 
 .flow-curve svg {
@@ -385,15 +454,15 @@ main,
 }
 
 .flow-curve-text {
-  fill: rgba(232, 242, 244, 0.28);
+  fill: rgba(232, 242, 244, 0.14);
   font-family: var(--display);
-  font-size: 16px;
+  font-size: 18px;
   font-weight: 600;
   letter-spacing: -0.02em;
 }
 
 .flow-curve-text.is-dim {
-  fill: rgba(46, 211, 198, 0.26);
+  fill: rgba(46, 211, 198, 0.12);
 }
 
 .flow-center {
@@ -401,13 +470,14 @@ main,
   left: 50%;
   top: 46%;
   translate: -50% -50%;
-  z-index: 2;
+  z-index: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 0.65rem;
   width: max-content;
   max-width: min(100%, 28rem);
+  opacity: 0.7;
 }
 
 .flow-toast {
@@ -569,11 +639,12 @@ main,
 
 @media (max-width: 719px) {
   .hero-flow-stage {
-    height: 12rem;
+    width: 100vw;
+    height: 16rem;
   }
 
   .flow-curve-text {
-    font-size: 12px;
+    font-size: 13px;
   }
 
   .flow-live-row {

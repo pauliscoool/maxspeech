@@ -14,6 +14,8 @@ static INJECT_LOCK: Mutex<()> = Mutex::new(());
 pub struct LastInsertion {
     pub text: String,
     pub char_count: usize,
+    /// When this paste landed — used for the 5s re-dictate learn window.
+    pub pasted_at: Instant,
 }
 
 pub fn inject_text(text: &str) -> Result<LastInsertion, Box<dyn std::error::Error>> {
@@ -37,6 +39,7 @@ pub fn inject_text(text: &str) -> Result<LastInsertion, Box<dyn std::error::Erro
             return Ok(LastInsertion {
                 text: text.to_string(),
                 char_count: text.chars().count(),
+                pasted_at: Instant::now(),
             });
         }
         Err(e) => {
@@ -51,6 +54,7 @@ pub fn inject_text(text: &str) -> Result<LastInsertion, Box<dyn std::error::Erro
     Ok(LastInsertion {
         text: text.to_string(),
         char_count: text.chars().count(),
+        pasted_at: Instant::now(),
     })
 }
 

@@ -284,6 +284,16 @@ export default function HomePage({
     });
   }
 
+  function selectAllVisible() {
+    const allSelected =
+      entries.length > 0 && entries.every((e) => selected.has(e.id));
+    if (allSelected) {
+      setSelected(new Set());
+      return;
+    }
+    setSelected(new Set(entries.map((e) => e.id)));
+  }
+
   async function confirmBulkDelete() {
     if (selected.size === 0) return;
     setBulkBusy(true);
@@ -359,6 +369,17 @@ export default function HomePage({
             </button>
             <button
               type="button"
+              disabled={entries.length === 0}
+              onClick={selectAllVisible}
+              className="text-[11px] px-2.5 py-1 rounded-full text-[var(--ms-text-dim)] hover:text-[var(--ms-hover-fg)] transition-colors disabled:opacity-40"
+              style={{ background: "var(--ms-fill-muted)" }}
+            >
+              {entries.length > 0 && entries.every((e) => selected.has(e.id))
+                ? "Deselect all"
+                : "Select all"}
+            </button>
+            <button
+              type="button"
               disabled={selected.size === 0}
               onClick={() => setBulkConfirm(true)}
               className="text-[11px] px-2.5 py-1 rounded-full font-semibold bg-[var(--ms-error)] text-white disabled:opacity-40 transition-opacity"
@@ -405,10 +426,31 @@ export default function HomePage({
                   <article
                     key={entry.id}
                     className={`surface-card p-3.5 sm:p-4 group ${
+                      selectMode ? "cursor-pointer hover:brightness-[1.03]" : ""
+                    } ${
                       selectMode && isSelected
                         ? "ring-1 ring-[var(--ms-error)]/50 bg-[var(--ms-error)]/5"
                         : ""
                     }`}
+                    role={selectMode ? "button" : undefined}
+                    aria-pressed={selectMode ? isSelected : undefined}
+                    aria-label={
+                      selectMode
+                        ? `${isSelected ? "Deselect" : "Select"} dictation from ${formatTime(entry.created_at)}`
+                        : undefined
+                    }
+                    tabIndex={selectMode ? 0 : undefined}
+                    onClick={selectMode ? () => toggleSelect(entry.id) : undefined}
+                    onKeyDown={
+                      selectMode
+                        ? (e) => {
+                            if (e.key === " " || e.key === "Enter") {
+                              e.preventDefault();
+                              toggleSelect(entry.id);
+                            }
+                          }
+                        : undefined
+                    }
                   >
                     <div className="flex flex-col gap-2.5">
                       <div className="flex items-start justify-between gap-2">
@@ -417,9 +459,10 @@ export default function HomePage({
                             <input
                               type="checkbox"
                               checked={isSelected}
-                              onChange={() => toggleSelect(entry.id)}
-                              className="mt-0.5 accent-[var(--ms-error)] shrink-0"
-                              aria-label={`Select dictation from ${formatTime(entry.created_at)}`}
+                              readOnly
+                              tabIndex={-1}
+                              className="mt-0.5 accent-[var(--ms-error)] shrink-0 pointer-events-none"
+                              aria-hidden
                             />
                           )}
                           <div className="text-[11px] text-[var(--ms-text-dim)] min-w-0">
@@ -520,11 +563,9 @@ export default function HomePage({
                       ) : (
                         <p
                           className="text-sm text-[var(--ms-text-soft)] leading-relaxed whitespace-pre-wrap break-words"
-                          onClick={selectMode ? () => toggleSelect(entry.id) : undefined}
                           onDoubleClick={
                             selectMode ? undefined : () => beginEdit(entry)
                           }
-                          style={selectMode ? { cursor: "pointer" } : undefined}
                           title={selectMode ? undefined : "Double-click to edit"}
                         >
                           {entry.text}
