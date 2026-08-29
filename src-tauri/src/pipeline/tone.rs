@@ -103,10 +103,12 @@ Prefer the reading that makes the sentence sensible. Examples: \
   'tail scale' / 'tailscale' / 'tale scale' → 'Tailscale' \
   (do NOT rewrite unrelated 'tail' or 'scale') \
 - common: 'there'/'their'/'they're', 'to'/'too'/'two', 'its'/'it's' by grammar \
-- numbers: ASR often inserts digits for homophones ('for'→'4', 'to'→'2', 'won'→'1'). \
-  Prefer the word that fits the sentence; only use digits when the speaker clearly \
-  dictated a number, code, time, or quantity (e.g. 'meet at 4pm', 'room 101'). \
-  In normal prose keep spelled-out numbers as words unless obviously numeric. \
+- numbers: ASR (numerals=true) turns spoken words into digits. \
+  Spell out single-digit amounts in prose/names ('Covenant Core 1'→'Covenant Core one', \
+  'I have 2 apples'→'I have two apples'). Keep multi-digit numbers as digits \
+  (101, 2024, phone/ID strings). Keep digits for clear codes/times/quantities \
+  ('meet at 4pm', 'room 2', 'version 2', 'page 3'). \
+  Also fix digit homophones ('for'→'4', 'to'→'2', 'won'→'1') when context is not numeric. \
 - percents (VERY common): '10 times' / 'ten times' → '10%' when the speaker meant \
   a percentage (at/by/of/about/only/discount/rate/tax/tip), NOT repetition \
   ('do it 10 times') or comparison ('10 times faster'). \
@@ -116,7 +118,9 @@ Prefer the reading that makes the sentence sensible. Examples: \
   'lets go/see/try' → 'let's …'. 'id like' → 'I'd like' (not user id). \
 - numeral homophones (numerals=true): 'thanks 4 the'→'thanks for the', \
   'need 2 go'→'need to go', '2 much'→'too much', '1 of'→'one of', 'no 1'→'no one'. \
-  Keep real quantities, times, and codes ('room 2', 'meet at 4pm', 'version 2'). \
+  Single digits in titles/names/prose → words ('Covenant Core 1'→'Covenant Core one'). \
+  Keep real codes/times and ALL multi-digit numbers as digits \
+  ('room 2', 'meet at 4pm', 'version 2', 'call 555-1212', 'issue 1042'). \
 - split product names: 'type script'→TypeScript, 'java script'→JavaScript, \
   'super base'→Supabase, 'verse cell'→Vercel, 'cloud flare'→Cloudflare, \
   'chat gpt'→ChatGPT, 'open ai'→OpenAI, 'vs code'→VS Code, \
@@ -574,6 +578,23 @@ fn capitalize_if_needed(prev_orig: Option<&str>, word: &str) -> String {
     }
 }
 
+/// Spoken single digits → English words. Multi-digit / decimal tokens stay numeric.
+fn single_digit_word(bare: &str) -> Option<&'static str> {
+    match bare {
+        "0" => Some("zero"),
+        "1" => Some("one"),
+        "2" => Some("two"),
+        "3" => Some("three"),
+        "4" => Some("four"),
+        "5" => Some("five"),
+        "6" => Some("six"),
+        "7" => Some("seven"),
+        "8" => Some("eight"),
+        "9" => Some("nine"),
+        _ => None,
+    }
+}
+
 fn fix_numeral_homophones(text: &str) -> String {
     let words: Vec<&str> = text.split_whitespace().collect();
     if words.is_empty() {
@@ -588,19 +609,20 @@ fn fix_numeral_homophones(text: &str) -> String {
             .last()
             .map(|p| split_word_punct(p).1.to_ascii_lowercase())
             .unwrap_or_default();
+        let keep_digit =
+            is_quantity_prev(&prev) || is_unit_or_quantity_next(&next);
 
         let mapped = if prev == "no" && bare == "1" {
             Some("one")
-        } else if matches!(bare, "1" | "2" | "4")
-            && !is_quantity_prev(&prev)
-            && !is_unit_or_quantity_next(&next)
-        {
+        } else if !keep_digit {
             match bare {
                 "4" if is_for_next(&next) => Some("for"),
                 "2" if is_too_next(&next) => Some("too"),
                 "2" if is_to_next(&next) => Some("to"),
                 "1" if next == "of" => Some("one"),
-                _ => None,
+                // Prose / product titles: "Covenant Core 1" → "… one".
+                // Multi-digit (10, 101, 2024) and quantity contexts stay digits.
+                _ => single_digit_word(bare),
             }
         } else {
             None
@@ -1378,7 +1400,19 @@ mod tests {
         assert_eq!(local_asr_cleanup("meet at 4pm"), "meet at 4pm");
         assert_eq!(local_asr_cleanup("room 2"), "room 2");
         assert_eq!(local_asr_cleanup("version 2"), "version 2");
-        assert_eq!(local_asr_cleanup("I have 2 apples"), "I have 2 apples");
+        // Single digits in prose / product names → words; multi-digit stays numeric.
+        assert_eq!(
+            local_asr_cleanup("Covenant Core 1"),
+            "Covenant Core one"
+        );
+        assert_eq!(
+            local_asr_cleanup("I have 2 apples"),
+            "I have two apples"
+        );
+        assert_eq!(local_asr_cleanup("chapter 3 is ready"), "chapter 3 is ready");
+        assert_eq!(local_asr_cleanup("issue 1042"), "issue 1042");
+        assert_eq!(local_asr_cleanup("call me at 5551212"), "call me at 5551212");
+        assert_eq!(local_asr_cleanup("built in 2024"), "built in 2024");
     }
 
     #[test]
