@@ -685,26 +685,35 @@ async fn download_and_run_installer(app: tauri::AppHandle, url: String) -> Resul
         })
         .unwrap_or("MaxSpeech-update.bin");
 
-    let path = std::env::temp_dir().join(filename);
-    let mut file = std::fs::File::create(&path)
-        .map_err(|e| format!("Could not write installer: {e}"))?;
-
-    let mut downloaded: u64 = 0;
-    let mut stream = response.bytes_stream();
-    let _ = app.emit("installer-download-progress", 0i32);
-
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| format!("Download interrupted: {e}"))?;
-        file.write_all(&chunk)
+    // Unique path so a leftover prior download can't share-lock the EXE.
+    let path = std::env::temp_dir().join(format!(
+        "MaxSpeech-update-{}-{}",
+        std::process::id(),
+        filename
+    ));
+    {
+        let mut file = std::fs::File::create(&path)
             .map_err(|e| format!("Could not write installer: {e}"))?;
-        downloaded += chunk.len() as u64;
-        if total > 0 {
-            let pct = ((downloaded * 100) / total).min(99) as i32;
-            let _ = app.emit("installer-download-progress", pct);
+
+        let mut downloaded: u64 = 0;
+        let mut stream = response.bytes_stream();
+        let _ = app.emit("installer-download-progress", 0i32);
+
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| format!("Download interrupted: {e}"))?;
+            file.write_all(&chunk)
+                .map_err(|e| format!("Could not write installer: {e}"))?;
+            downloaded += chunk.len() as u64;
+            if total > 0 {
+                let pct = ((downloaded * 100) / total).min(99) as i32;
+                let _ = app.emit("installer-download-progress", pct);
+            }
         }
+        file.flush()
+            .map_err(|e| format!("Could not finish installer write: {e}"))?;
+        // Windows refuses CreateProcess while we still hold a write handle
+        // (OS error 32: sharing violation). Drop before spawn.
     }
-    file.flush()
-        .map_err(|e| format!("Could not finish installer write: {e}"))?;
     let _ = app.emit("installer-download-progress", 100u32);
 
     #[cfg(target_os = "windows")]
