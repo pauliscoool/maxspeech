@@ -69,6 +69,40 @@
       ]
     },
     {
+      "source": "/downloads/MaxSpeech_amd64.AppImage",
+      "headers": [
+        {
+          "key": "Content-Type",
+          "value": "application/octet-stream"
+        },
+        {
+          "key": "Content-Disposition",
+          "value": "attachment; filename=\"MaxSpeech_amd64.AppImage\""
+        },
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=60, must-revalidate"
+        }
+      ]
+    },
+    {
+      "source": "/downloads/maxspeech_amd64.deb",
+      "headers": [
+        {
+          "key": "Content-Type",
+          "value": "application/octet-stream"
+        },
+        {
+          "key": "Content-Disposition",
+          "value": "attachment; filename=\"maxspeech_amd64.deb\""
+        },
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=60, must-revalidate"
+        }
+      ]
+    },
+    {
       "source": "/downloads/(.*\\.AppImage)",
       "headers": [
         {

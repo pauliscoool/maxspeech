@@ -73,7 +73,16 @@
         "bundleMediaFramework": false
       },
       "deb": {
-        "depends": []
+        "depends": [
+          "libwebkit2gtk-4.1-0",
+          "libgtk-3-0",
+          "libayatana-appindicator3-1",
+          "librsvg2-2",
+          "libssl3",
+          "libxdo3",
+          "libasound2",
+          "libdbus-1-3"
+        ]
       }
     }
   },

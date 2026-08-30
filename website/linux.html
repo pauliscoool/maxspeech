@@ -31,19 +31,22 @@
       <h1>Linux download</h1>
       <p class="get-lede">
         Your AppImage download should start automatically. Prefer a
-        <code>.deb</code>? Use the second button.
+        <code>.deb</code> on Debian/Ubuntu? Use the second button.
       </p>
 
       <a
         class="btn-primary"
         id="dl"
-        href="/downloads/MaxSpeech_0.1.1_amd64.AppImage"
+        href="https://github.com/pauliscoool/maxspeech/releases/latest/download/MaxSpeech_0.1.54_amd64.AppImage"
         download
       >
         Download MaxSpeech AppImage
       </a>
+      <p class="get-alt" id="dl-ver">Version 0.1.54 · ~84&nbsp;MB</p>
       <p class="get-alt" style="margin-top: -1rem; margin-bottom: 1.5rem">
-        <a href="/downloads/maxspeech_0.1.1_amd64.deb" download
+        <a
+          id="dl-deb"
+          href="https://github.com/pauliscoool/maxspeech/releases/latest/download/maxspeech_0.1.54_amd64.deb"
           >Or download .deb</a
         >
       </p>
@@ -51,12 +54,17 @@
       <ol class="get-steps">
         <li>
           Make it executable, then run:
-          <pre><code>chmod +x MaxSpeech_0.1.1_amd64.AppImage
-./MaxSpeech_0.1.1_amd64.AppImage</code></pre>
+          <pre><code>chmod +x MaxSpeech_*_amd64.AppImage
+./MaxSpeech_*_amd64.AppImage</code></pre>
         </li>
         <li>
-          Or install the package:
-          <pre><code>sudo dpkg -i maxspeech_0.1.1_amd64.deb</code></pre>
+          Or install the Debian package:
+          <pre><code>sudo dpkg -i maxspeech_*_amd64.deb
+sudo apt-get install -f</code></pre>
+        </li>
+        <li>
+          If the AppImage fails with a FUSE error, try:
+          <pre><code>./MaxSpeech_*_amd64.AppImage --appimage-extract-and-run</code></pre>
         </li>
         <li>Prefer an <strong>X11</strong> session for global hotkeys and paste.</li>
         <li>
@@ -72,14 +80,47 @@
     </main>
 
     <script>
-      setTimeout(function () {
-        var a = document.createElement("a");
-        a.href = "/downloads/MaxSpeech_0.1.1_amd64.AppImage";
-        a.setAttribute("download", "MaxSpeech_0.1.1_amd64.AppImage");
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-      }, 400);
+      (function () {
+        var FALLBACK_APPIMAGE =
+          "https://github.com/pauliscoool/maxspeech/releases/latest/download/MaxSpeech_0.1.54_amd64.AppImage";
+        var FALLBACK_DEB =
+          "https://github.com/pauliscoool/maxspeech/releases/latest/download/maxspeech_0.1.54_amd64.deb";
+        var dl = document.getElementById("dl");
+        var deb = document.getElementById("dl-deb");
+        var verEl = document.getElementById("dl-ver");
+
+        function startDownload(url) {
+          var a = document.createElement("a");
+          a.href = url;
+          a.setAttribute("download", "");
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+        }
+
+        fetch("/updates/latest.json", { cache: "no-store" })
+          .then(function (r) {
+            return r.ok ? r.json() : null;
+          })
+          .then(function (m) {
+            var url =
+              (m && m.platforms && m.platforms.linux) || FALLBACK_APPIMAGE;
+            if (dl) dl.href = url;
+            if (m && m.version && verEl) {
+              verEl.textContent = "Version " + m.version + " · ~84 MB";
+            }
+            setTimeout(function () {
+              startDownload(url);
+            }, 400);
+          })
+          .catch(function () {
+            if (dl) dl.href = FALLBACK_APPIMAGE;
+            if (deb) deb.href = FALLBACK_DEB;
+            setTimeout(function () {
+              startDownload(FALLBACK_APPIMAGE);
+            }, 400);
+          });
+      })();
     </script>
   </body>
 </html>

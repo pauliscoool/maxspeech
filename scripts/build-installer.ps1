@@ -46,7 +46,7 @@ $manifest = @{
   platforms = @{
     windows = $stableUrl
     macos   = "https://maxspeech.vercel.app/mac"
-    linux   = "https://maxspeech.vercel.app/downloads/MaxSpeech_0.1.1_amd64.AppImage"
+    linux   = "https://github.com/pauliscoool/maxspeech/releases/latest/download/MaxSpeech_0.1.54_amd64.AppImage"
   }
 } | ConvertTo-Json
 $manifestDir = Join-Path $root "website\updates"

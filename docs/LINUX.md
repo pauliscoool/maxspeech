@@ -18,10 +18,28 @@ sudo apt-get install -y \
   build-essential \
   curl \
   wget \
-  file
+  file \
+  fuse \
+  libfuse2
 ```
 
-Then:
+## Release packages (recommended)
+
+From a machine with Docker (Windows + Docker Desktop is fine):
+
+```bash
+bash scripts/build-linux.sh
+```
+
+This builds AppImage + `.deb` for the current version, copies them to
+`website/downloads/` as:
+
+- `MaxSpeech_amd64.AppImage` / `MaxSpeech_<ver>_amd64.AppImage`
+- `maxspeech_amd64.deb` / `maxspeech_<ver>_amd64.deb`
+
+Then deploy `website/` to Vercel.
+
+Native build (WSL/Ubuntu):
 
 ```bash
 npm ci
@@ -35,3 +53,5 @@ Artifacts: AppImage and `.deb` under `src-tauri/target/release/bundle/`.
 - Prefer an X11 session for reliable global hotkeys and paste.
 - On Wayland, dictation may work but injecting into other apps can fail.
 - A Secret Service provider (GNOME Keyring / KWallet) is needed for stored API credentials.
+- If AppImage FUSE is unavailable: `./MaxSpeech_amd64.AppImage --appimage-extract-and-run`
+- `.deb` installs pull WebKit/GTK via `apt-get install -f` when depends are missing.
