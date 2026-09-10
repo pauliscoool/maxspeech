@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">MaxSpeech</string>
+    <string name="a11y_description">MaxSpeech uses Accessibility to paste your dictation into the app you are typing in. Audio never leaves the dictation pipeline. You can turn this off in Android Settings.</string>
+    <string name="overlay_notification_title">MaxSpeech overlay</string>
+    <string name="overlay_notification_idle">Hold the capsule to dictate into any app.</string>
+    <string name="overlay_notification_listening">Listening…</string>
+</resources>

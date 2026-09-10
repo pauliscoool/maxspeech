@@ -9,7 +9,8 @@
   "platforms": {
     "linux": "https://github.com/pauliscoool/maxspeech/releases/latest/download/MaxSpeech_0.1.54_amd64.AppImage",
     "macos": "https://maxspeech.vercel.app/mac",
-    "windows": "https://maxspeech.vercel.app/downloads/MaxSpeech_x64-setup.exe"
+    "windows": "https://maxspeech.vercel.app/downloads/MaxSpeech_x64-setup.exe",
+    "android": "https://maxspeech.vercel.app/android"
   },
   "download": "https://maxspeech.vercel.app/downloads/MaxSpeech_x64-setup.exe"
 }

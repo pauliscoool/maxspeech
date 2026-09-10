@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Install MaxSpeech — Android</title>
+    <meta
+      name="description"
+      content="Download the MaxSpeech APK and install it on Android in a few taps."
+    />
+    <link rel="icon" href="/logo.png" type="image/png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600&family=Syne:wght@600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/get.css" />
+  </head>
+  <body class="get-page">
+    <div class="atmosphere" aria-hidden="true">
+      <div class="orb orb-a"></div>
+      <div class="orb orb-b"></div>
+      <div class="grain"></div>
+    </div>
+
+    <main class="get-shell">
+      <a class="brand get-brand" href="/">
+        <img class="brand-mark" src="/logo.png" width="36" height="36" alt="" />
+        <span>MaxSpeech</span>
+      </a>
+
+      <h1>Android download</h1>
+      <p class="get-lede">
+        Sideload the APK — no Play Store required. About
+        <strong>25–45 MB</strong>, always under 100 MB. Scan the QR on another
+        device, or tap the button on your phone.
+      </p>
+
+      <img
+        id="qr"
+        class="android-qr"
+        alt="QR code to download MaxSpeech for Android"
+        width="180"
+        height="180"
+        src="https://api.qrserver.com/v1/create-qr-code/?size=180x180&bgcolor=07090c&color=2ed3c6&data=https%3A%2F%2Fmaxspeech.vercel.app%2Fandroid"
+      />
+
+      <a class="btn-primary" id="dl" href="/downloads/MaxSpeech.apk" download="MaxSpeech.apk">
+        Download MaxSpeech for Android
+      </a>
+      <p class="get-alt" id="dl-ver" hidden></p>
+
+      <ol class="get-steps">
+        <li>On your phone, tap <strong>Download MaxSpeech for Android</strong> (or scan the QR from a computer).</li>
+        <li>
+          If Chrome blocks the file: tap the download →
+          <em>Open</em> → allow this browser to <em>Install unknown apps</em>.
+        </li>
+        <li>Tap <em>Install</em>. When it finishes, open MaxSpeech.</li>
+        <li>
+          Sign in or <em>Continue locally</em>, then allow
+          <strong>Microphone</strong>, <strong>Display over other apps</strong>,
+          and <strong>Accessibility</strong> (that last one is how text pastes
+          into Gmail, WhatsApp, Chrome…).
+        </li>
+        <li>Hold the glass capsule and speak. Release to enhance and paste.</li>
+      </ol>
+
+      <div class="get-trouble">
+        <h2>Install won’t start?</h2>
+        <ul>
+          <li>
+            <strong>Unknown sources</strong> — Settings → Apps → special app
+            access → Install unknown apps → enable for Chrome / Files.
+          </li>
+          <li>
+            <strong>Play Protect</strong> — “Blocked by Play Protect” can appear
+            on a first sideload. Tap <em>More details</em> → <em>Install anyway</em>.
+          </li>
+          <li>
+            <strong>File is tiny / missing</strong> — use the GitHub build:
+            <a href="https://github.com/pauliscoool/maxspeech/actions">Actions → Android APK</a>
+            and download the <code>MaxSpeech-android</code> artifact, or the
+            <a href="https://github.com/pauliscoool/maxspeech/releases/latest">latest Release</a>.
+          </li>
+          <li>
+            <strong>Overlay / Accessibility</strong> — those are optional for
+            in-app dictation. You only need them to paste into other apps.
+          </li>
+        </ul>
+        <p class="get-alt">
+          Direct link:
+          <a href="/downloads/MaxSpeech.apk">/downloads/MaxSpeech.apk</a>
+        </p>
+      </div>
+
+      <p class="get-alt">
+        <a href="/windows">Windows</a> · <a href="/mac">Mac</a> ·
+        <a href="/linux">Linux</a> · <a href="/">Home</a>
+      </p>
+    </main>
+
+    <script>
+      (function () {
+        var STABLE = "/downloads/MaxSpeech.apk";
+        var GH =
+          "https://github.com/pauliscoool/maxspeech/releases/latest";
+        var btn = document.getElementById("dl");
+        var qr = document.getElementById("qr");
+        var verEl = document.getElementById("dl-ver");
+        var page = "https://maxspeech.vercel.app/android";
+
+        function qrFor(url) {
+          qr.src =
+            "https://api.qrserver.com/v1/create-qr-code/?size=180x180&bgcolor=07090c&color=2ed3c6&data=" +
+            encodeURIComponent(url);
+        }
+
+        fetch(STABLE, { method: "HEAD", cache: "no-store" })
+          .then(function (r) {
+            if (!r.ok) throw new Error("missing apk");
+            btn.href = STABLE;
+            btn.setAttribute("download", "MaxSpeech.apk");
+            qrFor("https://maxspeech.vercel.app/downloads/MaxSpeech.apk");
+            if (verEl) {
+              verEl.hidden = false;
+              verEl.textContent = "APK ready on this site";
+            }
+          })
+          .catch(function () {
+            btn.href = GH;
+            btn.removeAttribute("download");
+            btn.textContent = "Get the Android APK on GitHub";
+            qrFor(page);
+            if (verEl) {
+              verEl.hidden = false;
+              verEl.textContent =
+                "APK ships from GitHub Actions on the android-app branch until the file is mirrored here.";
+            }
+          });
+      })();
+    </script>
+  </body>
+</html>

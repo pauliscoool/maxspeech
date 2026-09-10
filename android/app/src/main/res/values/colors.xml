@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ms_bg">#000000</color>
+    <color name="ms_turquoise">#2DD4BF</color>
+    <color name="ms_orange">#F97316</color>
+    <color name="ic_launcher_background">#0A0A0A</color>
+</resources>

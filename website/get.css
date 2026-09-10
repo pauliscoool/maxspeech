@@ -136,6 +136,14 @@
   margin-top: 0.55rem;
 }
 
+.android-qr {
+  display: block;
+  margin: 0 auto 1.25rem;
+  border-radius: 1rem;
+  border: 1px solid rgba(46, 211, 198, 0.28);
+  background: #07090c;
+}
+
 .get-trouble code {
   font-size: 0.86em;
   padding: 0.1em 0.35em;
