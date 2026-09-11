@@ -38,6 +38,8 @@
   --ms-scrollbar-track: transparent;
   --ms-scrollbar-thumb: rgba(255, 255, 255, 0.12);
   --ms-scrollbar-thumb-hover: rgba(255, 255, 255, 0.2);
+  --ms-pop-ease: cubic-bezier(0.16, 1.12, 0.32, 1);
+  --ms-pop-ease-row: cubic-bezier(0.16, 1.08, 0.32, 1);
 }
 
 /* Soft charcoal — still dark, easier on the eyes */
@@ -231,30 +233,201 @@ html[data-window="overlay"] * {
   -webkit-tap-highlight-color: transparent;
 }
 
-/* Solid chrome for main windows — never the overlay. */
+/* Solid chrome for main windows — never the overlay.
+   Use 100% of the webview, not 100vh — Windows DPI + title bar can make
+   100vh taller than the visible client and clip the profile row. */
+html[data-window="shell"],
+html[data-window="shell"] body,
+html[data-window="shell"] #root,
+html[data-window="onboarding"],
+html[data-window="onboarding"] body,
+html[data-window="onboarding"] #root {
+  height: 100%;
+  overflow: hidden;
+}
 html[data-window="shell"] body,
 html[data-window="onboarding"] body {
   background: var(--ms-bg) !important;
 }
 
-.page-enter {
-  animation: fadeSlideIn 0.2s ease-out both;
+/* Shared spring used by the account menu, pages, modals, and toasts. */
+@keyframes msPopIn {
+  0% {
+    opacity: 0;
+    transform: translateY(14px) scale(0.86);
+    filter: blur(8px);
+  }
+  58% {
+    opacity: 1;
+    filter: blur(0);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: none;
+  }
 }
 
-@keyframes fadeSlideIn {
+@keyframes msPopRow {
   from {
     opacity: 0;
     transform: translateY(10px);
   }
   to {
-    /* Omit transform so fill-mode doesn't leave a transform containing
-       block on <main>, which breaks position:fixed overlays. */
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes msPageFade {
+  from {
+    opacity: 0;
+  }
+  to {
+    /* Opacity only — a leftover transform/filter on <main> becomes a
+       containing block and pins position:fixed overlays to the scroller. */
     opacity: 1;
   }
 }
 
+.page-enter {
+  animation: msPageFade 0.32s var(--ms-pop-ease) both;
+}
+
+/* Onboarding + login are not <main>, so they can use the full spring. */
+.page-enter:not(main) {
+  animation: msPopIn 0.46s var(--ms-pop-ease) both;
+  transform-origin: 50% 110%;
+}
+
+.page-enter:not(main) .space-y-5 > *,
+.page-enter:not(main) .space-y-6 > * {
+  animation: msPopRow 0.4s var(--ms-pop-ease-row) both;
+}
+
+.page-enter .page-shell > header,
+.page-enter .page-shell > h1,
+.page-enter .home-main > h1,
+.page-enter .home-main > .relative,
+.page-enter .home-main > .flex,
+.page-enter .page-shell > .input-field,
+.page-enter .surface-card,
+.page-enter .settings-group,
+.page-enter .danger-zone,
+.page-enter .home-stat {
+  transform-origin: 50% 110%;
+  animation: msPopIn 0.46s var(--ms-pop-ease) both;
+}
+
+.page-enter .page-shell > section,
+.page-enter .page-subtitle,
+.page-enter .settings-section-title {
+  animation: msPopRow 0.4s var(--ms-pop-ease-row) both;
+}
+
+.page-enter .page-subtitle {
+  animation-delay: 0.06s;
+}
+
+.page-enter .page-shell > header:nth-child(1),
+.page-enter .page-shell > h1:nth-child(1),
+.page-enter .home-main > *:nth-child(1),
+.page-enter .surface-card:nth-child(1),
+.page-enter .settings-group:nth-child(1),
+.page-enter .home-stat:nth-child(1),
+.page-enter:not(main) .space-y-5 > *:nth-child(1),
+.page-enter:not(main) .space-y-6 > *:nth-child(1) {
+  animation-delay: 0.03s;
+}
+
+.page-enter .page-shell > *:nth-child(2),
+.page-enter .home-main > *:nth-child(2),
+.page-enter .home-rail > *:nth-child(1),
+.page-enter .surface-card:nth-child(2),
+.page-enter .settings-group:nth-child(2),
+.page-enter .home-stat:nth-child(2),
+.page-enter:not(main) .space-y-5 > *:nth-child(2),
+.page-enter:not(main) .space-y-6 > *:nth-child(2) {
+  animation-delay: 0.08s;
+}
+
+.page-enter .page-shell > *:nth-child(3),
+.page-enter .home-main > *:nth-child(3),
+.page-enter .home-rail > *:nth-child(2),
+.page-enter .surface-card:nth-child(3),
+.page-enter .settings-group:nth-child(3),
+.page-enter .home-stat:nth-child(3),
+.page-enter:not(main) .space-y-5 > *:nth-child(3),
+.page-enter:not(main) .space-y-6 > *:nth-child(3) {
+  animation-delay: 0.13s;
+}
+
+.page-enter .page-shell > *:nth-child(4),
+.page-enter .home-main > *:nth-child(4),
+.page-enter .home-rail > *:nth-child(3),
+.page-enter .surface-card:nth-child(4),
+.page-enter .settings-group:nth-child(4),
+.page-enter .home-stat:nth-child(4),
+.page-enter:not(main) .space-y-5 > *:nth-child(4),
+.page-enter:not(main) .space-y-6 > *:nth-child(4) {
+  animation-delay: 0.18s;
+}
+
+.page-enter .page-shell > *:nth-child(5),
+.page-enter .home-main > *:nth-child(5),
+.page-enter .home-rail > *:nth-child(4),
+.page-enter .surface-card:nth-child(5),
+.page-enter .settings-group:nth-child(5),
+.page-enter .home-stat:nth-child(5) {
+  animation-delay: 0.22s;
+}
+
+.page-enter .page-shell > *:nth-child(n + 6),
+.page-enter .home-rail > *:nth-child(n + 5),
+.page-enter .surface-card:nth-child(n + 6),
+.page-enter .settings-group:nth-child(n + 6),
+.page-enter .home-stat:nth-child(n + 6) {
+  animation-delay: 0.26s;
+}
+
+.page-enter .surface-card:nth-child(n + 6) {
+  animation-name: msPopRow;
+}
+
+.page-enter .page-shell > section:nth-child(1) .settings-group,
+.page-enter .space-y-7 > *:nth-child(1) .settings-group {
+  animation-delay: 0.08s;
+}
+
+.page-enter .page-shell > section:nth-child(2) .settings-group,
+.page-enter .space-y-7 > *:nth-child(2) .settings-group {
+  animation-delay: 0.13s;
+}
+
+.page-enter .page-shell > section:nth-child(3) .settings-group,
+.page-enter .space-y-7 > *:nth-child(3) .settings-group {
+  animation-delay: 0.18s;
+}
+
+.page-enter .page-shell > section:nth-child(4) .settings-group,
+.page-enter .space-y-7 > *:nth-child(4) .settings-group {
+  animation-delay: 0.22s;
+}
+
+.page-enter .page-shell > section:nth-child(n + 5) .settings-group,
+.page-enter .space-y-7 > *:nth-child(n + 5) .settings-group {
+  animation-delay: 0.26s;
+}
+
 /* Overlay window must never inherit shell page transitions. */
 html[data-window="overlay"] .page-enter {
+  animation: none !important;
+}
+
+html[data-window="overlay"] .page-enter .surface-card,
+html[data-window="overlay"] .page-enter .settings-group,
+html[data-window="overlay"] .page-enter .danger-zone,
+html[data-window="overlay"] .page-enter .home-stat {
   animation: none !important;
 }
 
@@ -304,30 +477,36 @@ html[data-window="overlay"] .page-enter {
 .liquid-glass-bar {
   border-radius: 999px;
   border: none;
-  /* Soft teal sheen — orange accents via --orange modifier. */
-  background: linear-gradient(
-    180deg,
-    #8ff5e4 0%,
-    #2dd4bf 55%,
-    #0d9488 100%
-  );
+  /* Shared ribbon (A) with a warm core (B) that bleeds across neighbors (D).
+     Each bar is a 3px window into one waveform-wide wash. */
+  background-image:
+    linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.38) 0%,
+      rgba(255, 255, 255, 0.06) 36%,
+      rgba(8, 40, 36, 0.18) 100%
+    ),
+    linear-gradient(
+      90deg,
+      #5eead4 0%,
+      #2dd4bf 16%,
+      #7ecfc0 32%,
+      #e8c4a0 44%,
+      #fb923c 50%,
+      #e8c4a0 56%,
+      #7ecfc0 68%,
+      #2dd4bf 84%,
+      #5eead4 100%
+    );
+  background-size: 100% 100%, var(--wave-w) 100%;
+  background-position: 0 0, var(--wave-x) 0;
+  background-repeat: no-repeat;
   box-shadow:
-    0 0 5px rgba(45, 212, 191, 0.35),
+    0 0 5px rgba(45, 212, 191, 0.22),
+    0 0 8px rgba(251, 146, 60, 0.1),
     inset 0 1px 0 rgba(255, 255, 255, 0.35);
   transition: height 60ms cubic-bezier(0.33, 1, 0.68, 1);
   opacity: 0.97;
-}
-
-.liquid-glass-bar--orange {
-  background: linear-gradient(
-    180deg,
-    #fdba74 0%,
-    #fb923c 55%,
-    #ea580c 100%
-  );
-  box-shadow:
-    0 0 5px rgba(251, 146, 60, 0.4),
-    inset 0 1px 0 rgba(255, 255, 255, 0.35);
 }
 
 /* Mic/STT not producing levels yet — dim static bars, not a fake "hearing you" jump. */
@@ -359,6 +538,23 @@ html[data-window="overlay"] .page-enter {
 
 .nav-icon-active {
   color: var(--ms-turquoise);
+}
+
+.nav-item {
+  animation: msPopRow 0.4s var(--ms-pop-ease-row) both;
+}
+
+.nav-item:nth-child(1) { animation-delay: 0.03s; }
+.nav-item:nth-child(2) { animation-delay: 0.07s; }
+.nav-item:nth-child(3) { animation-delay: 0.11s; }
+.nav-item:nth-child(4) { animation-delay: 0.15s; }
+.nav-item:nth-child(5) { animation-delay: 0.19s; }
+.nav-item:nth-child(6) { animation-delay: 0.22s; }
+.nav-item:nth-child(n + 7) { animation-delay: 0.25s; }
+
+html[data-window="shell"] aside > div:first-child {
+  animation: msPopIn 0.46s var(--ms-pop-ease) both;
+  transform-origin: 20% 110%;
 }
 
 .nav-icon svg {
@@ -593,6 +789,18 @@ html[data-window="overlay"] .page-enter {
   box-shadow: none;
 }
 
+.enhance-toast.liquid-glass-toast {
+  gap: 7px;
+  padding: 7px 9px;
+  border-radius: 12px;
+}
+
+.enhance-toast .ms-logo--toast {
+  width: 25px;
+  height: 25px;
+  border-radius: 8px;
+}
+
 .enhance-toast-title {
   font-size: 11px;
   font-weight: 600;
@@ -603,11 +811,19 @@ html[data-window="overlay"] .page-enter {
   color: transparent;
 }
 
+.enhance-toast .enhance-toast-title {
+  font-size: 9px;
+}
+
 .enhance-toast-sub {
   font-size: 8px;
   color: rgba(255, 255, 255, 0.7);
   margin-top: 1px;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+
+.enhance-toast .enhance-toast-sub {
+  font-size: 7px;
 }
 
 .enhance-toast-snip {
@@ -621,33 +837,25 @@ html[data-window="overlay"] .page-enter {
   max-width: 155px;
 }
 
+.enhance-toast .enhance-toast-snip {
+  font-size: 7px;
+  max-width: 132px;
+}
+
 .enhance-toast--in {
-  animation: enhanceToastIn 0.3s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: msPopIn 0.46s var(--ms-pop-ease) both;
+  transform-origin: 50% 110%;
 }
 
 .enhance-toast--out {
-  animation: enhanceToastOut 0.22s cubic-bezier(0.4, 0, 0.2, 1) both;
-}
-
-@keyframes enhanceToastIn {
-  from {
-    opacity: 0;
-    transform: translateY(8px) scale(0.96);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
+  animation: enhanceToastOut 0.22s cubic-bezier(0.4, 0, 1, 1) both;
 }
 
 @keyframes enhanceToastOut {
-  from {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
   to {
     opacity: 0;
-    transform: translateY(6px) scale(0.97);
+    transform: translateY(8px) scale(0.94);
+    filter: blur(4px);
   }
 }
 
@@ -658,6 +866,75 @@ html[data-window="overlay"] .page-enter {
   margin-inline: auto;
   padding: 1.25rem 1.25rem 2rem;
   box-sizing: border-box;
+}
+
+.home-page {
+  max-width: none;
+}
+
+.home-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 152px;
+  gap: 1rem;
+  align-items: start;
+}
+
+.home-rail {
+  position: sticky;
+  top: 0.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.home-stat {
+  background: var(--ms-surface);
+  border-radius: var(--ms-radius);
+  padding: 0.65rem 0.75rem;
+}
+
+.home-stat-label {
+  font-size: 10px;
+  color: var(--ms-text-dim);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.home-stat-value {
+  margin-top: 0.2rem;
+  font-size: 1.15rem;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+
+.home-stat-value.is-teal {
+  color: var(--ms-turquoise);
+}
+
+.home-stat-value.is-orange {
+  color: var(--ms-orange);
+}
+
+.home-stat-hint {
+  margin-top: 0.15rem;
+  font-size: 10px;
+  color: var(--ms-text-dim);
+}
+
+@media (max-width: 720px) {
+  .home-layout {
+    grid-template-columns: 1fr;
+  }
+  .home-rail {
+    position: static;
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+  .home-stat {
+    flex: 1 1 120px;
+  }
 }
 
 @media (min-width: 700px) {
@@ -732,6 +1009,177 @@ html[data-window="overlay"] .page-enter {
   color: var(--ms-turquoise);
 }
 
+.settings-tabs {
+  display: flex;
+  gap: 6px;
+  margin-top: 14px;
+}
+
+.settings-tab {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 14px;
+  border-radius: 999px;
+  color: var(--ms-text-dim);
+  background: var(--ms-fill-muted);
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.settings-tab.is-active {
+  color: var(--ms-turquoise);
+  background: var(--ms-turquoise-glow);
+}
+
+.owner-tag {
+  display: inline-flex;
+  align-items: center;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ms-turquoise);
+  background: var(--ms-turquoise-glow);
+  border-radius: 999px;
+  padding: 2px 6px;
+  line-height: 1.2;
+  flex-shrink: 0;
+}
+
+.owner-tag--quiet {
+  font-size: 7px;
+  letter-spacing: 0.04em;
+  padding: 1px 5px;
+  opacity: 0.72;
+}
+
+.profile-email {
+  font-size: 8px;
+  color: var(--ms-text-dim);
+}
+
+.profile-gear {
+  color: var(--ms-text);
+  opacity: 0.92;
+}
+
+.account-pop {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 3px);
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  border-radius: 16px;
+  background: var(--ms-surface);
+  box-shadow:
+    0 18px 36px rgba(0, 0, 0, 0.5),
+    0 0 0 1px var(--ms-hairline),
+    0 0 24px rgba(45, 212, 191, 0.08);
+  transform-origin: 50% 110%;
+  animation: msPopIn 0.46s var(--ms-pop-ease) both;
+  will-change: transform, opacity, filter;
+}
+
+.account-pop.is-out {
+  animation: accountPopOut 0.2s cubic-bezier(0.4, 0, 1, 1) both;
+  pointer-events: none;
+}
+
+.account-pop-meter,
+.account-pop-item {
+  animation: msPopRow 0.4s var(--ms-pop-ease-row) both;
+}
+
+.account-pop-item:nth-last-child(1) {
+  animation-delay: 0.02s;
+}
+
+.account-pop-item:nth-last-child(2) {
+  animation-delay: 0.07s;
+}
+
+.account-pop-item:nth-last-child(3) {
+  animation-delay: 0.12s;
+}
+
+.account-pop-meter {
+  animation-delay: 0.16s;
+}
+
+.account-pop.is-out .account-pop-meter,
+.account-pop.is-out .account-pop-item {
+  animation: none;
+}
+
+@keyframes accountPopOut {
+  to {
+    opacity: 0;
+    transform: translateY(8px) scale(0.94);
+    filter: blur(4px);
+  }
+}
+
+.account-pop-meter {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 8px 10px;
+  margin-bottom: 4px;
+  border-radius: 12px;
+  background: var(--ms-fill-muted);
+  color: var(--ms-text-dim);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.account-pop-meter:hover {
+  color: var(--ms-hover-fg);
+}
+
+.account-pop-track {
+  height: 5px;
+  border-radius: 999px;
+  overflow: hidden;
+  margin-top: 7px;
+}
+
+.account-pop-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--ms-turquoise);
+}
+
+.account-pop-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px;
+  border-radius: 12px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ms-text-dim);
+  text-align: left;
+}
+
+.account-pop-item:hover,
+.account-pop-item.is-active {
+  color: var(--ms-hover-fg);
+  background: var(--ms-fill-muted);
+}
+
+.account-pop-item.is-active {
+  color: var(--ms-turquoise);
+}
+
+.account-pop-item svg {
+  flex-shrink: 0;
+  opacity: 0.9;
+}
+
 .settings-group {
   background: var(--ms-surface);
   border-radius: var(--ms-radius);
@@ -757,22 +1205,12 @@ html[data-window="overlay"] .page-enter {
   margin-left: 0.85rem;
   padding-left: 0.65rem;
   border-left: 2px solid color-mix(in srgb, var(--ms-turquoise) 55%, transparent);
-  animation: settingsNestIn 0.22s ease both;
+  animation: msPopIn 0.4s var(--ms-pop-ease) both;
+  transform-origin: 0 0;
 }
 
 .settings-nested .settings-row {
   border-bottom: none;
-}
-
-@keyframes settingsNestIn {
-  from {
-    opacity: 0;
-    transform: translateY(-6px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
 }
 
 .settings-row-text {
@@ -1026,8 +1464,39 @@ html[data-window="shell"] .flex.h-screen {
 }
 
 .ms-modal {
-  animation: msModalPop 0.22s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: msPopIn 0.46s var(--ms-pop-ease) both;
+  transform-origin: 50% 80%;
   outline: 1px solid var(--ms-hairline);
+}
+
+.ms-modal > *,
+.ms-modal .grid > * {
+  animation: msPopRow 0.4s var(--ms-pop-ease-row) both;
+}
+
+.ms-modal > *:nth-child(1),
+.ms-modal .grid > *:nth-child(1) {
+  animation-delay: 0.04s;
+}
+
+.ms-modal > *:nth-child(2),
+.ms-modal .grid > *:nth-child(2) {
+  animation-delay: 0.09s;
+}
+
+.ms-modal > *:nth-child(3),
+.ms-modal .grid > *:nth-child(3) {
+  animation-delay: 0.14s;
+}
+
+.ms-modal > *:nth-child(4),
+.ms-modal .grid > *:nth-child(4) {
+  animation-delay: 0.18s;
+}
+
+.ms-modal > *:nth-child(n + 5),
+.ms-modal .grid > *:nth-child(n + 5) {
+  animation-delay: 0.22s;
 }
 
 @keyframes msModalFade {
@@ -1036,17 +1505,6 @@ html[data-window="shell"] .flex.h-screen {
   }
   to {
     opacity: 1;
-  }
-}
-
-@keyframes msModalPop {
-  from {
-    opacity: 0;
-    transform: translateY(8px) scale(0.96);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
   }
 }
 
@@ -1175,7 +1633,7 @@ html[data-window="shell"] .flex.h-screen {
 }
 
 .app-toast--in {
-  animation: appToastIn 0.38s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: appToastIn 0.46s var(--ms-pop-ease) both;
 }
 
 .app-toast--out {
@@ -1183,23 +1641,63 @@ html[data-window="shell"] .flex.h-screen {
 }
 
 @keyframes appToastIn {
-  from {
+  0% {
     opacity: 0;
-    transform: translateX(-50%) translateY(14px) scale(0.96);
+    transform: translateX(-50%) translateY(14px) scale(0.86);
+    filter: blur(8px);
   }
-  to {
+  58% {
+    opacity: 1;
+    filter: blur(0);
+  }
+  100% {
     opacity: 1;
     transform: translateX(-50%) translateY(0) scale(1);
+    filter: none;
   }
 }
 
 @keyframes appToastOut {
-  from {
-    opacity: 1;
-    transform: translateX(-50%) translateY(0) scale(1);
-  }
   to {
     opacity: 0;
-    transform: translateX(-50%) translateY(8px) scale(0.98);
+    transform: translateX(-50%) translateY(8px) scale(0.94);
+    filter: blur(4px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .page-enter,
+  .page-enter:not(main),
+  .page-enter:not(main) .space-y-5 > *,
+  .page-enter:not(main) .space-y-6 > *,
+  .page-enter .page-shell > header,
+  .page-enter .page-shell > h1,
+  .page-enter .page-shell > section,
+  .page-enter .page-shell > .input-field,
+  .page-enter .home-main > h1,
+  .page-enter .home-main > .relative,
+  .page-enter .home-main > .flex,
+  .page-enter .page-subtitle,
+  .page-enter .settings-section-title,
+  .page-enter .surface-card,
+  .page-enter .settings-group,
+  .page-enter .danger-zone,
+  .page-enter .home-stat,
+  .nav-item,
+  html[data-window="shell"] aside > div:first-child,
+  .account-pop,
+  .account-pop-meter,
+  .account-pop-item,
+  .ms-modal,
+  .ms-modal > *,
+  .ms-modal .grid > *,
+  .ms-modal-backdrop,
+  .app-toast--in,
+  .app-toast--out,
+  .enhance-toast--in,
+  .enhance-toast--out,
+  .settings-nested {
+    animation: none !important;
+    filter: none !important;
   }
 }

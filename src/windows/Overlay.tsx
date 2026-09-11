@@ -20,14 +20,16 @@ const BAR_COUNT = 20;
 const BAR_MAX_PX = 18;
 const BAR_WIDTH_PX = 3;
 const BAR_GAP_PX = 3;
+/** Shared ribbon width: bars sample one continuous wash, not per-bar paints. */
+const WAVEFORM_W_PX = BAR_COUNT * BAR_WIDTH_PX + (BAR_COUNT - 1) * BAR_GAP_PX;
 /** After this long still processing, switch from ping-pong wave → digging sweep. */
 const THINKING_DIG_AFTER_S = 3;
 /** 20×3 + 19×3 = 117px bars + ~28px side padding. */
 const OVERLAY_W = 148;
 const OVERLAY_H = 36;
 const CLEAR_BG = [18, 18, 18, 0] as [number, number, number, number];
-const TOAST_W = 220;
-const TOAST_H = 90;
+const TOAST_W = 187;
+const TOAST_H = 77;
 const TOAST_MS = 1800;
 const TOAST_OUT_MS = 160;
 const LIMIT_W = 292;
@@ -42,6 +44,7 @@ export default function Overlay() {
   const [toastLeaving, setToastLeaving] = useState(false);
   const [pillLeaving, setPillLeaving] = useState(false);
   const [hearing, setHearing] = useState(false);
+  const [limitLabel, setLimitLabel] = useState("Limit reached");
   const smoothed = useRef<number[]>(Array(BAR_COUNT).fill(0.14));
   const raf = useRef<number | null>(null);
   const listening = useRef(false);
@@ -241,7 +244,11 @@ export default function Overlay() {
       clearErrorSoon();
     }).then((u) => unsubs.push(u));
 
-    listen("dictation-limit", () => {
+    listen<string>("dictation-limit", (e) => {
+      const msg = typeof e.payload === "string" && e.payload.trim()
+        ? e.payload
+        : "Limit reached";
+      setLimitLabel(msg);
       setState("limit");
       void resizeForState("limit");
       clearLimitSoon();
@@ -309,7 +316,7 @@ export default function Overlay() {
       pillLeaving);
 
   const snippet = toast
-    ? truncate(toast.original, 36) + " → " + truncate(toast.enhanced, 36)
+    ? truncate(toast.original, 31) + " → " + truncate(toast.enhanced, 31)
     : "";
 
   const connecting = state === "listening" && !hearing;
@@ -360,8 +367,8 @@ export default function Overlay() {
               src="/logo.png"
               srcSet="/logo.png 1x, /logo@2x.png 2x"
               alt=""
-              width={29}
-              height={29}
+              width={25}
+              height={25}
               draggable={false}
             />
           </div>
@@ -395,21 +402,27 @@ export default function Overlay() {
           {!showLimit && (
             <div
               className="overlay-waveform flex items-end justify-center"
-              style={{ gap: `${BAR_GAP_PX}px`, height: `${BAR_MAX_PX}px` }}
+              style={{
+                gap: `${BAR_GAP_PX}px`,
+                height: `${BAR_MAX_PX}px`,
+                ["--wave-w" as string]: `${WAVEFORM_W_PX}px`,
+              }}
             >
               {levels.map((level, i) => {
                 const mid =
                   1 -
                   (Math.abs(i - (BAR_COUNT - 1) / 2) / ((BAR_COUNT - 1) / 2)) * 0.18;
                 const px = Math.max(3, level * mid * BAR_MAX_PX);
-                const isOrange = i % 6 === 3;
+                const sliceX = i * (BAR_WIDTH_PX + BAR_GAP_PX);
                 return (
                   <div
                     key={i}
-                    className={`liquid-glass-bar shrink-0 origin-bottom ${
-                      isOrange ? "liquid-glass-bar--orange" : ""
-                    }`}
-                    style={{ height: `${px.toFixed(2)}px`, width: `${BAR_WIDTH_PX}px` }}
+                    className="liquid-glass-bar shrink-0 origin-bottom"
+                    style={{
+                      height: `${px.toFixed(2)}px`,
+                      width: `${BAR_WIDTH_PX}px`,
+                      ["--wave-x" as string]: `-${sliceX}px`,
+                    }}
                   />
                 );
               })}
@@ -418,7 +431,7 @@ export default function Overlay() {
 
           {showLimit && (
             <span className="text-[10px] font-medium text-white/90 w-full text-center truncate">
-              Weekly limit reached
+              {limitLabel}
             </span>
           )}
         </div>

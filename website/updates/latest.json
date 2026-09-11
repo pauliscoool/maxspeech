@@ -1,14 +1,15 @@
 {
     "url":  "https://maxspeech.vercel.app/downloads/MaxSpeech_x64-setup.exe",
-    "filename":  "MaxSpeech_0.1.52_x64-setup.exe",
-    "size":  221325727,
-    "version":  "0.1.52",
-    "notes":  "MaxSpeech 0.1.52 - full Windows installer with embedded WebView2",
+    "filename":  "MaxSpeech_0.1.60_x64-setup.exe",
+    "size":  221155774,
+    "version":  "0.1.60",
+    "notes":  "MaxSpeech 0.1.60 - page spring motion, account menu, free 2-minute clock, Android APK",
     "github":  "https://github.com/pauliscoool/maxspeech/releases/latest",
-    "sha256":  "2cbe315b1ca9424ebe715e8fe13b6327f589b36762fe66120f2e674a7925dceb",
+    "sha256":  "f0057662b1ca113181c71b101ff651590ebf6f681b176487ee509742f0a42615",
     "platforms":  {
                       "linux":  "https://maxspeech.vercel.app/downloads/MaxSpeech_0.1.1_amd64.AppImage",
                       "macos":  "https://maxspeech.vercel.app/mac",
+                      "android":  "https://maxspeech.vercel.app/android",
                       "windows":  "https://maxspeech.vercel.app/downloads/MaxSpeech_x64-setup.exe"
                   },
     "download":  "https://maxspeech.vercel.app/downloads/MaxSpeech_x64-setup.exe"

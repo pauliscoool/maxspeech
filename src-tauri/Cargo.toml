@@ -1,6 +1,6 @@
 [package]
 name = "maxspeech"
-version = "0.1.52"
+version = "0.1.60"
 edition = "2021"
 
 [dependencies]

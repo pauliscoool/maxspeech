@@ -8,6 +8,10 @@ export type PlanStatus = {
   words_remaining: number | null;
   week_starts_at: string;
   can_dictate: boolean;
+  bonus_words?: number;
+  daily_seconds_limit?: number | null;
+  daily_seconds_used?: number;
+  seconds_remaining?: number | null;
 };
 
 export const PLAN_OPTIONS: {
@@ -16,7 +20,7 @@ export const PLAN_OPTIONS: {
   price: string;
   limit: string;
 }[] = [
-  { tier: "free", label: "Free", price: "$0", limit: "1,500 words / week" },
+  { tier: "free", label: "Free", price: "$0", limit: "2 minutes / 24 hours" },
   { tier: "starter", label: "Starter", price: "$3", limit: "4,500 words / week" },
   { tier: "pro", label: "Pro", price: "$5", limit: "10,000 words / week" },
   { tier: "max", label: "Max", price: "$10", limit: "25,000 words / week" },
@@ -26,14 +30,43 @@ export function planLabel(tier: PlanTier): string {
   return PLAN_OPTIONS.find((o) => o.tier === tier)?.label ?? "Free";
 }
 
+function formatClock(totalSecs: number): string {
+  const secs = Math.max(0, Math.floor(totalSecs));
+  const m = Math.floor(secs / 60);
+  const s = secs % 60;
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
 export function formatWeeklyUsage(status: PlanStatus): string {
+  if (status.daily_seconds_limit != null) {
+    return `${formatClock(status.daily_seconds_used ?? 0)} / ${formatClock(status.daily_seconds_limit)}`;
+  }
   if (status.weekly_limit == null) return "—";
   return `${status.words_used.toLocaleString()} / ${status.weekly_limit.toLocaleString()}`;
 }
 
 export function weeklyUsagePct(status: PlanStatus): number | null {
+  if (status.daily_seconds_limit != null && status.daily_seconds_limit > 0) {
+    return Math.min(
+      100,
+      Math.round(((status.daily_seconds_used ?? 0) / status.daily_seconds_limit) * 100),
+    );
+  }
   if (status.weekly_limit == null || status.weekly_limit <= 0) return null;
   return Math.min(100, Math.round((status.words_used / status.weekly_limit) * 100));
+}
+
+export function usageResetHint(status: PlanStatus): string {
+  if (status.daily_seconds_limit != null) {
+    return "2 minutes every 24 hours";
+  }
+  return "Resets Monday (UTC)";
+}
+
+export function usageMeterTitle(status: PlanStatus): string {
+  return status.daily_seconds_limit != null
+    ? `${planLabel(status.tier)} today`
+    : `${planLabel(status.tier)} weekly usage`;
 }
 
 /** Multilingual / code-switching is Starter+ only. Free = one language. */

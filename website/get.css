@@ -136,10 +136,39 @@
   margin-top: 0.55rem;
 }
 
+.android-qr {
+  display: block;
+  margin: 0 auto 1.25rem;
+  width: min(180px, 56vw);
+  height: auto;
+  aspect-ratio: 1;
+  border-radius: 1rem;
+  border: 1px solid rgba(46, 211, 198, 0.28);
+  background: #07090c;
+}
+
 .get-trouble code {
   font-size: 0.86em;
   padding: 0.1em 0.35em;
   border-radius: 0.35em;
   background: rgba(46, 211, 198, 0.12);
   border: 1px solid rgba(46, 211, 198, 0.22);
+}
+
+@media (max-width: 719px) {
+  .get-page {
+    align-items: flex-start;
+    padding: max(1.25rem, env(safe-area-inset-top)) 1rem max(2.5rem, env(safe-area-inset-bottom));
+  }
+
+  .get-shell .btn-primary {
+    width: 100%;
+    min-height: 3rem;
+    padding: 0.95rem 1.15rem;
+  }
+
+  .get-steps,
+  .get-trouble {
+    font-size: 0.95rem;
+  }
 }

@@ -7,6 +7,7 @@ import { showAccountSavedToast } from "./toast";
 export const SYNC_SETTING_KEYS = [
   "show_live_transcript",
   "ai_enhance",
+  "enhance_speed",
   "trailing_space",
   "sound_cue",
   "sound_cue_volume",
@@ -14,6 +15,9 @@ export const SYNC_SETTING_KEYS = [
   "launch_at_startup",
   "open_window_on_launch",
   "plan_tier",
+  "plan_updated_at",
+  "usage_bonus",
+  "usage_bonus_week",
   "stt_multilingual",
   "stt_languages",
   "mic_device",
@@ -214,8 +218,11 @@ async function applyLocalSettings(settings: CloudSettings): Promise<void> {
     const v = settings[key];
     if (v == null) continue;
     try {
+      if (key === "plan_updated_at") {
+        continue;
+      }
       if (key === "plan_tier") {
-        await invoke("set_plan_tier", { tier: v });
+        await invoke("sync_plan_tier", { tier: v });
       } else if (key === "mic_device") {
         // Validate / fuzzy-match against currently attached devices.
         await invoke("set_microphone", { device: v });
@@ -362,7 +369,7 @@ export async function pullCloudSettings(): Promise<CloudSettings | null> {
 
   const { data: profile } = await supabase
     .from("profiles")
-    .select("plan_tier")
+    .select("plan_tier, updated_at")
     .eq("id", uid)
     .maybeSingle();
 
@@ -380,17 +387,89 @@ export async function pullCloudSettings(): Promise<CloudSettings | null> {
   const settings = {
     ...((data?.settings as CloudSettings) || {}),
   };
-  if (profile?.plan_tier) {
-    settings.plan_tier = profile.plan_tier;
+
+  let localTier = "";
+  let localAt = "";
+  try {
+    localTier = (await invoke<string>("get_setting", { key: "plan_tier" })) || "";
+    localAt = (await invoke<string>("get_setting", { key: "plan_updated_at" })) || "";
+  } catch {
+    /* ignore */
   }
 
+  const cloudTier = String(profile?.plan_tier || settings.plan_tier || "").toLowerCase();
+  const cloudAt = String(profile?.updated_at || "");
+  const chosen = pickPersistedPlan(localTier, localAt, cloudTier, cloudAt);
+  if (chosen) settings.plan_tier = chosen;
+
   if (Object.keys(settings).length > 0) {
+    const appliedAdmin = await applyAdminWordsUsed(settings);
     await applyLocalSettings(settings);
+    if (appliedAdmin) {
+      const cleaned = { ...settings };
+      delete cleaned.admin_words_used;
+      delete cleaned.admin_words_used_week;
+      await supabase.from("user_settings").upsert(
+        {
+          user_id: uid,
+          settings: cleaned,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "user_id" },
+      );
+    }
   }
   if (typeof window !== "undefined") {
     window.dispatchEvent(new Event("maxspeech-profile-changed"));
+    window.dispatchEvent(new Event("maxspeech-plan-changed"));
+  }
+  if (chosen && localTier && chosen === localTier && localTier !== cloudTier) {
+    void pushCloudSettings();
   }
   return settings;
+}
+
+async function applyAdminWordsUsed(settings: CloudSettings): Promise<boolean> {
+  const raw = settings.admin_words_used;
+  if (raw == null || raw === "") return false;
+  try {
+    const plan = await invoke<{ week_starts_at: string }>("get_plan_status");
+    const week = settings.admin_words_used_week || "";
+    if (week && plan?.week_starts_at && week !== plan.week_starts_at) return false;
+    const words = Math.max(0, Math.floor(Number(raw) || 0));
+    await invoke("set_words_used", { words });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function parseStamp(value: string): number {
+  const n = Date.parse(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/** Keep the plan the user actually picked. Newer stamp wins; never let a stale
+ *  cloud "free" wipe a local paid/owner selection that has no stamp yet. */
+function pickPersistedPlan(
+  localTier: string,
+  localAt: string,
+  cloudTier: string,
+  cloudAt: string,
+): string {
+  const local = localTier.trim().toLowerCase();
+  const cloud = cloudTier.trim().toLowerCase();
+  if (!local && !cloud) return "";
+  if (!cloud) return local;
+  if (!local) return cloud;
+  const lt = parseStamp(localAt);
+  const ct = parseStamp(cloudAt);
+  if (lt && ct) return lt >= ct ? local : cloud;
+  if (lt && !ct) return local;
+  if (!lt && ct) return cloud;
+  if (local !== "free" && cloud === "free") return local;
+  if (cloud !== "free" && local === "free") return cloud;
+  return local || cloud;
 }
 
 export type HistoryPayload = {

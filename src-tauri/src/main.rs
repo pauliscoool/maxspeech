@@ -534,23 +534,38 @@ async fn get_plan_status(app: tauri::AppHandle) -> Result<plan::PlanStatus, Stri
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-async fn set_plan_tier(app: tauri::AppHandle, tier: String) -> Result<plan::PlanStatus, String> {
-    let store = app.state::<Store>();
-    let parsed = plan::PlanTier::parse(&tier);
-    let email = store
+fn stored_account_email(store: &Store) -> String {
+    store
         .get_setting("account_email")
         .ok()
         .flatten()
         .unwrap_or_default()
         .trim()
-        .to_ascii_lowercase();
-    const OWNER: &str = "pauldimov5@gmail.com";
+        .to_ascii_lowercase()
+}
+
+fn is_owner_email(email: &str) -> bool {
+    crate::plan::is_owner_email(email)
+}
+
+fn require_owner(store: &Store) -> Result<(), String> {
+    if is_owner_email(&stored_account_email(store)) {
+        Ok(())
+    } else {
+        Err("Only the owner account can edit usage and other people's plans.".into())
+    }
+}
+
+#[tauri::command]
+async fn set_plan_tier(app: tauri::AppHandle, tier: String) -> Result<plan::PlanStatus, String> {
+    let store = app.state::<Store>();
+    let parsed = plan::PlanTier::parse(&tier);
+    let email = stored_account_email(&store);
 
     match parsed {
         plan::PlanTier::Free => {}
         plan::PlanTier::Starter | plan::PlanTier::Pro | plan::PlanTier::Max => {
-            if (email != OWNER) {
+            if !is_owner_email(&email) {
                 return Err(
                     "Payment checkout coming soon for paid plans. Free plan stays available."
                         .into(),
@@ -560,6 +575,41 @@ async fn set_plan_tier(app: tauri::AppHandle, tier: String) -> Result<plan::Plan
     }
 
     store.set_plan_tier(parsed).map_err(|e| e.to_string())?;
+    store.get_plan_status().map_err(|e| e.to_string())
+}
+
+/// Apply a plan from cloud sync without the checkout gate (already entitled).
+#[tauri::command]
+async fn sync_plan_tier(app: tauri::AppHandle, tier: String) -> Result<plan::PlanStatus, String> {
+    let store = app.state::<Store>();
+    let parsed = plan::PlanTier::parse(&tier);
+    store.set_plan_tier(parsed).map_err(|e| e.to_string())?;
+    store.get_plan_status().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn set_usage_bonus(app: tauri::AppHandle, bonus: u64) -> Result<plan::PlanStatus, String> {
+    let store = app.state::<Store>();
+    require_owner(&store)?;
+    store.set_usage_bonus(bonus).map_err(|e| e.to_string())?;
+    store.get_plan_status().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn adjust_usage(app: tauri::AppHandle, delta: i64) -> Result<plan::PlanStatus, String> {
+    let store = app.state::<Store>();
+    require_owner(&store)?;
+    store.adjust_usage(delta).map_err(|e| e.to_string())?;
+    store.get_plan_status().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn set_words_used(app: tauri::AppHandle, words: u64) -> Result<plan::PlanStatus, String> {
+    let store = app.state::<Store>();
+    require_owner(&store)?;
+    let current = store.words_this_week().map_err(|e| e.to_string())?;
+    let delta = words as i64 - current as i64;
+    store.adjust_usage(delta).map_err(|e| e.to_string())?;
     store.get_plan_status().map_err(|e| e.to_string())
 }
 
@@ -831,12 +881,14 @@ async fn remake_dictation(app: tauri::AppHandle, id: i64) -> Result<String, Stri
         .unwrap_or_else(|| "default".to_string());
 
     let mut output = if has_llm && ai_enhance {
+        let speed = pipeline::tone::EnhanceSpeed::from_store(&store);
         pipeline::tone::enhance_dictation_ex(
             &corrected,
             &tone_name,
             false,
             multilingual,
             &dict_terms,
+            speed,
         )
         .await
         .unwrap_or(corrected.clone())
@@ -1049,6 +1101,10 @@ fn main() {
             set_hotkey_mode,
             get_plan_status,
             set_plan_tier,
+            sync_plan_tier,
+            set_usage_bonus,
+            adjust_usage,
+            set_words_used,
             open_settings_page,
             open_plans_modal,
             set_overlay_pill_clip,

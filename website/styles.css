@@ -419,17 +419,18 @@ main,
 /* —— Full-bleed parallel ribbon behind hero copy —— */
 .hero-flow-stage {
   position: absolute;
-  left: 50%;
+  left: 0;
+  right: 0;
   top: 50%;
-  transform: translate(-50%, -52%);
-  width: min(96vw, 92rem);
+  transform: translateY(-52%);
+  width: 100%;
   height: clamp(14rem, 42vh, 22rem);
   margin: 0;
   pointer-events: none;
   user-select: none;
-  overflow: visible;
+  overflow: hidden;
   z-index: 0;
-  opacity: 0.42;
+  opacity: 1;
 }
 
 .flow-curve {
@@ -454,15 +455,15 @@ main,
 }
 
 .flow-curve-text {
-  fill: rgba(232, 242, 244, 0.14);
+  fill: rgba(232, 242, 244, 0.42);
   font-family: var(--display);
-  font-size: 18px;
+  font-size: 22px;
   font-weight: 600;
   letter-spacing: -0.02em;
 }
 
 .flow-curve-text.is-dim {
-  fill: rgba(46, 211, 198, 0.12);
+  fill: rgba(46, 211, 198, 0.34);
 }
 
 .flow-center {
@@ -477,7 +478,7 @@ main,
   gap: 0.65rem;
   width: max-content;
   max-width: min(100%, 28rem);
-  opacity: 0.7;
+  opacity: 0.92;
 }
 
 .flow-toast {
@@ -564,66 +565,93 @@ main,
   text-overflow: ellipsis;
 }
 
-.flow-pill {
+/* Real overlay capsule: 148×36, 20 bars, shared teal→peach→orange ribbon. */
+.ms-overlay-pill {
+  position: relative;
+  isolation: isolate;
   display: inline-flex;
   align-items: center;
-  gap: 0.5rem;
+  justify-content: center;
+  width: 148px;
+  height: 36px;
+  min-width: 148px;
+  padding: 0 15px;
+  box-sizing: border-box;
   flex-shrink: 0;
-  min-width: 9.25rem;
-  height: 2.55rem;
-  padding: 0.35rem 0.7rem 0.35rem 0.6rem;
+  border: none;
   border-radius: 999px;
-  background: linear-gradient(
-    145deg,
-    rgba(38, 38, 38, 0.98) 0%,
-    rgba(18, 18, 18, 0.99) 35%,
-    rgba(8, 8, 8, 1) 100%
-  );
-  box-shadow:
-    0 14px 36px rgba(0, 0, 0, 0.48),
-    0 0 24px rgba(46, 211, 198, 0.14),
-    inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  overflow: hidden;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  appearance: none;
+  -webkit-appearance: none;
 }
 
-.flow-bars {
+.ms-overlay-pill::before {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 999px;
+  background: linear-gradient(160deg, #0a0a0a 0%, #080808 45%, #040404 100%);
+  box-shadow: inset 0 0 0 2px rgba(0, 0, 0, 0.95);
+  z-index: 0;
+  pointer-events: none;
+}
+
+.ms-overlay-wave {
+  position: relative;
+  z-index: 1;
   display: flex;
   align-items: flex-end;
   justify-content: center;
-  gap: 1.5px;
+  gap: 3px;
   height: 18px;
-  min-width: 72px;
-  flex: 1;
+  width: 117px;
+  --wave-w: 117px;
 }
 
-.flow-bars i {
+.ms-overlay-wave i {
   display: block;
-  width: 2px;
+  width: 3px;
   height: 4px;
   border-radius: 999px;
-  background: linear-gradient(
-    180deg,
-    rgba(255, 255, 255, 0.55) 0%,
-    var(--bar-hi, #99f6e4) 28%,
-    var(--bar-color, var(--turquoise)) 100%
-  );
-  box-shadow:
-    0 0 10px color-mix(in srgb, var(--bar-color, var(--turquoise)) 45%, transparent),
-    inset 0 1px 0 rgba(255, 255, 255, 0.45);
-  will-change: height;
-}
-
-.flow-bars i:nth-child(6n + 4) {
-  --bar-color: var(--orange);
-  --bar-hi: #fdba74;
-}
-
-.flow-pill-label {
   flex-shrink: 0;
-  font-size: 0.62rem;
-  font-weight: 500;
-  color: rgba(255, 255, 255, 0.85);
-  letter-spacing: -0.01em;
-  white-space: nowrap;
+  background-image:
+    linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.38) 0%,
+      rgba(255, 255, 255, 0.06) 36%,
+      rgba(8, 40, 36, 0.18) 100%
+    ),
+    linear-gradient(
+      90deg,
+      #5eead4 0%,
+      #2dd4bf 16%,
+      #7ecfc0 32%,
+      #e8c4a0 44%,
+      #fb923c 50%,
+      #e8c4a0 56%,
+      #7ecfc0 68%,
+      #2dd4bf 84%,
+      #5eead4 100%
+    );
+  background-size: 100% 100%, var(--wave-w) 100%;
+  background-position: 0 0, calc(var(--i) * -6px) 0;
+  background-repeat: no-repeat;
+  box-shadow:
+    0 0 5px rgba(45, 212, 191, 0.22),
+    0 0 8px rgba(251, 146, 60, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.35);
+  transform-origin: bottom;
+}
+
+.flow-pill {
+  pointer-events: none;
+}
+
+button.ms-overlay-pill {
+  cursor: pointer;
 }
 
 @keyframes toast-pop {
@@ -639,12 +667,12 @@ main,
 
 @media (max-width: 719px) {
   .hero-flow-stage {
-    width: 100vw;
+    width: 100%;
     height: 16rem;
   }
 
   .flow-curve-text {
-    font-size: 13px;
+    font-size: 16px;
   }
 
   .flow-live-row {
@@ -656,10 +684,6 @@ main,
     max-width: 90vw;
     font-size: 0.78rem;
     padding: 0.55rem 0.9rem;
-  }
-
-  .flow-pill {
-    min-width: 8.5rem;
   }
 }
 
@@ -806,9 +830,9 @@ main,
 }
 
 .pill-interactive {
-  width: min(100%, 300px);
   user-select: none;
   touch-action: none;
+  cursor: pointer;
   transition: transform 0.15s ease, box-shadow 0.2s ease;
 }
 
@@ -817,10 +841,7 @@ main,
 }
 
 .pill-interactive[aria-pressed="true"] {
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.1),
-    0 0 0 1px rgba(46, 211, 198, 0.35),
-    0 16px 40px rgba(46, 211, 198, 0.18);
+  transform: translateY(0);
 }
 
 .pill-label {
@@ -1023,6 +1044,13 @@ main,
   color: var(--muted);
 }
 
+.playground-caption {
+  margin: 0;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: rgba(244, 247, 248, 0.88);
+}
+
 .scenario-tabs {
   display: flex;
   flex-wrap: wrap;
@@ -1197,5 +1225,191 @@ main,
   .flow-toast,
   .preview-text .caret {
     animation: none !important;
+  }
+}
+
+/* —— Phone layout —— */
+@media (max-width: 719px) {
+  body {
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+  }
+
+  .top {
+    padding: max(0.85rem, env(safe-area-inset-top)) 1rem 0.85rem;
+    gap: 0.5rem;
+  }
+
+  .brand span {
+    font-size: 0.98rem;
+  }
+
+  .top-link {
+    min-height: 2.75rem;
+    display: inline-flex;
+    align-items: center;
+    padding: 0 0.85rem;
+    border-radius: 999px;
+    background: rgba(46, 211, 198, 0.14);
+    color: var(--turquoise);
+    font-weight: 600;
+    font-size: 0.88rem;
+  }
+
+  .top-link-desk {
+    display: none !important;
+  }
+
+  .hero-wrap {
+    min-height: 0;
+  }
+
+  .hero {
+    padding: 1.75rem 1rem 2.25rem;
+  }
+
+  .hero-flow-stage {
+    display: none;
+  }
+
+  .hero-copy::before {
+    inset: -0.5rem -0.5rem;
+  }
+
+  .logo-word {
+    width: 100%;
+    max-width: 100%;
+    white-space: nowrap;
+    font-size: clamp(1.65rem, 9.6vw, 2.4rem);
+    line-height: 1.12;
+    padding-inline: 0;
+  }
+
+  .lede {
+    font-size: 1.05rem;
+    max-width: none;
+  }
+
+  .cta-row {
+    width: 100%;
+    margin-top: 1.4rem;
+    gap: 0.7rem;
+  }
+
+  .cta-downloads {
+    width: 100%;
+  }
+
+  .btn-os,
+  .btn-primary {
+    width: 100%;
+    min-width: 0;
+    min-height: 3.1rem;
+    padding: 0.95rem 1.15rem;
+  }
+
+  .cta-platforms {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.5rem;
+  }
+
+  .btn-platform {
+    justify-content: center;
+    min-height: 2.85rem;
+    padding: 0.65rem 0.7rem;
+    font-size: 0.9rem;
+  }
+
+  .cta-auto,
+  .meta {
+    text-align: center;
+    max-width: 22rem;
+  }
+
+  .install-help {
+    width: 100%;
+  }
+
+  .install-help summary {
+    min-height: 2.75rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .playground,
+  .scenarios,
+  .how {
+    padding: 1.75rem 1rem 2.5rem;
+  }
+
+  .playground-stage {
+    gap: 1.15rem;
+  }
+
+  .preview-pane,
+  .scenario-frame,
+  .scenario-app {
+    min-height: 220px;
+  }
+
+  .playground-controls {
+    align-items: center;
+    text-align: center;
+  }
+
+  .playground-hint {
+    max-width: none;
+  }
+
+  .pill-interactive.ms-overlay-pill {
+    transform: scale(1.15);
+    transform-origin: center;
+    margin: 0.35rem 0;
+  }
+
+  .scenario-tabs {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    margin-left: -0.25rem;
+    margin-right: -0.25rem;
+    padding: 0.15rem 0.25rem 0.45rem;
+  }
+
+  .scenario-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .scenario-tab {
+    flex: 0 0 auto;
+    min-height: 2.75rem;
+    padding: 0.55rem 1.05rem;
+  }
+
+  .scenario-pill {
+    right: 0.75rem;
+    bottom: 0.75rem;
+    transform: scale(0.92);
+    transform-origin: bottom right;
+  }
+
+  .foot {
+    padding: 1.1rem 1rem max(1.75rem, env(safe-area-inset-bottom));
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+
+  .legal {
+    padding: 1.5rem 1rem max(3rem, env(safe-area-inset-bottom));
+  }
+}
+
+@media (max-width: 380px) {
+  .cta-platforms {
+    grid-template-columns: 1fr;
   }
 }

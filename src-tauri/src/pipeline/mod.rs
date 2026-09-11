@@ -246,13 +246,18 @@ pub fn start_dictation(app: &tauri::AppHandle) {
         return;
     }
 
-    // Weekly word limit: hard stop when plan quota is exhausted (Mon 00:00 UTC reset).
+    // Plan quota: Free is 2 minutes / 24h; paid is weekly words (Mon 00:00 UTC).
     let plan_status = app
         .try_state::<Store>()
         .and_then(|store| store.get_plan_status().ok());
     if let Some(ref status) = plan_status {
         if !status.can_dictate {
-            let _ = app.emit("dictation-limit", true);
+            let limit_msg = if status.daily_seconds_limit.is_some() {
+                "Daily limit reached"
+            } else {
+                "Weekly limit reached"
+            };
+            let _ = app.emit("dictation-limit", limit_msg);
             let _ = app.emit("dictation-state", "limit");
             show_overlay_fast(app);
             let _ = app
@@ -288,9 +293,24 @@ pub fn start_dictation(app: &tauri::AppHandle) {
         *state.pending_learn_from.lock().unwrap() = pending;
     }
 
+    let remaining_cap = plan_status
+        .as_ref()
+        .and_then(|s| s.seconds_remaining)
+        .map(|s| Duration::from_secs(s.max(1)))
+        .unwrap_or(MAX_RECORDING)
+        .min(MAX_RECORDING);
+    let free_time_cap = plan_status
+        .as_ref()
+        .and_then(|s| s.daily_seconds_limit)
+        .is_some();
+    let plan_tier = plan_status
+        .as_ref()
+        .map(|s| s.tier)
+        .unwrap_or(crate::plan::PlanTier::Free);
+
     log::info!(
         "Dictation started session={session_id} paste={paste_token} (max {}s wall-clock)",
-        MAX_RECORDING.as_secs()
+        remaining_cap.as_secs()
     );
 
     let keywords: Vec<String> = app
@@ -300,10 +320,6 @@ pub fn start_dictation(app: &tauri::AppHandle) {
         .into_iter()
         .map(|w| w.word)
         .collect();
-
-    let plan_tier = plan_status
-        .map(|s| s.tier)
-        .unwrap_or(crate::plan::PlanTier::Free);
     let (multilingual, languages) = app
         .try_state::<Store>()
         .map(|store| {
@@ -412,11 +428,11 @@ pub fn start_dictation(app: &tauri::AppHandle) {
     let _ = app.emit("dictation-state", "listening");
     show_overlay_fast(app);
 
-    // Auto-stop after true wall-clock MAX_RECORDING. Bound to session_id so a
+    // Auto-stop after remaining Free time (or 2 min max). Bound to session_id so a
     // previous session's sleep cannot kill a newer recording (common in toggle mode).
     let app_timeout = app.clone();
     tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(MAX_RECORDING).await;
+        tokio::time::sleep(remaining_cap).await;
         let state = app_timeout.state::<PipelineState>();
         if *state.session_gen.lock().unwrap() != session_id {
             return;
@@ -431,7 +447,7 @@ pub fn start_dictation(app: &tauri::AppHandle) {
             .map(|t| t.elapsed())
             .unwrap_or(Duration::ZERO);
         // Prefer Instant: only auto-stop once this session has actually hit the cap.
-        if elapsed + Duration::from_millis(50) < MAX_RECORDING {
+        if elapsed + Duration::from_millis(50) < remaining_cap {
             log::warn!(
                 "Ignoring stale max-length timer (session={session_id}, elapsed={:.1}s)",
                 elapsed.as_secs_f64()
@@ -442,7 +458,12 @@ pub fn start_dictation(app: &tauri::AppHandle) {
             "Max recording length reached after {:.1}s (session={session_id}) — stopping",
             elapsed.as_secs_f64()
         );
-        let _ = app_timeout.emit("dictation-error", "Max length: 2 minutes — stopping");
+        let msg = if free_time_cap {
+            "Free limit: 2 minutes every 24 hours — stopping"
+        } else {
+            "Max length: 2 minutes — stopping"
+        };
+        let _ = app_timeout.emit("dictation-error", msg);
         stop_dictation(&app_timeout);
     });
 
@@ -464,6 +485,24 @@ pub fn start_dictation(app: &tauri::AppHandle) {
         if !interim.is_empty() {
             text = merge_trailing_interim(&text, interim);
         }
+
+        // Bill wall-clock recording time even if this session produced no text.
+        let duration_secs = {
+            let secs = *app_handle
+                .state::<PipelineState>()
+                .last_session_secs
+                .lock()
+                .unwrap();
+            if secs <= 0.0 {
+                0
+            } else {
+                secs.ceil() as u64
+            }
+        };
+        if let Some(store) = app_handle.try_state::<Store>() {
+            let _ = store.record_duration(duration_secs);
+        }
+
         if text.is_empty() {
             {
                 let state = app_handle.state::<PipelineState>();
@@ -576,15 +615,17 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                 .flatten()
                 .map(|v| v != "false")
                 .unwrap_or(true);
+            let enhance_speed = tone::EnhanceSpeed::from_store(&store);
 
-            // Short hold (<5s): paste fast with local cleanup only. Full LLM
+            // Short hold: paste fast with local cleanup only. Full LLM
             // enhance is reserved for longer dictations where the lag is worth it.
+            // Fast skips more often; Ultra almost always runs the model.
             let session_secs = *app_handle
                 .state::<PipelineState>()
                 .last_session_secs
                 .lock()
                 .unwrap();
-            let quick_session = session_secs < 5.0;
+            let quick_session = session_secs < enhance_speed.quick_skip_secs();
 
             let word_count = corrected.split_whitespace().count();
             let mut enhance_ran = false;
@@ -622,9 +663,10 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                 match tone::enhance_dictation_ex(
                     &corrected,
                     &tone_name,
-                    word_count >= 40,
+                    word_count >= enhance_speed.long_word_threshold(),
                     multilingual_session,
                     &dict_terms,
+                    enhance_speed,
                 )
                 .await
                 {

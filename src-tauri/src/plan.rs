@@ -1,11 +1,18 @@
 use chrono::{Datelike, Duration, Utc};
 use serde::{Deserialize, Serialize};
 
-/// Weekly word caps (UTC week: Mon 00:00 → next Mon).
-pub const FREE_WEEKLY_LIMIT: u64 = 1_500;
+/// Free: 2 minutes of dictation per rolling 24 hours (wall-clock recording time).
+pub const FREE_DAILY_SECONDS: u64 = 120;
+/// Weekly word caps for paid tiers (UTC week: Mon 00:00 → next Mon).
 pub const STARTER_WEEKLY_LIMIT: u64 = 4_500;
 pub const PRO_WEEKLY_LIMIT: u64 = 10_000;
 pub const MAX_WEEKLY_LIMIT: u64 = 25_000;
+
+pub const OWNER_EMAIL: &str = "pauldimov5@gmail.com";
+
+pub fn is_owner_email(email: &str) -> bool {
+    email.trim().eq_ignore_ascii_case(OWNER_EMAIL)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -44,14 +51,22 @@ impl PlanTier {
         }
     }
 
-    /// Weekly word limit for this tier (all tiers are capped).
+    /// Weekly word limit. Free is time-capped instead (`daily_seconds_limit`).
     pub fn weekly_limit(self) -> Option<u64> {
-        Some(match self {
-            Self::Free => FREE_WEEKLY_LIMIT,
-            Self::Starter => STARTER_WEEKLY_LIMIT,
-            Self::Pro => PRO_WEEKLY_LIMIT,
-            Self::Max => MAX_WEEKLY_LIMIT,
-        })
+        match self {
+            Self::Free => None,
+            Self::Starter => Some(STARTER_WEEKLY_LIMIT),
+            Self::Pro => Some(PRO_WEEKLY_LIMIT),
+            Self::Max => Some(MAX_WEEKLY_LIMIT),
+        }
+    }
+
+    /// Rolling 24-hour recording cap in seconds. Paid tiers are uncapped by time.
+    pub fn daily_seconds_limit(self) -> Option<u64> {
+        match self {
+            Self::Free => Some(FREE_DAILY_SECONDS),
+            _ => None,
+        }
     }
 }
 
@@ -64,15 +79,46 @@ pub struct PlanStatus {
     pub words_remaining: Option<u64>,
     pub week_starts_at: String,
     pub can_dictate: bool,
+    pub bonus_words: u64,
+    pub daily_seconds_limit: Option<u64>,
+    pub daily_seconds_used: u64,
+    pub seconds_remaining: Option<u64>,
 }
 
 impl PlanStatus {
     pub fn from_usage(tier: PlanTier, words_used: u64, week_starts_at: String) -> Self {
-        let weekly_limit = tier.weekly_limit();
+        Self::from_usage_with_bonus(tier, words_used, week_starts_at, 0, 0, false)
+    }
+
+    pub fn from_usage_with_bonus(
+        tier: PlanTier,
+        words_used: u64,
+        week_starts_at: String,
+        bonus_words: u64,
+        daily_seconds_used: u64,
+        unlimited: bool,
+    ) -> Self {
+        let weekly_limit = tier.weekly_limit().map(|lim| lim.saturating_add(bonus_words));
         let words_remaining = weekly_limit.map(|lim| lim.saturating_sub(words_used));
-        let can_dictate = match weekly_limit {
-            Some(lim) => words_used < lim,
-            None => true,
+        // On Free, owner-granted bonus_words are extra seconds for the 24h window.
+        // Owner account is not time-gated (seconds_remaining stays None).
+        let daily_seconds_limit = if unlimited {
+            None
+        } else {
+            tier
+                .daily_seconds_limit()
+                .map(|lim| lim.saturating_add(bonus_words))
+        };
+        let seconds_remaining =
+            daily_seconds_limit.map(|lim| lim.saturating_sub(daily_seconds_used));
+        let can_dictate = if unlimited {
+            true
+        } else if let Some(lim) = daily_seconds_limit {
+            daily_seconds_used < lim
+        } else if let Some(lim) = weekly_limit {
+            words_used < lim
+        } else {
+            true
         };
         Self {
             tier,
@@ -82,6 +128,10 @@ impl PlanStatus {
             words_remaining,
             week_starts_at,
             can_dictate,
+            bonus_words,
+            daily_seconds_limit,
+            daily_seconds_used,
+            seconds_remaining,
         }
     }
 }
@@ -112,11 +162,35 @@ mod tests {
     }
 
     #[test]
+    fn free_is_time_capped_not_weekly_words() {
+        assert_eq!(PlanTier::Free.weekly_limit(), None);
+        assert_eq!(PlanTier::Free.daily_seconds_limit(), Some(FREE_DAILY_SECONDS));
+        let under = PlanStatus::from_usage_with_bonus(
+            PlanTier::Free,
+            9_999,
+            "2026-07-28 00:00:00".into(),
+            0,
+            60,
+            false,
+        );
+        assert!(under.can_dictate);
+        assert_eq!(under.weekly_limit, None);
+        assert_eq!(under.seconds_remaining, Some(60));
+    }
+
+    #[test]
     fn free_status_at_limit_blocks() {
-        let s = PlanStatus::from_usage(PlanTier::Free, FREE_WEEKLY_LIMIT, "2026-07-28 00:00:00".into());
+        let s = PlanStatus::from_usage_with_bonus(
+            PlanTier::Free,
+            0,
+            "2026-07-28 00:00:00".into(),
+            0,
+            FREE_DAILY_SECONDS,
+            false,
+        );
         assert!(!s.can_dictate);
-        assert_eq!(s.words_remaining, Some(0));
-        assert_eq!(s.weekly_limit, Some(FREE_WEEKLY_LIMIT));
+        assert_eq!(s.seconds_remaining, Some(0));
+        assert_eq!(s.daily_seconds_limit, Some(FREE_DAILY_SECONDS));
     }
 
     #[test]
@@ -127,6 +201,7 @@ mod tests {
         assert_eq!(PlanTier::Starter.price_usd(), 3);
         assert_eq!(PlanTier::Pro.price_usd(), 5);
         assert_eq!(PlanTier::Max.price_usd(), 10);
+        assert_eq!(PlanTier::Starter.daily_seconds_limit(), None);
     }
 
     #[test]
@@ -144,6 +219,56 @@ mod tests {
         assert!(s.can_dictate);
         assert_eq!(s.words_remaining, Some(STARTER_WEEKLY_LIMIT - 1_000));
         assert_eq!(s.weekly_limit, Some(STARTER_WEEKLY_LIMIT));
+        assert_eq!(s.bonus_words, 0);
+    }
+
+    #[test]
+    fn bonus_words_raise_paid_cap() {
+        let s = PlanStatus::from_usage_with_bonus(
+            PlanTier::Starter,
+            STARTER_WEEKLY_LIMIT,
+            "2026-07-28 00:00:00".into(),
+            500,
+            0,
+            false,
+        );
+        assert!(s.can_dictate);
+        assert_eq!(s.weekly_limit, Some(STARTER_WEEKLY_LIMIT + 500));
+        assert_eq!(s.words_remaining, Some(500));
+        assert_eq!(s.bonus_words, 500);
+    }
+
+    #[test]
+    fn bonus_seconds_raise_free_cap() {
+        let s = PlanStatus::from_usage_with_bonus(
+            PlanTier::Free,
+            0,
+            "2026-07-28 00:00:00".into(),
+            30,
+            FREE_DAILY_SECONDS,
+            false,
+        );
+        assert!(s.can_dictate);
+        assert_eq!(s.daily_seconds_limit, Some(FREE_DAILY_SECONDS + 30));
+        assert_eq!(s.seconds_remaining, Some(30));
+        assert_eq!(s.bonus_words, 30);
+    }
+
+    #[test]
+    fn owner_unlimited_ignores_free_cap() {
+        let s = PlanStatus::from_usage_with_bonus(
+            PlanTier::Free,
+            0,
+            "2026-07-28 00:00:00".into(),
+            0,
+            10_000,
+            true,
+        );
+        assert!(s.can_dictate);
+        assert_eq!(s.daily_seconds_limit, None);
+        assert_eq!(s.seconds_remaining, None);
+        assert!(is_owner_email("  PaulDimov5@gmail.com "));
+        assert!(!is_owner_email("other@example.com"));
     }
 
     #[test]

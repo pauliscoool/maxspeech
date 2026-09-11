@@ -1,6 +1,86 @@
 use crate::context::ForegroundApp;
 use crate::secrets;
 use crate::store::Store;
+use std::time::Duration;
+
+/// How hard / how long the AI enhance pass works. Thinking is today's default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnhanceSpeed {
+    Fast,
+    Thinking,
+    Ultra,
+}
+
+impl EnhanceSpeed {
+    pub fn parse(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "fast" => Self::Fast,
+            "ultra" => Self::Ultra,
+            _ => Self::Thinking,
+        }
+    }
+
+    pub fn from_store(store: &Store) -> Self {
+        Self::parse(
+            &store
+                .get_setting("enhance_speed")
+                .ok()
+                .flatten()
+                .unwrap_or_default(),
+        )
+    }
+
+    /// Skip the LLM below this session length (seconds). Thinking matches current 5s.
+    pub fn quick_skip_secs(self) -> f64 {
+        match self {
+            Self::Fast => 6.25,
+            Self::Thinking => 5.0,
+            Self::Ultra => 1.5,
+        }
+    }
+
+    pub fn long_word_threshold(self) -> usize {
+        match self {
+            Self::Fast => 64,
+            Self::Thinking => 40,
+            Self::Ultra => 24,
+        }
+    }
+
+    fn token_budget(self, base: u32) -> u32 {
+        let scaled = match self {
+            Self::Fast => (base as f64 * 0.8).round() as u32,
+            Self::Thinking => base,
+            Self::Ultra => (base as f64 * 1.25).round() as u32,
+        };
+        scaled.max(256)
+    }
+
+    /// Fast: 20% less wait than Thinking. Ultra: 20%+ more so the stronger model can finish.
+    fn timeout(self) -> Duration {
+        match self {
+            Self::Fast => Duration::from_millis(12_000),
+            Self::Thinking => Duration::from_secs(15),
+            Self::Ultra => Duration::from_millis(20_000),
+        }
+    }
+
+    fn temperature(self) -> f64 {
+        match self {
+            Self::Fast => 0.0,
+            Self::Thinking => 0.1,
+            Self::Ultra => 0.22,
+        }
+    }
+
+    /// Ultra uses a stronger model so the extra time is real depth, not a fake delay.
+    fn model(self) -> &'static str {
+        match self {
+            Self::Fast | Self::Thinking => "gpt-4o-mini",
+            Self::Ultra => "gpt-4o",
+        }
+    }
+}
 
 pub fn get_tone_for_app(app: &ForegroundApp, store: &Store) -> Option<String> {
     let profiles = store.get_app_profiles().unwrap_or_default();
@@ -143,6 +223,18 @@ The transcript may mix languages in one utterance (e.g. Russian then English). \
 - Only lightly fix punctuation/spacing; leave mixed-language wording intact. \
 - English self-correction rules apply only to clearly English correction chatter.";
 
+const FAST_RULES: &str = "\
+Light, fast cleanup only: fix grammar, punctuation, fillers, and obvious ASR errors. \
+Apply spoken self-corrections ('I meant X'). Keep meaning. Return ONLY cleaned text.";
+
+const ULTRA_RULES: &str = "\
+Thorough pass (take the extra time): \
+- Restore sentence boundaries and implied lists when the speaker clearly listed items. \
+- Fix unclear phrasing and run-ons while keeping the same meaning, names, numbers, and dates. \
+- Prefer complete, well-punctuated sentences suitable to paste as-is. \
+- Apply self-corrections and ASR fixes carefully — do not invent facts or summarize. \
+- If the thought is unfinished, keep it unfinished; do not pad with filler.";
+
 fn system_prompt_for_tone(tone: &str, multilingual: bool) -> String {
     let base = match tone {
         "casual" => {
@@ -173,6 +265,30 @@ fn system_prompt_for_tone(tone: &str, multilingual: bool) -> String {
         )
     } else {
         format!("{base}\n\n{GRAMMAR_RULES}\n\n{ASR_CORRECTION_RULES}\n\n{SELF_CORRECTION_RULES}")
+    }
+}
+
+fn system_prompt_for_speed(tone: &str, multilingual: bool, speed: EnhanceSpeed) -> String {
+    match speed {
+        EnhanceSpeed::Fast => {
+            let flavor = match tone {
+                "casual" => "Casual chat style; prefer lowercase.",
+                "formal" => "Professional email style; complete sentences.",
+                "code" => "Technical / programmer wording.",
+                "prose" => "Clean prose.",
+                _ => "Keep the speaker's voice.",
+            };
+            let multi = if multilingual {
+                format!(" {MULTILINGUAL_RULES}")
+            } else {
+                String::new()
+            };
+            format!("{FAST_RULES} {flavor}{multi}")
+        }
+        EnhanceSpeed::Thinking => system_prompt_for_tone(tone, multilingual),
+        EnhanceSpeed::Ultra => {
+            format!("{}\n\n{ULTRA_RULES}", system_prompt_for_tone(tone, multilingual))
+        }
     }
 }
 
@@ -1201,10 +1317,14 @@ async fn apply_tone_ex(
     tone: &str,
     multilingual: bool,
     dict_terms: &[String],
+    speed: EnhanceSpeed,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let api_key = llm_key()?;
-    let system = with_dictionary(system_prompt_for_tone(tone, multilingual), dict_terms);
-    call_llm(&api_key, &system, text, 1024).await
+    let system = with_dictionary(
+        system_prompt_for_speed(tone, multilingual, speed),
+        dict_terms,
+    );
+    call_llm(&api_key, &system, text, speed.token_budget(1024), speed).await
 }
 
 pub async fn rewrite_with_llm(
@@ -1218,7 +1338,14 @@ pub async fn rewrite_with_llm(
          Instruction: {instruction}. Only return the rewritten text, nothing else.\n\n\
          {GRAMMAR_RULES}\n\n{ASR_CORRECTION_RULES}\n\n{SELF_CORRECTION_RULES}"
     );
-    call_llm(&api_key, &system, text, 1024).await
+    call_llm(
+        &api_key,
+        &system,
+        text,
+        EnhanceSpeed::Thinking.token_budget(1024),
+        EnhanceSpeed::Thinking,
+    )
+    .await
 }
 
 async fn enhance_long_dictation_ex(
@@ -1226,26 +1353,36 @@ async fn enhance_long_dictation_ex(
     tone: &str,
     multilingual: bool,
     dict_terms: &[String],
+    speed: EnhanceSpeed,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let api_key = llm_key()?;
 
-    let style = system_prompt_for_tone(tone, multilingual);
-    let system = with_dictionary(
-        format!(
-            "{style}\n\nThis is a longer dictation. Apply Grammarly-style grammar, punctuation, \
+    let style = system_prompt_for_speed(tone, multilingual, speed);
+    let extra = match speed {
+        EnhanceSpeed::Fast => {
+            "Longer dictation: light grammar/punctuation pass only. Full transcript, no summary."
+        }
+        EnhanceSpeed::Thinking => {
+            "This is a longer dictation. Apply Grammarly-style grammar, punctuation, \
              and clarity fixes throughout. Remove filler (um, uh, like). Break into clear paragraphs \
              when natural. Apply self-correction rules carefully. Do not summarize — return the full \
              cleaned transcript only."
-        ),
-        dict_terms,
-    );
-    call_llm(&api_key, &system, text, 4096).await
+        }
+        EnhanceSpeed::Ultra => {
+            "This is a longer dictation. Do a thorough Grammarly-style pass: grammar, punctuation, \
+             clarity, paragraph breaks, and self-corrections. Keep every idea — do not summarize. \
+             Return the full cleaned transcript only."
+        }
+    };
+    let system = with_dictionary(format!("{style}\n\n{extra}"), dict_terms);
+    call_llm(&api_key, &system, text, speed.token_budget(4096), speed).await
 }
 
 async fn cleanup_self_corrections_ex(
     text: &str,
     multilingual: bool,
     dict_terms: &[String],
+    speed: EnhanceSpeed,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let api_key = llm_key()?;
 
@@ -1255,14 +1392,24 @@ async fn cleanup_self_corrections_ex(
         String::new()
     };
     let system = with_dictionary(
-        format!(
-            "You are a Grammarly-like cleanup pass for spoken dictation. \
-             {GRAMMAR_RULES} {ASR_CORRECTION_RULES} {SELF_CORRECTION_RULES}{multi} \
-             Only return the cleaned text, nothing else."
-        ),
+        match speed {
+            EnhanceSpeed::Fast => {
+                format!("You are a fast dictation cleanup pass. {FAST_RULES}{multi}")
+            }
+            EnhanceSpeed::Thinking => format!(
+                "You are a Grammarly-like cleanup pass for spoken dictation. \
+                 {GRAMMAR_RULES} {ASR_CORRECTION_RULES} {SELF_CORRECTION_RULES}{multi} \
+                 Only return the cleaned text, nothing else."
+            ),
+            EnhanceSpeed::Ultra => format!(
+                "You are a Grammarly-like cleanup pass for spoken dictation. \
+                 {GRAMMAR_RULES} {ASR_CORRECTION_RULES} {SELF_CORRECTION_RULES} {ULTRA_RULES}{multi} \
+                 Only return the cleaned text, nothing else."
+            ),
+        },
         dict_terms,
     );
-    call_llm(&api_key, &system, text, 2048).await
+    call_llm(&api_key, &system, text, speed.token_budget(2048), speed).await
 }
 
 /// Enhance path used by the dictation pipeline (preserves code-switched scripts).
@@ -1272,6 +1419,7 @@ pub async fn enhance_dictation_ex(
     long: bool,
     multilingual: bool,
     dict_terms: &[String],
+    speed: EnhanceSpeed,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     // Local English self-correction can mangle mixed-script text — skip it when
     // the transcript already contains non-Latin characters.
@@ -1282,11 +1430,11 @@ pub async fn enhance_dictation_ex(
     };
     let multi = multilingual || has_non_latin_script(&local);
     if long {
-        enhance_long_dictation_ex(&local, tone, multi, dict_terms).await
+        enhance_long_dictation_ex(&local, tone, multi, dict_terms, speed).await
     } else if tone == "default" {
-        cleanup_self_corrections_ex(&local, multi, dict_terms).await
+        cleanup_self_corrections_ex(&local, multi, dict_terms, speed).await
     } else {
-        apply_tone_ex(&local, tone, multi, dict_terms).await
+        apply_tone_ex(&local, tone, multi, dict_terms, speed).await
     }
 }
 
@@ -1295,16 +1443,19 @@ async fn call_llm(
     system: &str,
     user: &str,
     max_tokens: u32,
+    speed: EnhanceSpeed,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(speed.timeout())
+        .build()?;
     let body = serde_json::json!({
-        "model": "gpt-4o-mini",
+        "model": speed.model(),
         "messages": [
             { "role": "system", "content": system },
             { "role": "user", "content": user }
         ],
         "max_tokens": max_tokens,
-        "temperature": 0.1
+        "temperature": speed.temperature()
     });
 
     let resp = client
@@ -1341,7 +1492,25 @@ async fn call_llm(
 
 #[cfg(test)]
 mod tests {
-    use super::{local_asr_cleanup, local_self_correct, normalize_terminal_punctuation};
+    use super::{
+        local_asr_cleanup, local_self_correct, normalize_terminal_punctuation, EnhanceSpeed,
+    };
+
+    #[test]
+    fn enhance_speed_parse_defaults_to_thinking() {
+        assert_eq!(EnhanceSpeed::parse(""), EnhanceSpeed::Thinking);
+        assert_eq!(EnhanceSpeed::parse("thinking"), EnhanceSpeed::Thinking);
+        assert_eq!(EnhanceSpeed::parse("FAST"), EnhanceSpeed::Fast);
+        assert_eq!(EnhanceSpeed::parse("ultra"), EnhanceSpeed::Ultra);
+        assert!(EnhanceSpeed::Fast.quick_skip_secs() > EnhanceSpeed::Thinking.quick_skip_secs());
+        assert!(EnhanceSpeed::Ultra.quick_skip_secs() < EnhanceSpeed::Thinking.quick_skip_secs());
+        assert_eq!(EnhanceSpeed::Fast.timeout().as_millis(), 12_000);
+        assert_eq!(EnhanceSpeed::Thinking.timeout().as_millis(), 15_000);
+        assert!(EnhanceSpeed::Ultra.timeout().as_millis() >= 18_000);
+        assert_eq!(EnhanceSpeed::Fast.model(), "gpt-4o-mini");
+        assert_eq!(EnhanceSpeed::Thinking.model(), "gpt-4o-mini");
+        assert_eq!(EnhanceSpeed::Ultra.model(), "gpt-4o");
+    }
 
     #[test]
     fn ten_times_becomes_percent() {

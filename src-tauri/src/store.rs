@@ -120,10 +120,16 @@ impl Store {
                  id INTEGER PRIMARY KEY AUTOINCREMENT,
                  word_count INTEGER NOT NULL,
                  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                 history_id INTEGER
+                 history_id INTEGER,
+                 duration_secs INTEGER NOT NULL DEFAULT 0
              );
              CREATE INDEX IF NOT EXISTS idx_usage_created ON usage_events(created_at);",
         )?;
+        // Older DBs created usage_events before duration_secs existed.
+        let _ = conn.execute(
+            "ALTER TABLE usage_events ADD COLUMN duration_secs INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
 
         // One-time backfill from existing history so this week isn't under-counted.
         let already: i64 = conn
@@ -247,7 +253,46 @@ impl Store {
     }
 
     pub fn set_plan_tier(&self, tier: crate::plan::PlanTier) -> Result<(), rusqlite::Error> {
-        self.set_setting("plan_tier", tier.as_str())
+        self.set_setting("plan_tier", tier.as_str())?;
+        self.set_setting(
+            "plan_updated_at",
+            &chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        )
+    }
+
+    fn active_usage_bonus(&self, week_start: &str) -> u64 {
+        let week = self
+            .get_setting("usage_bonus_week")
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        if week != week_start {
+            return 0;
+        }
+        self.get_setting("usage_bonus")
+            .ok()
+            .flatten()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(0)
+    }
+
+    pub fn set_usage_bonus(&self, bonus: u64) -> Result<(), rusqlite::Error> {
+        let week_start = crate::plan::week_starts_at_sql();
+        self.set_setting("usage_bonus", &bonus.to_string())?;
+        self.set_setting("usage_bonus_week", &week_start)
+    }
+
+    /// Append a usage ledger row. Negative `delta` credits words back this week.
+    pub fn adjust_usage(&self, delta: i64) -> Result<(), rusqlite::Error> {
+        if delta == 0 {
+            return Ok(());
+        }
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO usage_events (word_count, history_id) VALUES (?1, NULL)",
+            params![delta],
+        )?;
+        Ok(())
     }
 
     /// Sum of billed words since Monday 00:00 UTC from the append-only usage ledger.
@@ -263,14 +308,50 @@ impl Store {
         Ok(total.max(0) as u64)
     }
 
+    /// Sum of billed recording seconds in the last 24 hours (UTC).
+    pub fn seconds_last_24h(&self) -> Result<u64, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let total: i64 = conn.query_row(
+            "SELECT COALESCE(SUM(duration_secs), 0) FROM usage_events
+             WHERE created_at >= datetime('now', '-24 hours')",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(total.max(0) as u64)
+    }
+
+    /// Append recording time to the usage ledger (Free 24h clock).
+    pub fn record_duration(&self, duration_secs: u64) -> Result<(), rusqlite::Error> {
+        if duration_secs == 0 {
+            return Ok(());
+        }
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO usage_events (word_count, duration_secs, history_id) VALUES (0, ?1, NULL)",
+            params![duration_secs as i64],
+        )?;
+        Ok(())
+    }
+
     pub fn get_plan_status(&self) -> Result<crate::plan::PlanStatus, rusqlite::Error> {
         let tier = self.get_plan_tier();
         let words_used = self.words_this_week()?;
         let week_starts_at = crate::plan::week_starts_at_sql();
-        Ok(crate::plan::PlanStatus::from_usage(
+        let bonus_words = self.active_usage_bonus(&week_starts_at);
+        let daily_seconds_used = self.seconds_last_24h()?;
+        let email = self
+            .get_setting("account_email")
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        let unlimited = crate::plan::is_owner_email(&email);
+        Ok(crate::plan::PlanStatus::from_usage_with_bonus(
             tier,
             words_used,
             week_starts_at,
+            bonus_words,
+            daily_seconds_used,
+            unlimited,
         ))
     }
 
@@ -666,6 +747,9 @@ impl Store {
         for key in [
             "user_name",
             "plan_tier",
+            "plan_updated_at",
+            "usage_bonus",
+            "usage_bonus_week",
             "account_email",
             "dictation_unlocked",
             "deepgram_api_key",

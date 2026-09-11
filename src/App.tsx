@@ -69,9 +69,9 @@ export default function App() {
         if (cancelled) return;
         setAuthUser(user);
         setAuthReady(true);
-        void syncDictationAuth(user);
-        if (user) {
-          void pullCloudSettings().catch(() => {});
+        await syncDictationAuth(user);
+        if (user && !user.local) {
+          await pullCloudSettings().catch(() => {});
         }
       } catch {
         if (!cancelled) {
@@ -85,8 +85,10 @@ export default function App() {
     const unsub = onAuthChange((u) => {
       setAuthUser(u);
       setAuthReady(true);
-      void syncDictationAuth(u);
-      if (u && !u.local) void pullCloudSettings();
+      void (async () => {
+        await syncDictationAuth(u);
+        if (u && !u.local) await pullCloudSettings().catch(() => {});
+      })();
     });
     return () => {
       cancelled = true;
@@ -114,7 +116,7 @@ export default function App() {
           className="pointer-events-none absolute -right-20 top-0 w-80 h-80 rounded-full blur-3xl opacity-25"
           style={{ background: "radial-gradient(circle, var(--ms-turquoise), transparent 70%)" }}
         />
-        <div className="relative z-10 p-8 w-full flex justify-center">
+        <div className="relative z-10 p-8 w-full flex justify-center page-enter">
           <AuthPanel
             onAuthed={(u) => {
               setAuthUser(u);

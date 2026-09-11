@@ -48,6 +48,12 @@ export default function HomePage({
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [bulkConfirm, setBulkConfirm] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [stats, setStats] = useState<{
+    total_words: number;
+    total_entries: number;
+    days_active: number;
+    avg_wpm: number;
+  } | null>(null);
   const loadGen = useRef(0);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const loadingMoreRef = useRef(false);
@@ -107,6 +113,14 @@ export default function HomePage({
 
   function reloadHistory() {
     void loadPage(0, true);
+    invoke<{
+      total_words: number;
+      total_entries: number;
+      days_active: number;
+      avg_wpm: number;
+    }>("get_stats")
+      .then(setStats)
+      .catch(() => {});
   }
 
   function loadMore() {
@@ -317,7 +331,9 @@ export default function HomePage({
   }
 
   return (
-    <div className="page-shell space-y-5">
+    <div className="page-shell home-page space-y-5">
+      <div className="home-layout">
+      <div className="home-main space-y-5">
       <h1 className="page-title">
         Welcome back, <span className="accent-gradient-text">{name}</span>
       </h1>
@@ -583,6 +599,35 @@ export default function HomePage({
           ) : null}
         </div>
       )}
+      </div>
+
+      <aside className="home-rail" aria-label="Status">
+        <HomeStat
+          title="Words"
+          value={stats ? formatHomeStat(stats.total_words) : "—"}
+          hint="All time"
+          accent="teal"
+        />
+        <HomeStat
+          title="Dictations"
+          value={stats ? String(stats.total_entries) : "—"}
+          hint="Sessions"
+          accent="orange"
+        />
+        <HomeStat
+          title="Active days"
+          value={stats ? String(stats.days_active) : "—"}
+          hint="With activity"
+          accent="teal"
+        />
+        <HomeStat
+          title="WPM"
+          value={stats && stats.avg_wpm > 0 ? String(stats.avg_wpm) : "—"}
+          hint="Speaking pace"
+          accent="orange"
+        />
+      </aside>
+      </div>
 
       <ConfirmModal
         open={deleteId != null}
@@ -611,6 +656,33 @@ export default function HomePage({
       />
     </div>
   );
+}
+
+function HomeStat({
+  title,
+  value,
+  hint,
+  accent,
+}: {
+  title: string;
+  value: string;
+  hint: string;
+  accent: "teal" | "orange";
+}) {
+  return (
+    <div className="home-stat">
+      <div className="home-stat-label">{title}</div>
+      <div className={`home-stat-value ${accent === "orange" ? "is-orange" : "is-teal"}`}>
+        {value}
+      </div>
+      <div className="home-stat-hint">{hint}</div>
+    </div>
+  );
+}
+
+function formatHomeStat(n: number) {
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
+  return String(n);
 }
 
 function IconBtn({
