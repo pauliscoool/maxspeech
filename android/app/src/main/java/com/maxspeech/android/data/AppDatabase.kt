@@ -73,6 +73,15 @@ interface HistoryDao {
 
     @Query("SELECT COUNT(DISTINCT appName) FROM history")
     suspend fun distinctApps(): Int
+
+    @Query("SELECT COUNT(DISTINCT appName) FROM history")
+    fun observeDistinctApps(): Flow<Int>
+
+    @Query("SELECT COUNT(*) FROM history WHERE enhanced = 1")
+    fun observeEnhanced(): Flow<Int>
+
+    @Query("SELECT COUNT(*) FROM history WHERE edited = 1")
+    fun observeEdited(): Flow<Int>
 }
 
 @Dao
@@ -127,6 +136,9 @@ interface UsageDao {
 
     @Query("SELECT COALESCE(SUM(wordCount), 0) FROM usage_events WHERE createdAt >= :since")
     suspend fun wordsSince(since: Long): Int
+
+    @Query("SELECT COALESCE(SUM(wordCount), 0) FROM usage_events WHERE createdAt >= :since")
+    fun observeWordsSince(since: Long): Flow<Int>
 }
 
 @Database(

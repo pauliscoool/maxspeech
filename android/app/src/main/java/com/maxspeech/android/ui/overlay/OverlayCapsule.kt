@@ -1,7 +1,7 @@
 package com.maxspeech.android.ui.overlay
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -29,6 +29,8 @@ import androidx.compose.ui.unit.sp
 import com.maxspeech.android.pipeline.DictationPhase
 import com.maxspeech.android.pipeline.DictationUi
 import com.maxspeech.android.ui.components.RibbonWaveform
+import com.maxspeech.android.ui.components.liquidGlass
+import com.maxspeech.android.ui.theme.LocalBlurStrength
 import com.maxspeech.android.ui.theme.LocalMsColors
 import com.maxspeech.android.ui.theme.Orange
 import com.maxspeech.android.ui.theme.Turquoise
@@ -41,23 +43,23 @@ fun OverlayCapsule(
     onHoldEnd: () -> Unit,
     onCancel: () -> Unit,
     onConfirm: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val c = LocalMsColors.current
+    val blur = LocalBlurStrength.current
     val shape = RoundedCornerShape(28.dp)
     when (ui.phase) {
         DictationPhase.Confirm, DictationPhase.Listening, DictationPhase.Processing -> {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
-                modifier = Modifier.padding(8.dp),
+                modifier = modifier,
             ) {
                 Box(
                     Modifier
                         .size(44.dp)
-                        .clip(CircleShape)
-                        .background(c.glassFill.copy(alpha = glassAlpha))
-                        .border(1.dp, c.hairline, CircleShape)
-                        .pointerInput(Unit) { detectTapGestures { onCancel() } },
+                        .liquidGlass(CircleShape, c.glassFill.copy(alpha = glassAlpha.coerceIn(0.15f, 1f)), c.hairline, blur)
+                        .clickable(onClick = onCancel),
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(Icons.Filled.Close, contentDescription = "Cancel", tint = c.text)
@@ -66,9 +68,7 @@ fun OverlayCapsule(
                     Modifier
                         .widthIn(min = 148.dp)
                         .height(44.dp)
-                        .clip(shape)
-                        .background(c.glassFill.copy(alpha = glassAlpha))
-                        .border(1.dp, c.hairline, shape)
+                        .liquidGlass(shape, c.glassFill.copy(alpha = glassAlpha.coerceIn(0.15f, 1f)), c.hairline, blur)
                         .padding(horizontal = 16.dp),
                     contentAlignment = Alignment.Center,
                 ) {
@@ -79,7 +79,9 @@ fun OverlayCapsule(
                         .size(44.dp)
                         .clip(CircleShape)
                         .background(if (ui.phase == DictationPhase.Confirm) Orange else Turquoise)
-                        .pointerInput(Unit) { detectTapGestures { if (ui.phase == DictationPhase.Confirm) onConfirm() else onHoldEnd() } },
+                        .clickable {
+                            if (ui.phase == DictationPhase.Confirm) onConfirm() else onHoldEnd()
+                        },
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(Icons.Filled.Check, contentDescription = "Confirm", tint = Color.White)
@@ -89,7 +91,7 @@ fun OverlayCapsule(
         else -> {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier
+                modifier = modifier
                     .widthIn(min = 260.dp)
                     .height(52.dp)
                     .clip(shape)
@@ -98,18 +100,14 @@ fun OverlayCapsule(
                         detectTapGestures(
                             onPress = {
                                 onHoldStart()
-                                try {
-                                    tryAwaitRelease()
-                                } finally {
-                                    onHoldEnd()
-                                }
+                                tryAwaitRelease()
                             },
                         )
                     }
                     .padding(horizontal = 18.dp),
             ) {
                 Text(
-                    text = ui.error ?: "Hold to speak",
+                    text = ui.liveText.ifBlank { ui.error ?: "Tap a field, then hold to speak" },
                     color = Color.White.copy(alpha = 0.92f),
                     fontSize = 16.sp,
                     modifier = Modifier.weight(1f),

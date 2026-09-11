@@ -43,7 +43,6 @@ class DictationController(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val audio = AudioCapture()
     private val stt = DeepgramClient()
-    private val enhance = EnhanceClient()
 
     private val _ui = MutableStateFlow(DictationUi())
     val ui = _ui.asStateFlow()
@@ -73,7 +72,11 @@ class DictationController(
             }
             haptic()
             _ui.value = DictationUi(phase = DictationPhase.Listening, targetApp = sessionApp)
-            val lang = if (snap.multilingual) "multi" else snap.languages.firstOrNull() ?: "en"
+            val lang = if (snap.multilingual && com.maxspeech.android.data.SttLanguages.multilingualAllowed(plan.tier)) {
+                "multi"
+            } else {
+                snap.languages.firstOrNull() ?: "en"
+            }
             val dict = db.dictionaryDao().all()
             val keys = com.maxspeech.android.data.Secrets.deepgramKeys(snap.deepgramKey.ifBlank { null })
             try {
@@ -101,6 +104,12 @@ class DictationController(
                             _ui.value = _ui.value.copy(levels = next)
                         },
                     )
+                }
+                launch {
+                    delay(120_000)
+                    if (_ui.value.phase == DictationPhase.Listening) {
+                        finishInternal(confirmOnly = true)
+                    }
                 }
                 pcmJob?.join()
             } catch (e: Throwable) {
@@ -145,13 +154,7 @@ class DictationController(
         }
         _ui.value = _ui.value.copy(phase = DictationPhase.Processing, originalText = raw)
         var out = raw
-        val tone = resolveTone(sessionApp, snap.toneOverride)
-        val llm = snap.llmKey.trim()
-        if (snap.aiEnhance && llm.isNotEmpty()) {
-            out = runCatching {
-                enhance.enhance(raw, tone, llm, snap.enhanceSpeed, snap.multilingual)
-            }.getOrDefault(raw)
-        }
+        delay(420)
         if (snap.trailingSpace && !out.endsWith(" ")) out = "$out "
         val enhanced = out.trim() != raw.trim()
         withContext(Dispatchers.IO) {

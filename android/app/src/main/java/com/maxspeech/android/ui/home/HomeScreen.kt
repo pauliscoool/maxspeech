@@ -1,8 +1,9 @@
 package com.maxspeech.android.ui.home
 
+import android.app.Activity
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -13,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -31,8 +33,8 @@ import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.outlined.EmojiEmotions
 import androidx.compose.material.icons.outlined.FilterNone
-import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -42,8 +44,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.maxspeech.android.data.HistoryEntity
@@ -57,7 +59,6 @@ import com.maxspeech.android.ui.theme.DisplayLarge
 import com.maxspeech.android.ui.theme.LocalMsColors
 import com.maxspeech.android.ui.theme.Orange
 import com.maxspeech.android.ui.theme.TitleSmall
-import com.maxspeech.android.ui.theme.Turquoise
 
 @Composable
 fun HomeScreen(
@@ -66,6 +67,8 @@ fun HomeScreen(
     wordsUsed: Int,
     wordsLimit: Int,
     appCount: Int,
+    enhancedCount: Int,
+    editedCount: Int,
     chips: List<String>,
     selectedChip: String,
     onChip: (String) -> Unit,
@@ -81,28 +84,35 @@ fun HomeScreen(
 ) {
     val c = LocalMsColors.current
     val clip = LocalClipboardManager.current
+    val ctx = LocalContext.current
     Column(
         Modifier
             .fillMaxSize()
             .background(c.bg)
+            .statusBarsPadding()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 20.dp, vertical = 12.dp),
+            .padding(horizontal = 20.dp)
+            .padding(top = 8.dp, bottom = 120.dp),
     ) {
-        Icon(
-            Icons.AutoMirrored.Filled.ArrowBack,
-            contentDescription = "Back",
-            tint = c.text,
-            modifier = Modifier
-                .size(28.dp)
-                .clip(CircleShape)
-                .pointerInput(Unit) { detectTapGestures { onOpenSettings() } },
-        )
-        Spacer(Modifier.height(22.dp))
+        IconButton(
+            onClick = { (ctx as? Activity)?.moveTaskToBack(true) },
+            modifier = Modifier.size(40.dp),
+        ) {
+            Icon(
+                Icons.AutoMirrored.Filled.ArrowBack,
+                contentDescription = "Back",
+                tint = c.text,
+            )
+        }
+        Spacer(Modifier.height(10.dp))
         Text("You might want to say", style = DisplayLarge, color = c.text)
         Spacer(Modifier.height(16.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            Modifier.horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
             chips.forEach { chip ->
-                GlassChip(chip, selected = chip == selectedChip) { onChip(chip) }
+                GlassChip(chip, selected = chip.equals(selectedChip, ignoreCase = true)) { onChip(chip) }
             }
         }
         Spacer(Modifier.height(28.dp))
@@ -115,12 +125,12 @@ fun HomeScreen(
             ) {
                 ActivityCell(
                     icon = Icons.Filled.AutoAwesome,
-                    label = if (history.any { it.enhanced }) "AI-enhanced" else "AI-enhanced",
+                    label = if (enhancedCount > 0) "AI-enhanced · $enhancedCount" else "AI-enhanced",
                     modifier = Modifier.weight(1f),
                 )
                 ActivityCell(
                     icon = Icons.Filled.Edit,
-                    label = if (history.any { it.edited }) "Edited" else "Edited",
+                    label = if (editedCount > 0) "Edited · $editedCount" else "Edited",
                     modifier = Modifier.weight(1f),
                 )
                 GlassIconButton(
@@ -142,7 +152,7 @@ fun HomeScreen(
                         StatCell("Limit", "$wordsLimit", Modifier.weight(1f))
                     }
                     Spacer(Modifier.height(14.dp))
-                    Box(Modifier.fillMaxWidth().height(Dp.Hairline).background(c.hairline))
+                    Box(Modifier.fillMaxWidth().height(1.dp).background(c.hairline))
                     Spacer(Modifier.height(14.dp))
                     Row {
                         StatCell("Apps", "$appCount", Modifier.weight(1f), dim = true)
@@ -158,32 +168,36 @@ fun HomeScreen(
                     }
                     else -> {
                         DictateCapsule(
-                            text = ui.liveText.ifBlank { ui.error ?: "Hold to speak" },
+                            text = ui.liveText.ifBlank { ui.error ?: "Tap to speak" },
                             onHoldStart = onHoldStart,
-                            onHoldEnd = onHoldEnd,
                         )
                     }
                 }
             }
         }
         Spacer(Modifier.height(18.dp))
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceEvenly,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            ToolbarIcon(Icons.Filled.AutoAwesome, "Enhance", onOpenStyle)
-            ToolbarIcon(Icons.Outlined.EmojiEmotions, "Snippets", onOpenStyle)
-            ToolbarIcon(Icons.Filled.ContentCopy, "Copy") {
-                val t = ui.finalText.ifBlank { history.firstOrNull()?.text.orEmpty() }
-                if (t.isNotBlank()) {
-                    clip.setText(AnnotatedString(t))
-                    onCopy(t)
+        GlassSurface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(28.dp)) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                ToolbarIcon(Icons.Filled.AutoAwesome, "Enhance", onOpenStyle)
+                ToolbarIcon(Icons.Outlined.EmojiEmotions, "Snippets", onOpenStyle)
+                ToolbarIcon(Icons.Filled.ContentCopy, "Copy") {
+                    val t = ui.finalText.ifBlank { history.firstOrNull()?.text.orEmpty() }
+                    if (t.isNotBlank()) {
+                        clip.setText(AnnotatedString(t))
+                        onCopy(t)
+                    }
                 }
+                ToolbarIcon(Icons.Outlined.FilterNone, "History", onOpenHistory)
+                ToolbarIcon(Icons.Filled.Settings, "Settings", onOpenSettings)
+                ToolbarIcon(Icons.Filled.MoreHoriz, "More", onOpenSettings)
             }
-            ToolbarIcon(Icons.Outlined.FilterNone, "History", onOpenHistory)
-            ToolbarIcon(Icons.Filled.Settings, "Settings", onOpenSettings)
-            ToolbarIcon(Icons.Filled.MoreHoriz, "More", onOpenSettings)
         }
         Spacer(Modifier.height(24.dp))
         history.take(3).forEach { row ->
@@ -191,7 +205,12 @@ fun HomeScreen(
                 Modifier
                     .fillMaxWidth()
                     .padding(bottom = 8.dp)
-                    .pointerInput(row.id) { detectTapGestures { clip.setText(AnnotatedString(row.text)); onCopy(row.text) } },
+                    .pointerInput(row.id) {
+                        detectTapGestures {
+                            clip.setText(AnnotatedString(row.text))
+                            onCopy(row.text)
+                        }
+                    },
             ) {
                 Column(Modifier.padding(14.dp)) {
                     Text(row.text, color = c.text, fontSize = 14.sp, maxLines = 3)
@@ -200,7 +219,6 @@ fun HomeScreen(
                 }
             }
         }
-        Spacer(Modifier.height(96.dp))
     }
 }
 
@@ -210,7 +228,7 @@ private fun ActivityCell(icon: ImageVector, label: String, modifier: Modifier = 
     Row(modifier, verticalAlignment = Alignment.CenterVertically) {
         Icon(icon, contentDescription = null, tint = c.text, modifier = Modifier.size(18.dp))
         Spacer(Modifier.width(8.dp))
-        Text(label, color = c.text, fontSize = 15.sp)
+        Text(label, color = c.text, fontSize = 15.sp, maxLines = 1)
     }
 }
 
@@ -231,7 +249,7 @@ private fun StatCell(label: String, value: String, modifier: Modifier = Modifier
 }
 
 @Composable
-private fun DictateCapsule(text: String, onHoldStart: () -> Unit, onHoldEnd: () -> Unit) {
+private fun DictateCapsule(text: String, onHoldStart: () -> Unit) {
     val c = LocalMsColors.current
     val shape = RoundedCornerShape(28.dp)
     Row(
@@ -245,18 +263,14 @@ private fun DictateCapsule(text: String, onHoldStart: () -> Unit, onHoldEnd: () 
                 detectTapGestures(
                     onPress = {
                         onHoldStart()
-                        try {
-                            tryAwaitRelease()
-                        } finally {
-                            onHoldEnd()
-                        }
+                        tryAwaitRelease()
                     },
                 )
             }
             .padding(horizontal = 18.dp),
     ) {
         Text(text, color = Color.White, fontSize = 16.sp, modifier = Modifier.weight(1f), maxLines = 1)
-        Icon(Icons.Filled.Mic, contentDescription = "Hold to speak", tint = Color.White)
+        Icon(Icons.Filled.Mic, contentDescription = "Tap to speak", tint = Color.White)
         Spacer(Modifier.width(8.dp))
         Icon(Icons.Filled.MoreHoriz, contentDescription = null, tint = Color.White.copy(alpha = 0.8f))
     }
@@ -275,31 +289,24 @@ private fun ConfirmRow(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Box(
-            Modifier
-                .size(48.dp)
-                .clip(CircleShape)
-                .background(c.glassFill)
-                .border(Dp.Hairline, c.hairline, CircleShape)
-                .pointerInput(Unit) { detectTapGestures { onCancel() } },
+        GlassIconButton(onClick = onCancel, modifier = Modifier.size(48.dp)) {
+            Icon(Icons.Filled.Close, null, tint = c.text)
+        }
+        GlassSurface(
+            Modifier.weight(1f).height(48.dp),
+            shape = RoundedCornerShape(24.dp),
             contentAlignment = Alignment.Center,
-        ) { Icon(Icons.Filled.Close, null, tint = c.text) }
-        Box(
-            Modifier
-                .weight(1f)
-                .height(48.dp)
-                .clip(RoundedCornerShape(24.dp))
-                .background(c.glassFill)
-                .border(Dp.Hairline, c.hairline, RoundedCornerShape(24.dp))
-                .padding(horizontal = 12.dp),
-            contentAlignment = Alignment.Center,
-        ) { RibbonWaveform(ui.levels) }
+        ) {
+            Box(Modifier.padding(horizontal = 12.dp), contentAlignment = Alignment.Center) {
+                RibbonWaveform(ui.levels)
+            }
+        }
         Box(
             Modifier
                 .size(48.dp)
                 .clip(CircleShape)
                 .background(Orange)
-                .pointerInput(Unit) {
+                .pointerInput(ui.phase) {
                     detectTapGestures {
                         if (ui.phase == DictationPhase.Confirm) onConfirm() else onHoldEnd()
                     }
@@ -312,7 +319,7 @@ private fun ConfirmRow(
 @Composable
 private fun ToolbarIcon(icon: ImageVector, label: String, onClick: () -> Unit) {
     val c = LocalMsColors.current
-    GlassIconButton(onClick, Modifier.size(44.dp)) {
-        Icon(icon, label, tint = c.text, modifier = Modifier.size(20.dp))
+    IconButton(onClick = onClick, modifier = Modifier.size(48.dp)) {
+        Icon(icon, label, tint = c.text, modifier = Modifier.size(22.dp))
     }
 }

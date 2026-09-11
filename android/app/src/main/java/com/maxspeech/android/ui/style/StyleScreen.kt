@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.BasicTextField
@@ -57,8 +58,10 @@ fun StyleScreen(
         Modifier
             .fillMaxSize()
             .background(c.bg)
+            .statusBarsPadding()
             .verticalScroll(rememberScrollState())
-            .padding(20.dp),
+            .padding(horizontal = 20.dp)
+            .padding(top = 12.dp, bottom = 120.dp),
     ) {
         Text("Style", style = DisplayLarge, color = c.text)
         Spacer(Modifier.height(8.dp))
@@ -164,6 +167,6 @@ fun StyleScreen(
                 }
             }
         }
-        Spacer(Modifier.height(96.dp))
+        Spacer(Modifier.height(24.dp))
     }
 }

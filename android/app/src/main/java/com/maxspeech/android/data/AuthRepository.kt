@@ -50,31 +50,24 @@ class AuthRepository(
 
     suspend fun current(): AuthUser? = user.first()
 
-    suspend fun signInLocal(): AuthUser {
-        val user = AuthUser(
-            id = "local-user",
-            email = "local@maxspeech.app",
-            username = "Local",
-            planTier = "pro",
-            local = true,
-        )
-        persist(user)
-        settings.setLocalMode(true)
-        return user
-    }
-
     suspend fun signIn(email: String, password: String): AuthUser = withContext(Dispatchers.IO) {
+        val clean = email.trim().lowercase()
+        if (!clean.contains("@") || password.isBlank()) {
+            throw IllegalStateException("Enter your email and password.")
+        }
         val body = JSONObject()
-            .put("email", email.trim().lowercase())
+            .put("email", clean)
             .put("password", password)
             .toString()
         val req = authRequest("auth/v1/token?grant_type=password", body)
         val json = execute(req)
-        val sessionUser = json.getJSONObject("user")
+        val sessionUser = json.optJSONObject("user")
+            ?: throw IllegalStateException("Sign in failed — try again.")
         val token = json.optString("access_token").ifBlank { null }
+            ?: throw IllegalStateException("Sign in failed — try again.")
         val profile = ensureProfile(
             sessionUser.getString("id"),
-            sessionUser.optString("email", email.trim().lowercase()),
+            sessionUser.optString("email", clean),
             sessionUser.optJSONObject("user_metadata")?.optString("username"),
             token,
         )
@@ -87,6 +80,9 @@ class AuthRepository(
         withContext(Dispatchers.IO) {
             val cleanEmail = email.trim().lowercase()
             val cleanUser = username.trim().ifBlank { cleanEmail.substringBefore("@") }
+            if (!cleanEmail.contains("@")) throw IllegalStateException("Enter a valid email.")
+            if (password.length < 6) throw IllegalStateException("Password must be at least 6 characters.")
+            if (cleanUser.length < 2) throw IllegalStateException("Pick a username.")
             val body = JSONObject()
                 .put("email", cleanEmail)
                 .put("password", password)
@@ -193,23 +189,41 @@ class AuthRepository(
             .header("apikey", Secrets.SUPABASE_ANON_KEY)
             .header("Authorization", "Bearer ${Secrets.SUPABASE_ANON_KEY}")
             .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
             .post(json.toRequestBody(JSON))
             .build()
 
     private fun execute(request: Request): JSONObject {
-        http.newCall(request).execute().use { resp ->
-            val text = resp.body?.string().orEmpty()
-            if (!resp.isSuccessful) {
-                val msg = runCatching { JSONObject(text).optString("error_description") }
-                    .getOrNull()
-                    ?.ifBlank { null }
-                    ?: runCatching { JSONObject(text).optJSONObject("error")?.optString("message") }
-                        .getOrNull()
-                    ?: runCatching { JSONObject(text).optString("msg") }.getOrNull()
-                    ?: "Auth failed (${resp.code})"
-                throw IllegalStateException(msg)
-            }
+        val resp = try {
+            http.newCall(request).execute()
+        } catch (_: java.io.IOException) {
+            throw IllegalStateException("Can't reach MaxSpeech. Check your connection.")
+        }
+        resp.use { r ->
+            val text = r.body?.string().orEmpty()
+            if (!r.isSuccessful) throw IllegalStateException(authErrorMessage(text, r.code))
             return if (text.isBlank()) JSONObject() else JSONObject(text)
+        }
+    }
+
+    private fun authErrorMessage(text: String, code: Int): String {
+        val json = runCatching { JSONObject(text) }.getOrNull()
+            ?: return if (code == 0) "Can't reach MaxSpeech. Check your connection." else "Auth failed ($code)"
+        val desc = json.optString("error_description").ifBlank { null }
+        val message = json.optString("message").ifBlank { null }
+        val msg = json.optString("msg").ifBlank { null }
+        val err = when (val raw = json.opt("error")) {
+            is String -> raw.ifBlank { null }
+            is JSONObject -> raw.optString("message").ifBlank { null }
+            else -> null
+        }
+        return when {
+            json.optString("error_code") == "invalid_credentials" -> "Wrong email or password."
+            !desc.isNullOrBlank() -> desc
+            !message.isNullOrBlank() -> message
+            !msg.isNullOrBlank() -> msg
+            !err.isNullOrBlank() -> err
+            else -> "Auth failed ($code)"
         }
     }
 

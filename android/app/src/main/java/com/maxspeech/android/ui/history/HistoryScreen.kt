@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -50,7 +51,9 @@ fun HistoryScreen(
         Modifier
             .fillMaxSize()
             .background(c.bg)
-            .padding(horizontal = 20.dp, vertical = 16.dp),
+            .statusBarsPadding()
+            .padding(horizontal = 20.dp)
+            .padding(top = 12.dp, bottom = 8.dp),
     ) {
         Text("History", style = DisplayLarge, color = c.text)
         Spacer(Modifier.height(16.dp))
@@ -71,7 +74,21 @@ fun HistoryScreen(
             )
         }
         Spacer(Modifier.height(12.dp))
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        if (filtered.isEmpty()) {
+            Column(
+                Modifier.fillMaxWidth().padding(top = 48.dp),
+                horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
+            ) {
+                Text(
+                    if (items.isEmpty()) "No dictations yet" else "No matches",
+                    color = c.textDim,
+                )
+            }
+        } else {
+        LazyColumn(
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 120.dp),
+        ) {
             items(filtered, key = { it.id }) { row ->
                 GlassSurface(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp)) {
@@ -90,6 +107,7 @@ fun HistoryScreen(
                     }
                 }
             }
+        }
         }
     }
 }

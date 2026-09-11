@@ -3,19 +3,33 @@ package com.maxspeech.android.overlay
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.graphics.PixelFormat
 import android.os.Build
 import android.view.Gravity
 import android.view.WindowManager
 import android.widget.FrameLayout
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.unit.dp
 import androidx.core.app.NotificationCompat
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.ViewModelStoreOwner
+import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.setViewTreeLifecycleOwner
 import androidx.lifecycle.setViewTreeViewModelStoreOwner
 import androidx.savedstate.SavedStateRegistry
@@ -27,8 +41,12 @@ import com.maxspeech.android.MaxSpeechApp
 import com.maxspeech.android.R
 import com.maxspeech.android.a11y.TextInjector
 import com.maxspeech.android.data.AppSettings
+import com.maxspeech.android.pipeline.DictationPhase
 import com.maxspeech.android.ui.overlay.OverlayCapsule
 import com.maxspeech.android.ui.theme.MaxSpeechTheme
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.launch
 
 class OverlayService : LifecycleService(), SavedStateRegistryOwner, ViewModelStoreOwner {
     private val savedStateRegistryController = SavedStateRegistryController.create(this)
@@ -40,6 +58,9 @@ class OverlayService : LifecycleService(), SavedStateRegistryOwner, ViewModelSto
 
     private var windowManager: WindowManager? = null
     private var host: FrameLayout? = null
+    private var layoutParams: WindowManager.LayoutParams? = null
+    private var placeJob: Job? = null
+    private var recording = false
 
     init {
         savedStateRegistryController.performAttach()
@@ -52,6 +73,7 @@ class OverlayService : LifecycleService(), SavedStateRegistryOwner, ViewModelSto
     }
 
     override fun onDestroy() {
+        placeJob?.cancel()
         detachOverlay()
         overlayViewModelStore.clear()
         super.onDestroy()
@@ -61,6 +83,15 @@ class OverlayService : LifecycleService(), SavedStateRegistryOwner, ViewModelSto
         super.onStartCommand(intent, flags, startId)
         when (intent?.action) {
             ACTION_STOP -> stopSelf()
+            ACTION_MIC_ON -> {
+                recording = true
+                startForegroundInternal()
+                attachOverlay()
+            }
+            ACTION_MIC_OFF -> {
+                recording = false
+                startForegroundInternal()
+            }
             else -> attachOverlay()
         }
         return START_STICKY
@@ -88,19 +119,19 @@ class OverlayService : LifecycleService(), SavedStateRegistryOwner, ViewModelSto
             .setSilent(true)
             .build()
         if (Build.VERSION.SDK_INT >= 34) {
-            startForeground(
-                42,
-                notif,
-                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-                    or android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
-            )
+            var type = ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+            if (recording) type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            startForeground(42, notif, type)
         } else {
             startForeground(42, notif)
         }
     }
 
     private fun attachOverlay() {
-        if (host != null) return
+        if (host != null) {
+            startPlacing()
+            return
+        }
         val wm = getSystemService(WINDOW_SERVICE) as WindowManager
         windowManager = wm
         val params = WindowManager.LayoutParams(
@@ -109,11 +140,13 @@ class OverlayService : LifecycleService(), SavedStateRegistryOwner, ViewModelSto
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT,
         )
-        params.gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
-        params.y = 140
+        params.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+        params.y = resources.displayMetrics.heightPixels / 2
+        layoutParams = params
         val compose = ComposeView(this).apply {
             setViewTreeLifecycleOwner(this@OverlayService)
             setViewTreeSavedStateRegistryOwner(this@OverlayService)
@@ -123,33 +156,99 @@ class OverlayService : LifecycleService(), SavedStateRegistryOwner, ViewModelSto
                     initial = AppSettings(),
                 )
                 val ui by MaxSpeechApp.instance.dictation.ui.collectAsState()
-                MaxSpeechTheme(theme = settings.theme, glassAlpha = settings.glassAlpha) {
-                    OverlayCapsule(
-                        ui = ui,
-                        glassAlpha = settings.glassAlpha,
-                        onHoldStart = {
-                            val pkg = TextInjector.foregroundPackage().orEmpty()
-                            MaxSpeechApp.instance.dictation.start(pkg, paste = true)
-                        },
-                        onHoldEnd = { MaxSpeechApp.instance.dictation.stopAndFinish() },
-                        onCancel = { MaxSpeechApp.instance.dictation.cancel() },
-                        onConfirm = { MaxSpeechApp.instance.dictation.confirmPaste() },
-                    )
+                val focus by TextInjector.inputFocus.collectAsState()
+                val a11yOn by TextInjector.a11yBound.collectAsState(initial = false)
+                val dictating = ui.phase != DictationPhase.Idle && ui.phase != DictationPhase.Error
+                val overOtherApp = focus.editable && focus.packageName != null &&
+                    focus.packageName != packageName
+                val fromOverlay = dictating && MaxSpeechApp.instance.dictation.pasteIntoFocusedApp
+                val visible = overOtherApp || fromOverlay || !a11yOn
+                MaxSpeechTheme(
+                    theme = settings.theme,
+                    glassAlpha = settings.glassAlpha,
+                    blurStrength = settings.blurStrength,
+                ) {
+                    AnimatedVisibility(
+                        visible = visible,
+                        enter = fadeIn(tween(200)) + slideInVertically(tween(220)) { it / 3 } +
+                            scaleIn(tween(220), initialScale = 0.96f),
+                        exit = fadeOut(tween(160)) + slideOutVertically(tween(180)) { it / 4 } +
+                            scaleOut(tween(160), targetScale = 0.96f),
+                    ) {
+                        OverlayCapsule(
+                            ui = ui,
+                            glassAlpha = settings.glassAlpha,
+                            onHoldStart = {
+                                val pkg = TextInjector.foregroundPackage().orEmpty()
+                                notifyRecording(this@OverlayService, true)
+                                MaxSpeechApp.instance.dictation.start(pkg, paste = true)
+                            },
+                            onHoldEnd = { MaxSpeechApp.instance.dictation.stopAndFinish() },
+                            onCancel = {
+                                MaxSpeechApp.instance.dictation.cancel()
+                                notifyRecording(this@OverlayService, false)
+                            },
+                            onConfirm = {
+                                MaxSpeechApp.instance.dictation.confirmPaste()
+                                notifyRecording(this@OverlayService, false)
+                            },
+                            modifier = Modifier.padding(8.dp),
+                        )
+                    }
                 }
             }
         }
         val frame = FrameLayout(this).apply { addView(compose) }
         host = frame
         wm.addView(frame, params)
+        startPlacing()
+    }
+
+    private fun startPlacing() {
+        if (placeJob?.isActive == true) return
+        val app = MaxSpeechApp.instance
+        placeJob = lifecycleScope.launch {
+            combine(app.dictation.ui, TextInjector.inputFocus) { ui, focus -> ui to focus }
+                .collect { (ui, focus) ->
+                    val params = layoutParams ?: return@collect
+                    val dm = resources.displayMetrics
+                    val overlayH = (68 * dm.density).toInt()
+                    val pad = (12 * dm.density).toInt()
+                    val y = when {
+                        ui.phase != DictationPhase.Idle -> {
+                            if (focus.imeTop > overlayH) focus.imeTop - overlayH - pad
+                            else (dm.heightPixels * 0.62f).toInt()
+                        }
+                        focus.imeTop > overlayH -> focus.imeTop - overlayH - pad
+                        focus.editable && focus.fieldTop > overlayH + pad ->
+                            (focus.fieldTop - overlayH - pad).coerceAtLeast(pad)
+                        else -> (dm.heightPixels * 0.62f).toInt()
+                    }
+                    params.y = y.coerceIn(pad, (dm.heightPixels - overlayH - pad).coerceAtLeast(pad))
+                    runCatching { windowManager?.updateViewLayout(host, params) }
+                }
+        }
     }
 
     private fun detachOverlay() {
         host?.let { runCatching { windowManager?.removeView(it) } }
         host = null
+        layoutParams = null
     }
 
     companion object {
         const val CHANNEL = "maxspeech_overlay"
         const val ACTION_STOP = "com.maxspeech.android.STOP_OVERLAY"
+        const val ACTION_MIC_ON = "com.maxspeech.android.OVERLAY_MIC_ON"
+        const val ACTION_MIC_OFF = "com.maxspeech.android.OVERLAY_MIC_OFF"
+
+        fun notifyRecording(context: Context, on: Boolean) {
+            val intent = Intent(context, OverlayService::class.java)
+                .setAction(if (on) ACTION_MIC_ON else ACTION_MIC_OFF)
+            runCatching {
+                if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent)
+                else context.startService(intent)
+            }
+        }
     }
 }

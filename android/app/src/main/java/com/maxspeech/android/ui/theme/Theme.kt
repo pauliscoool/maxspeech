@@ -36,6 +36,7 @@ data class MsColors(
 
 val LocalMsColors = staticCompositionLocalOf { darkColors(0.50f) }
 val LocalGlassAlpha = staticCompositionLocalOf { 0.50f }
+val LocalBlurStrength = staticCompositionLocalOf { 0.70f }
 
 fun darkColors(glass: Float) = MsColors(
     bg = Color(0xFF000000),
@@ -93,6 +94,7 @@ val TitleSmall = TextStyle(
 fun MaxSpeechTheme(
     theme: UiTheme,
     glassAlpha: Float,
+    blurStrength: Float = 0.70f,
     content: @Composable () -> Unit,
 ) {
     val colors = when (theme) {
@@ -122,6 +124,7 @@ fun MaxSpeechTheme(
     CompositionLocalProvider(
         LocalMsColors provides colors,
         LocalGlassAlpha provides glassAlpha,
+        LocalBlurStrength provides blurStrength,
     ) {
         MaterialTheme(colorScheme = scheme, content = content)
     }
