@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { friendlyAppName } from "../../lib/appNames";
 import Toggle from "../../components/Toggle";
@@ -21,6 +21,8 @@ const TONES = [
 ] as const;
 
 type ToneFilter = "all" | (typeof TONES)[number]["id"];
+
+const PAGE_SIZE = 10;
 
 const BROWSER_EXES = new Set(
   [
@@ -98,6 +100,8 @@ export default function StylePage() {
   const [savingKey, setSavingKey] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [toneFilter, setToneFilter] = useState<ToneFilter>("all");
+  const [shown, setShown] = useState(PAGE_SIZE);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
 
   async function load() {
     try {
@@ -125,6 +129,33 @@ export default function StylePage() {
       );
     });
   }, [groups, query, toneFilter]);
+
+  useEffect(() => {
+    setShown(PAGE_SIZE);
+  }, [query, toneFilter]);
+
+  const visible = filtered.slice(0, shown);
+  const hasMore = shown < filtered.length;
+
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el || !hasMore) return;
+    let root: Element | null = el.parentElement;
+    while (root) {
+      const { overflowY } = getComputedStyle(root);
+      if (overflowY === "auto" || overflowY === "scroll") break;
+      root = root.parentElement;
+    }
+    const observer = new IntersectionObserver(
+      (items) => {
+        if (!items.some((i) => i.isIntersecting)) return;
+        setShown((n) => n + PAGE_SIZE);
+      },
+      { root, rootMargin: "220px 0px", threshold: 0 },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [hasMore, shown]);
 
   async function updateTone(group: DisplayGroup, tone: string) {
     setSavingKey(group.key);
@@ -196,19 +227,20 @@ export default function StylePage() {
           ))}
         </div>
         <p className="text-xs text-[var(--ms-text-dim)]">
-          Showing {filtered.length} apps · {profiles.length} match rules under
-          the hood
+          Showing {visible.length}
+          {filtered.length !== visible.length ? ` of ${filtered.length}` : ""}{" "}
+          apps · {profiles.length} match rules under the hood
         </p>
       </div>
 
       <div className="space-y-3">
-        {filtered.map((g) => {
+        {visible.map((g, index) => {
           const toneMeta = TONES.find((t) => t.id === g.tone) || TONES[4];
           const busy = savingKey === g.key;
           return (
             <div
               key={g.key}
-              className={`surface-card p-4 space-y-3 ${!g.enabled ? "opacity-55" : ""}`}
+              className={`surface-card style-card p-4 space-y-3 ${index >= PAGE_SIZE ? "is-more" : ""} ${!g.enabled ? "opacity-55" : ""}`}
             >
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0">
@@ -262,6 +294,12 @@ export default function StylePage() {
             No presets match that search.
           </div>
         )}
+        {hasMore ? <div ref={sentinelRef} className="h-8" aria-hidden /> : null}
+        {hasMore ? (
+          <p className="text-center text-[11px] text-[var(--ms-text-dim)] pb-2">
+            Scroll for more
+          </p>
+        ) : null}
       </div>
     </div>
   );

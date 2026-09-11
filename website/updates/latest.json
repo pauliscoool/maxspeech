@@ -1,16 +1,16 @@
 {
-    "url":  "https://maxspeech.vercel.app/downloads/MaxSpeech_x64-setup.exe",
-    "filename":  "MaxSpeech_0.1.60_x64-setup.exe",
-    "size":  221155774,
-    "version":  "0.1.60",
-    "notes":  "MaxSpeech 0.1.60 - page spring motion, account menu, free 2-minute clock, Android APK",
-    "github":  "https://github.com/pauliscoool/maxspeech/releases/latest",
-    "sha256":  "f0057662b1ca113181c71b101ff651590ebf6f681b176487ee509742f0a42615",
-    "platforms":  {
-                      "linux":  "https://maxspeech.vercel.app/downloads/MaxSpeech_0.1.1_amd64.AppImage",
-                      "macos":  "https://maxspeech.vercel.app/mac",
-                      "android":  "https://maxspeech.vercel.app/android",
-                      "windows":  "https://maxspeech.vercel.app/downloads/MaxSpeech_x64-setup.exe"
-                  },
-    "download":  "https://maxspeech.vercel.app/downloads/MaxSpeech_x64-setup.exe"
+  "version": "0.1.60",
+  "notes": "MaxSpeech 0.1.60 - page spring motion, account menu, free 2-minute clock, Android APK",
+  "filename": "MaxSpeech_x64-setup.exe",
+  "size": 221155774,
+  "sha256": "f0057662b1ca113181c71b101ff651590ebf6f681b176487ee509742f0a42615",
+  "url": "https://github.com/pauliscoool/maxspeech/releases/latest/download/MaxSpeech_x64-setup.exe",
+  "download": "https://github.com/pauliscoool/maxspeech/releases/latest/download/MaxSpeech_x64-setup.exe",
+  "github": "https://github.com/pauliscoool/maxspeech/releases/latest",
+  "platforms": {
+    "windows": "https://github.com/pauliscoool/maxspeech/releases/latest/download/MaxSpeech_x64-setup.exe",
+    "macos": "https://maxspeech.vercel.app/mac",
+    "linux": "https://maxspeech.vercel.app/downloads/MaxSpeech_0.1.1_amd64.AppImage",
+    "android": "https://maxspeech.vercel.app/android"
+  }
 }

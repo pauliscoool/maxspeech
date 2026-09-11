@@ -394,6 +394,15 @@ html[data-window="onboarding"] body {
   animation-name: msPopRow;
 }
 
+.style-card {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 148px;
+}
+
+.page-enter .style-card.is-more {
+  animation: none !important;
+}
+
 .page-enter .page-shell > section:nth-child(1) .settings-group,
 .page-enter .space-y-7 > *:nth-child(1) .settings-group {
   animation-delay: 0.08s;

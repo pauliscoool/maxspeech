@@ -376,8 +376,21 @@ main,
   transition: transform 0.2s ease;
 }
 
-.btn-primary:hover {
-  transform: translateY(-2px);
+.btn-primary.is-soon {
+  pointer-events: none;
+  cursor: default;
+  background: linear-gradient(120deg, rgba(46, 211, 198, 0.22), rgba(249, 115, 22, 0.2));
+  color: var(--text);
+  box-shadow: none;
+}
+
+.btn-primary.is-soon:hover {
+  transform: none;
+}
+
+html.is-mobile-os .cta-platforms,
+html.is-mobile-os .install-help {
+  display: none !important;
 }
 
 .btn-primary:focus-visible,

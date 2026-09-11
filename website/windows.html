@@ -39,8 +39,7 @@
       <a
         class="btn-primary"
         id="dl"
-        href="/downloads/MaxSpeech_x64-setup.exe"
-        download="MaxSpeech_x64-setup.exe"
+        href="https://github.com/pauliscoool/maxspeech/releases/latest/download/MaxSpeech_x64-setup.exe"
       >
         Download MaxSpeech for Windows
       </a>
@@ -108,7 +107,7 @@
         </ul>
         <p class="get-alt">
           Direct link:
-          <a href="/downloads/MaxSpeech_x64-setup.exe">/downloads/MaxSpeech_x64-setup.exe</a>
+          <a href="https://github.com/pauliscoool/maxspeech/releases/latest/download/MaxSpeech_x64-setup.exe">GitHub Releases installer</a>
         </p>
       </div>
 
@@ -120,47 +119,68 @@
 
     <script>
       (function () {
-        var STABLE = "/downloads/MaxSpeech_x64-setup.exe";
+        var GH =
+          "https://github.com/pauliscoool/maxspeech/releases/latest/download/MaxSpeech_x64-setup.exe";
         var btn = document.getElementById("dl");
         var verEl = document.getElementById("dl-ver");
 
-        function applyVersion(ver) {
-          // Always hit the stable file (no 307). Use a versioned download=
-          // name so Downloads stays readable per release.
-          var name = "MaxSpeech_" + ver + "_x64-setup.exe";
-          btn.href = STABLE;
-          btn.setAttribute("download", name);
+        function winUrl(j) {
+          var u =
+            (j && (j.download || j.url || (j.platforms && j.platforms.windows))) ||
+            GH;
+          if (/maxspeech\.vercel\.app\/downloads\/.*\.exe/i.test(String(u))) return GH;
+          if (/^\/downloads\/.*\.exe/i.test(String(u))) return GH;
+          return u;
+        }
+
+        function applyVersion(ver, href) {
+          btn.href = href;
+          btn.removeAttribute("download");
           if (verEl) {
             verEl.hidden = false;
             verEl.textContent = "Version " + ver;
           }
-          return { href: STABLE, name: name };
         }
 
         function kick(href) {
-          // Full navigation is more reliable than a synthetic <a download>
-          // click (popup blockers / cross-origin quirks). Content-Disposition
-          // forces a file save instead of navigating away.
           window.location.assign(href);
         }
 
-        fetch("/updates/latest.json", { cache: "no-store" })
-          .then(function (r) {
-            return r.ok ? r.json() : Promise.reject();
-          })
+        function loadLatest() {
+          try {
+            var cached = sessionStorage.getItem("ms-latest-v2");
+            if (cached) {
+              var parsed = JSON.parse(cached);
+              if (parsed && parsed.version) return Promise.resolve(parsed);
+            }
+          } catch (e) {}
+          return fetch("/updates/latest.json")
+            .then(function (r) {
+              return r.ok ? r.json() : Promise.reject();
+            })
+            .then(function (j) {
+              try {
+                sessionStorage.setItem("ms-latest-v2", JSON.stringify(j));
+              } catch (e) {}
+              return j;
+            });
+        }
+
+        loadLatest()
           .then(function (j) {
             var ver = String((j && j.version) || "").trim();
             if (!/^\d+\.\d+\.\d+$/.test(ver)) throw new Error("bad version");
-            applyVersion(ver);
+            var href = winUrl(j);
+            applyVersion(ver, href);
             setTimeout(function () {
-              kick(STABLE);
+              kick(href);
             }, 300);
           })
           .catch(function () {
-            btn.href = STABLE;
-            btn.setAttribute("download", "MaxSpeech_x64-setup.exe");
+            btn.href = GH;
+            btn.removeAttribute("download");
             setTimeout(function () {
-              kick(STABLE);
+              kick(GH);
             }, 300);
           });
       })();

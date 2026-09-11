@@ -2,8 +2,13 @@
   "cleanUrls": true,
   "redirects": [
     {
+      "source": "/downloads/MaxSpeech_x64-setup.exe",
+      "destination": "https://github.com/pauliscoool/maxspeech/releases/latest/download/MaxSpeech_x64-setup.exe",
+      "permanent": false
+    },
+    {
       "source": "/downloads/MaxSpeech_:version(\\d+\\.\\d+\\.\\d+)_x64-setup.exe",
-      "destination": "/downloads/MaxSpeech_x64-setup.exe",
+      "destination": "https://github.com/pauliscoool/maxspeech/releases/latest/download/MaxSpeech_x64-setup.exe",
       "permanent": false
     }
   ],
@@ -133,7 +138,119 @@
       "headers": [
         {
           "key": "Cache-Control",
-          "value": "public, max-age=60, must-revalidate"
+          "value": "public, max-age=120, stale-while-revalidate=3600"
+        }
+      ]
+    },
+    {
+      "source": "/sw.js",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=0, must-revalidate"
+        },
+        {
+          "key": "Service-Worker-Allowed",
+          "value": "/"
+        }
+      ]
+    },
+    {
+      "source": "/styles.css",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=86400, stale-while-revalidate=604800"
+        }
+      ]
+    },
+    {
+      "source": "/get.css",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=86400, stale-while-revalidate=604800"
+        }
+      ]
+    },
+    {
+      "source": "/app.js",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=86400, stale-while-revalidate=604800"
+        }
+      ]
+    },
+    {
+      "source": "/logo.png",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=604800, stale-while-revalidate=2592000"
+        }
+      ]
+    },
+    {
+      "source": "/logo@2x.png",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=604800, stale-while-revalidate=2592000"
+        }
+      ]
+    },
+    {
+      "source": "/android",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=0, s-maxage=120, stale-while-revalidate=86400"
+        }
+      ]
+    },
+    {
+      "source": "/mac",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=0, s-maxage=120, stale-while-revalidate=86400"
+        }
+      ]
+    },
+    {
+      "source": "/linux",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=0, s-maxage=120, stale-while-revalidate=86400"
+        }
+      ]
+    },
+    {
+      "source": "/windows",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=0, s-maxage=120, stale-while-revalidate=86400"
+        }
+      ]
+    },
+    {
+      "source": "/",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=0, s-maxage=120, stale-while-revalidate=86400"
+        }
+      ]
+    },
+    {
+      "source": "/(.*\\.html)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=0, s-maxage=120, stale-while-revalidate=86400"
         }
       ]
     }
