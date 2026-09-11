@@ -42,16 +42,21 @@
       <img
         id="qr"
         class="android-qr"
-        alt="QR code to open the MaxSpeech Android install page"
+        alt="QR code to download MaxSpeech for Android"
         width="180"
         height="180"
-        src="https://api.qrserver.com/v1/create-qr-code/?size=180x180&bgcolor=07090c&color=2ed3c6&data=https%3A%2F%2Fmaxspeech.vercel.app%2Fandroid"
+        src="https://api.qrserver.com/v1/create-qr-code/?size=180x180&bgcolor=07090c&color=2ed3c6&data=https%3A%2F%2Fmaxspeech.vercel.app%2Fdownloads%2FMaxSpeech.apk"
       />
 
-      <a class="btn-primary" id="dl" href="/downloads/MaxSpeech.apk" download="MaxSpeech.apk">
+      <a
+        class="btn-primary"
+        id="dl"
+        href="/downloads/MaxSpeech.apk?v=0.1.2"
+        download="MaxSpeech.apk"
+      >
         Download MaxSpeech for Android
       </a>
-      <p class="get-alt" id="dl-ver" hidden></p>
+      <p class="get-alt" id="dl-ver">Version 0.1.2 — tap to install on this phone</p>
 
       <ol class="get-steps">
         <li>
@@ -99,23 +104,5 @@
         <a href="/linux">Linux</a> · <a href="/">Home</a>
       </p>
     </main>
-
-    <script>
-      (function () {
-        var btn = document.getElementById("dl");
-        var verEl = document.getElementById("dl-ver");
-        if (verEl) {
-          verEl.hidden = false;
-          verEl.textContent = "APK ready — tap to install on this phone";
-        }
-        if (btn) {
-          btn.href = "/downloads/MaxSpeech.apk?v=0.1.2";
-          btn.setAttribute("download", "MaxSpeech.apk");
-        }
-        if ("serviceWorker" in navigator) {
-          navigator.serviceWorker.register("/sw.js").catch(function () {});
-        }
-      })();
-    </script>
   </body>
 </html>
