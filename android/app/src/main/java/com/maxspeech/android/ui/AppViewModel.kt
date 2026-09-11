@@ -199,7 +199,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         authInfo.value = null
         runCatching { ms.auth.signUp(email, password, username) }
             .onSuccess { (_, confirm) ->
-                if (confirm) authInfo.value = "Check your email to confirm, then sign in."
+                if (confirm) authInfo.value = "Check your email to confirm. The link opens the MaxSpeech website, then sign in here."
             }
             .onFailure { authError.value = it.message ?: "Could not create account" }
         authBusy.value = false
@@ -210,7 +210,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         authError.value = null
         authInfo.value = null
         runCatching { ms.auth.requestPasswordReset(email) }
-            .onSuccess { authInfo.value = "Check your email for a reset link, then sign in." }
+            .onSuccess { authInfo.value = "Check your email. The reset link opens the MaxSpeech website, then sign in here." }
             .onFailure { authError.value = it.message ?: "Could not send reset email" }
         authBusy.value = false
     }

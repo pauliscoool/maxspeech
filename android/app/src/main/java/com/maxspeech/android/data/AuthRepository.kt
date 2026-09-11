@@ -88,7 +88,7 @@ class AuthRepository(
                 .put("password", password)
                 .put("data", JSONObject().put("username", cleanUser))
                 .toString()
-            val json = execute(authRequest("auth/v1/signup", body))
+            val json = execute(authRequest("auth/v1/signup", body, redirect = true))
             val needsConfirm = json.isNull("access_token") || json.optString("access_token").isBlank()
             val userObj = json.optJSONObject("user") ?: JSONObject()
             val token = json.optString("access_token").ifBlank { null }
@@ -117,7 +117,7 @@ class AuthRepository(
         val clean = email.trim().lowercase()
         if (!clean.contains("@")) throw IllegalStateException("Enter the email for your account.")
         val body = JSONObject().put("email", clean).toString()
-        execute(authRequest("auth/v1/recover", body))
+        execute(authRequest("auth/v1/recover", body, redirect = true))
     }
 
     suspend fun signOut() {
@@ -190,15 +190,23 @@ class AuthRepository(
         return AuthUser(id, email, username, "free", accessToken = token)
     }
 
-    private fun authRequest(path: String, json: String): Request =
-        Request.Builder()
-            .url("${Secrets.SUPABASE_URL}/$path")
+    private fun authRequest(path: String, json: String, redirect: Boolean = false): Request {
+        val base = "${Secrets.SUPABASE_URL}/$path"
+        val url = if (redirect) {
+            val sep = if (path.contains("?")) "&" else "?"
+            base + sep + "redirect_to=" + java.net.URLEncoder.encode(Secrets.AUTH_REDIRECT, Charsets.UTF_8.name())
+        } else {
+            base
+        }
+        return Request.Builder()
+            .url(url)
             .header("apikey", Secrets.SUPABASE_ANON_KEY)
             .header("Authorization", "Bearer ${Secrets.SUPABASE_ANON_KEY}")
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
             .post(json.toRequestBody(JSON))
             .build()
+    }
 
     private fun execute(request: Request): JSONObject {
         val resp = try {

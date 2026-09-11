@@ -17,6 +17,7 @@ object Secrets {
     )
 
     const val SUPABASE_URL = "https://eqvmjmejcwkrylqyglfm.supabase.co"
+    const val AUTH_REDIRECT = "https://maxspeech.vercel.app/reset"
     const val SUPABASE_ANON_KEY =
         "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVxdm1qbWVqY3drcnlscXlnbGZtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU1MTA1ODMsImV4cCI6MjEwMTA4NjU4M30.9VauCDSWaAEpSuIkKnPsg9Ap7MLWtXqQSQ8I4xC7_fY"
 
