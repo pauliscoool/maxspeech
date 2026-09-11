@@ -11,6 +11,7 @@ src-tauri/keys/
 website/downloads/MaxSpeech_*_x64-setup.exe
 website/downloads/MaxSpeech_x64-setup.exe
 website/downloads/*.apk
+!website/downloads/MaxSpeech.apk
 android/.gradle/
 android/build/
 android/app/build/
