@@ -69,6 +69,7 @@ fun OnboardingScreen(
     onClearFlash: () -> Unit,
     onMic: () -> Unit,
     onOverlay: () -> Unit,
+    onAppInfo: () -> Unit,
     onA11y: () -> Unit,
     onDone: () -> Unit,
     micGranted: Boolean,
@@ -170,11 +171,10 @@ fun OnboardingScreen(
                             onContinue = onOverlay,
                             onProceed = { step = 4 },
                         )
-                        else -> PermStep(
-                            title = "Accessibility",
-                            body = "Used only to paste into the focused field and to notice when a chat box is focused. Audio never goes through Accessibility.",
+                        else -> A11yPermStep(
                             granted = a11yGranted,
-                            onContinue = onA11y,
+                            onOpenAppInfo = onAppInfo,
+                            onOpenA11y = onA11y,
                             onProceed = onDone,
                         )
                     }
@@ -342,5 +342,56 @@ private fun PermStep(
             fontSize = 13.sp,
             modifier = Modifier.padding(top = 12.dp),
         )
+    }
+}
+
+@Composable
+private fun A11yPermStep(
+    granted: Boolean,
+    onOpenAppInfo: () -> Unit,
+    onOpenA11y: () -> Unit,
+    onProceed: () -> Unit,
+) {
+    val c = LocalMsColors.current
+    Text("Accessibility", style = DisplayLarge, color = c.text)
+    Text(
+        "Sideloaded apps hide this until you unlock it. Used only to paste into the field you’re typing in — audio never goes through Accessibility.",
+        color = c.textDim,
+        fontSize = 15.sp,
+        modifier = Modifier.padding(top = 8.dp, bottom = 16.dp),
+    )
+    Text(
+        "1. Open Settings, search Apps, then open MaxSpeech.\n" +
+            "2. Top-right ⋮ three dots → Allow restricted settings. Don’t tap Clear cache.\n" +
+            "3. Come back here, open Accessibility, find MaxSpeech, turn it on.\n" +
+            "4. Return to this screen — Continue becomes Proceed.\n\n" +
+            "Turn off Wispr Flow / Whisper Flow Accessibility while using MaxSpeech, or the two overlays fight and the app can close.",
+        color = c.textDim,
+        fontSize = 14.sp,
+        modifier = Modifier.padding(bottom = 20.dp).fillMaxWidth(),
+    )
+    if (granted) {
+        Button(
+            onClick = onProceed,
+            colors = ButtonDefaults.buttonColors(containerColor = Turquoise, contentColor = Color.Black),
+            modifier = Modifier.fillMaxWidth().height(52.dp),
+            shape = RoundedCornerShape(28.dp),
+        ) { Text("Proceed") }
+        Text("Turned on — you’re good.", color = c.turquoise, modifier = Modifier.padding(top = 12.dp))
+    } else {
+        Button(
+            onClick = onOpenAppInfo,
+            colors = ButtonDefaults.buttonColors(containerColor = Turquoise, contentColor = Color.Black),
+            modifier = Modifier.fillMaxWidth().height(52.dp),
+            shape = RoundedCornerShape(28.dp),
+        ) { Text("1. Open app info") }
+        Spacer(Modifier.height(10.dp))
+        OutlinedButton(
+            onClick = onOpenA11y,
+            modifier = Modifier.fillMaxWidth().height(52.dp),
+            shape = RoundedCornerShape(28.dp),
+            colors = ButtonDefaults.outlinedButtonColors(contentColor = Turquoise),
+            border = BorderStroke(1.dp, Turquoise),
+        ) { Text("2. Open Accessibility") }
     }
 }

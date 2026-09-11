@@ -114,14 +114,14 @@ fun MaxSpeechRoot(vm: AppViewModel) {
             }
         }
 
-        LaunchedEffect(state.settings.overlayEnabled, overlayOk, state.settings.onboarded, permEpoch) {
+        LaunchedEffect(state.settings.overlayEnabled, overlayOk, state.settings.onboarded) {
             refreshPerms()
             val intent = Intent(ctx, OverlayService::class.java)
             if (state.settings.overlayEnabled && overlayOk && state.settings.onboarded) {
                 if (Build.VERSION.SDK_INT >= 33 && !TextInjector.notificationGranted(ctx)) {
                     notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                 }
-                ctx.startForegroundService(intent)
+                runCatching { ctx.startForegroundService(intent) }
             } else {
                 ctx.stopService(intent)
             }
@@ -159,6 +159,14 @@ fun MaxSpeechRoot(vm: AppViewModel) {
                             ctx.startActivity(
                                 Intent(
                                     AndroidSettings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                    Uri.parse("package:${ctx.packageName}"),
+                                ),
+                            )
+                        },
+                        onAppInfo = {
+                            ctx.startActivity(
+                                Intent(
+                                    AndroidSettings.ACTION_APPLICATION_DETAILS_SETTINGS,
                                     Uri.parse("package:${ctx.packageName}"),
                                 ),
                             )
@@ -259,6 +267,14 @@ fun MaxSpeechRoot(vm: AppViewModel) {
                                     },
                                     onOpenA11ySettings = {
                                         ctx.startActivity(Intent(AndroidSettings.ACTION_ACCESSIBILITY_SETTINGS))
+                                    },
+                                    onOpenAppInfo = {
+                                        ctx.startActivity(
+                                            Intent(
+                                                AndroidSettings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                                Uri.parse("package:${ctx.packageName}"),
+                                            ),
+                                        )
                                     },
                                 )
                             }

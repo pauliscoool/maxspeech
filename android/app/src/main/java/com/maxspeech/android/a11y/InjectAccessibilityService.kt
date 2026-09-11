@@ -6,6 +6,8 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.Rect
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -24,28 +26,36 @@ data class InputFocus(
 )
 
 class InjectAccessibilityService : AccessibilityService() {
+    private val focusHandler = Handler(Looper.getMainLooper())
+    private val publishRunnable = Runnable { publishFocusNow() }
+
     override fun onServiceConnected() {
         instance = this
         _bound.value = true
-        publishFocus()
+        publishFocusNow()
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         val pkg = event?.packageName?.toString().orEmpty()
-        if (pkg.isNotBlank() && pkg != packageName) lastPackage = pkg
+        if (pkg == packageName) return
+        if (pkg.isNotBlank()) lastPackage = pkg
         when (event?.eventType) {
             AccessibilityEvent.TYPE_VIEW_FOCUSED,
             AccessibilityEvent.TYPE_VIEW_CLICKED,
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
             AccessibilityEvent.TYPE_WINDOWS_CHANGED,
             AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED,
-            -> publishFocus()
+            -> {
+                focusHandler.removeCallbacks(publishRunnable)
+                focusHandler.postDelayed(publishRunnable, 80)
+            }
         }
     }
 
     override fun onInterrupt() = Unit
 
     override fun onDestroy() {
+        focusHandler.removeCallbacks(publishRunnable)
         if (instance === this) {
             instance = null
             _bound.value = false
@@ -68,14 +78,14 @@ class InjectAccessibilityService : AccessibilityService() {
         return focused.performAction(AccessibilityNodeInfo.ACTION_PASTE)
     }
 
-    private fun publishFocus() {
+    private fun publishFocusNow() {
         val imeTop = imeTopPx()
         val focused = rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
-        if (focused != null && focused.isEditable) {
+        val pkg = focused?.packageName?.toString()
+        if (focused != null && focused.isEditable && pkg != packageName) {
             val bounds = Rect()
             focused.getBoundsInScreen(bounds)
-            val pkg = focused.packageName?.toString() ?: lastPackage
-            if (pkg != packageName) lastPackage = pkg
+            lastPackage = pkg ?: lastPackage
             _focus.value = InputFocus(
                 editable = true,
                 packageName = pkg,
@@ -85,8 +95,15 @@ class InjectAccessibilityService : AccessibilityService() {
             )
             return
         }
-        if (imeTop > 0) {
-            _focus.value = _focus.value.copy(editable = _focus.value.editable, imeTop = imeTop)
+        val last = _focus.value
+        if (last.editable && last.packageName != null && last.packageName != packageName) {
+            if (pkg == packageName || focused == null || imeTop > 0) {
+                _focus.value = last.copy(imeTop = if (imeTop > 0) imeTop else last.imeTop)
+                return
+            }
+        }
+        if (imeTop > 0 && last.editable) {
+            _focus.value = last.copy(imeTop = imeTop)
             return
         }
         _focus.value = InputFocus()

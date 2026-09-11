@@ -8,6 +8,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.PixelFormat
 import android.os.Build
+import android.provider.Settings
 import android.view.Gravity
 import android.view.WindowManager
 import android.widget.FrameLayout
@@ -98,36 +99,42 @@ class OverlayService : LifecycleService(), SavedStateRegistryOwner, ViewModelSto
     }
 
     private fun startForegroundInternal() {
-        val nm = getSystemService(NotificationManager::class.java)
-        if (Build.VERSION.SDK_INT >= 26) {
-            nm.createNotificationChannel(
-                NotificationChannel(CHANNEL, "Overlay", NotificationManager.IMPORTANCE_LOW),
+        runCatching {
+            val nm = getSystemService(NotificationManager::class.java)
+            if (Build.VERSION.SDK_INT >= 26) {
+                nm.createNotificationChannel(
+                    NotificationChannel(CHANNEL, "Overlay", NotificationManager.IMPORTANCE_LOW),
+                )
+            }
+            val open = PendingIntent.getActivity(
+                this,
+                0,
+                Intent(this, MainActivity::class.java),
+                PendingIntent.FLAG_IMMUTABLE,
             )
-        }
-        val open = PendingIntent.getActivity(
-            this,
-            0,
-            Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_IMMUTABLE,
-        )
-        val notif = NotificationCompat.Builder(this, CHANNEL)
-            .setSmallIcon(android.R.drawable.ic_btn_speak_now)
-            .setContentTitle(getString(R.string.overlay_notification_title))
-            .setContentText(getString(R.string.overlay_notification_idle))
-            .setContentIntent(open)
-            .setOngoing(true)
-            .setSilent(true)
-            .build()
-        if (Build.VERSION.SDK_INT >= 34) {
-            var type = ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
-            if (recording) type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-            startForeground(42, notif, type)
-        } else {
-            startForeground(42, notif)
-        }
+            val notif = NotificationCompat.Builder(this, CHANNEL)
+                .setSmallIcon(android.R.drawable.ic_btn_speak_now)
+                .setContentTitle(getString(R.string.overlay_notification_title))
+                .setContentText(getString(R.string.overlay_notification_idle))
+                .setContentIntent(open)
+                .setOngoing(true)
+                .setSilent(true)
+                .build()
+            if (Build.VERSION.SDK_INT >= 34) {
+                var type = ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                if (recording) type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                startForeground(42, notif, type)
+            } else {
+                startForeground(42, notif)
+            }
+        }.onFailure { stopSelf() }
     }
 
     private fun attachOverlay() {
+        if (!Settings.canDrawOverlays(this)) {
+            stopSelf()
+            return
+        }
         if (host != null) {
             startPlacing()
             return
@@ -157,12 +164,11 @@ class OverlayService : LifecycleService(), SavedStateRegistryOwner, ViewModelSto
                 )
                 val ui by MaxSpeechApp.instance.dictation.ui.collectAsState()
                 val focus by TextInjector.inputFocus.collectAsState()
-                val a11yOn by TextInjector.a11yBound.collectAsState(initial = false)
                 val dictating = ui.phase != DictationPhase.Idle && ui.phase != DictationPhase.Error
                 val overOtherApp = focus.editable && focus.packageName != null &&
                     focus.packageName != packageName
                 val fromOverlay = dictating && MaxSpeechApp.instance.dictation.pasteIntoFocusedApp
-                val visible = overOtherApp || fromOverlay || !a11yOn
+                val visible = overOtherApp || fromOverlay
                 MaxSpeechTheme(
                     theme = settings.theme,
                     glassAlpha = settings.glassAlpha,
@@ -199,8 +205,13 @@ class OverlayService : LifecycleService(), SavedStateRegistryOwner, ViewModelSto
             }
         }
         val frame = FrameLayout(this).apply { addView(compose) }
+        val attached = runCatching { wm.addView(frame, params) }.isSuccess
+        if (!attached) {
+            layoutParams = null
+            stopSelf()
+            return
+        }
         host = frame
-        wm.addView(frame, params)
         startPlacing()
     }
 

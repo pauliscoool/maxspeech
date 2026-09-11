@@ -59,6 +59,7 @@ fun SettingsScreen(
     onSignOut: () -> Unit,
     onOpenOverlaySettings: () -> Unit,
     onOpenA11ySettings: () -> Unit,
+    onOpenAppInfo: () -> Unit,
     signingOut: Boolean = false,
 ) {
     val c = LocalMsColors.current
@@ -151,13 +152,24 @@ fun SettingsScreen(
                 }
                 Text(
                     if (a11yOn) "Accessibility is on — paste goes into the focused app."
-                    else "Turn on Accessibility so MaxSpeech can paste into the field you’re typing in.",
+                    else "Sideloaded apps hide Accessibility until you unlock it:\n" +
+                        "1. Settings → search Apps → MaxSpeech (search or scroll).\n" +
+                        "2. Top-right ⋮ → Allow restricted settings. Don’t tap Clear cache.\n" +
+                        "3. Open Accessibility, find MaxSpeech, turn it on, then Proceed.\n" +
+                        "Turn off Wispr Flow / Whisper Flow Accessibility while using MaxSpeech — two overlays will fight and the app can close.",
                     color = c.textDim,
                     fontSize = 12.sp,
                     modifier = Modifier.padding(top = 8.dp),
                 )
+                if (!a11yOn) {
+                    Text(
+                        "1. Open app info",
+                        color = c.turquoise,
+                        modifier = Modifier.padding(top = 8.dp).clickable(onClick = onOpenAppInfo),
+                    )
+                }
                 Text(
-                    if (a11yOn) "Accessibility settings" else "Continue — allow Accessibility",
+                    if (a11yOn) "Accessibility settings" else "2. Open Accessibility",
                     color = c.turquoise,
                     modifier = Modifier.padding(top = 8.dp).clickable(onClick = onOpenA11ySettings),
                 )
