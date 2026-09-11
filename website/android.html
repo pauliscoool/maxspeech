@@ -35,8 +35,8 @@
       <h1>Android download</h1>
       <p class="get-lede">
         Sideload the APK — no Play Store required. About
-        <strong>2 MB</strong>. Scan the QR from another device, or tap the
-        button on your phone.
+        <strong>2 MB</strong>, version <strong>0.1.1</strong>. Scan the QR from
+        another device, or tap the button on your phone.
       </p>
 
       <img
@@ -64,7 +64,7 @@
         </li>
         <li>Tap <em>Install</em>. When it finishes, open MaxSpeech.</li>
         <li>
-          Sign in or <em>Continue locally</em>, then allow
+          Sign in with your MaxSpeech account, then allow
           <strong>Microphone</strong>, <strong>Display over other apps</strong>,
           and <strong>Accessibility</strong> (that last one is how text pastes
           into Gmail, WhatsApp, Chrome…).
@@ -85,7 +85,7 @@
           </li>
           <li>
             <strong>Download didn’t start</strong> — use the direct file:
-            <a href="/downloads/MaxSpeech.apk">MaxSpeech.apk</a>
+            <a href="/downloads/MaxSpeech.apk?v=0.1.1">MaxSpeech.apk</a>
           </li>
           <li>
             <strong>Overlay / Accessibility</strong> — optional for in-app
@@ -109,7 +109,7 @@
           verEl.textContent = "APK ready — tap to install on this phone";
         }
         if (btn) {
-          btn.href = "/downloads/MaxSpeech.apk";
+          btn.href = "/downloads/MaxSpeech.apk?v=0.1.1";
           btn.setAttribute("download", "MaxSpeech.apk");
         }
         if ("serviceWorker" in navigator) {
