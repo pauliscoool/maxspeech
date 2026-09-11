@@ -152,6 +152,8 @@ fun MaxSpeechRoot(vm: AppViewModel) {
                         authed = signedIn,
                         onSignIn = { e, p -> vm.signIn(e, p) },
                         onSignUp = { e, p, u -> vm.signUp(e, p, u) },
+                        onForgot = { e -> vm.resetPassword(e) },
+                        onClearFlash = { vm.clearAuthFlash() },
                         onMic = { micLauncher.launch(Manifest.permission.RECORD_AUDIO) },
                         onOverlay = {
                             ctx.startActivity(

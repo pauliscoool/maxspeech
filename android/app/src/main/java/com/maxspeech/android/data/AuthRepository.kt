@@ -113,6 +113,13 @@ class AuthRepository(
             user to needsConfirm
         }
 
+    suspend fun requestPasswordReset(email: String) = withContext(Dispatchers.IO) {
+        val clean = email.trim().lowercase()
+        if (!clean.contains("@")) throw IllegalStateException("Enter the email for your account.")
+        val body = JSONObject().put("email", clean).toString()
+        execute(authRequest("auth/v1/recover", body))
+    }
+
     suspend fun signOut() {
         context.authStore.edit { it.clear() }
         settings.setLocalMode(false)

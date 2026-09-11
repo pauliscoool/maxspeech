@@ -205,6 +205,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         authBusy.value = false
     }
 
+    fun resetPassword(email: String) = viewModelScope.launch {
+        authBusy.value = true
+        authError.value = null
+        authInfo.value = null
+        runCatching { ms.auth.requestPasswordReset(email) }
+            .onSuccess { authInfo.value = "Check your email for a reset link, then sign in." }
+            .onFailure { authError.value = it.message ?: "Could not send reset email" }
+        authBusy.value = false
+    }
+
+    fun clearAuthFlash() {
+        authError.value = null
+        authInfo.value = null
+    }
+
     fun signOut() = viewModelScope.launch {
         authBusy.value = true
         ms.auth.signOut()
