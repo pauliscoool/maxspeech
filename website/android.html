@@ -35,8 +35,9 @@
       <h1>Android download</h1>
       <p class="get-lede">
         Sideload the APK — no Play Store required. About
-        <strong>12 MB</strong>, version <strong>0.1.5</strong>. Scan the QR from
-        another device, or tap the button on your phone.
+        <strong>12 MB</strong>, version <strong>0.1.6</strong>. Small on purpose:
+        speech runs in the cloud (Deepgram), so we don’t ship a 50–80&nbsp;MB
+        on-device model.
       </p>
 
       <img
@@ -51,12 +52,12 @@
       <a
         class="btn-primary"
         id="dl"
-        href="/downloads/MaxSpeech.apk?v=0.1.5"
+        href="/downloads/MaxSpeech.apk?v=0.1.6"
         download="MaxSpeech.apk"
       >
         Download MaxSpeech for Android
       </a>
-      <p class="get-alt" id="dl-ver">Version 0.1.5 — tap to install on this phone</p>
+      <p class="get-alt" id="dl-ver">Version 0.1.6 — tap to install on this phone</p>
 
       <ol class="get-steps">
         <li>
@@ -67,17 +68,16 @@
           If Chrome blocks the file: tap the download →
           <em>Open</em> → allow this browser to <em>Install unknown apps</em>.
         </li>
-        <li>Tap <em>Install</em>. When it finishes, open MaxSpeech.</li>
         <li>
-          Sign in, then allow <strong>Microphone</strong> and
-          <strong>Display over other apps</strong>. For
-          <strong>Accessibility</strong> on a sideloaded app:
-          Settings → search <em>Apps</em> → MaxSpeech → top-right ⋮
-          <em>Allow restricted settings</em> (not Clear cache). Then
-          Accessibility → MaxSpeech on → go back and Proceed. Turn off
-          Wispr Flow / Whisper Flow Accessibility while using MaxSpeech.
+          Uninstall any older MaxSpeech first. If Android offers
+          <em>Restore</em>, choose <strong>Don’t restore</strong>.
         </li>
-        <li>Hold the glass capsule and speak. Release to enhance and paste.</li>
+        <li>Tap <em>Install</em>, open MaxSpeech, sign in, allow <strong>Microphone</strong> only.</li>
+        <li>
+          Dictate inside MaxSpeech. Paste into WhatsApp/Gmail is optional later
+          under Settings → Paste into other apps — you can skip that forever
+          if you want.
+        </li>
       </ol>
 
       <div class="get-trouble">
@@ -93,12 +93,12 @@
           </li>
           <li>
             <strong>Download didn’t start</strong> — use the direct file:
-            <a href="/downloads/MaxSpeech.apk?v=0.1.5">MaxSpeech.apk</a>
+            <a href="/downloads/MaxSpeech.apk?v=0.1.6">MaxSpeech.apk</a>
           </li>
           <li>
-            <strong>Overlay / Accessibility</strong> — needed to paste into other
-            apps. If Accessibility is greyed out: Apps → MaxSpeech → ⋮
-            Allow restricted settings. Don’t tap Clear cache.
+            <strong>Still crash?</strong> — Open the app once. If you see a
+            yellow “Last crash” screen, screenshot it and send it. Do not tap
+            Clear cache.
           </li>
         </ul>
       </div>
