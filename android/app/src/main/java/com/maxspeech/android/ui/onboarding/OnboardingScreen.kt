@@ -159,22 +159,16 @@ fun OnboardingScreen(
                         )
                         2 -> PermStep(
                             title = "Microphone",
-                            body = "Needed to hear you. Nothing is stored as audio.",
+                            body = "The only permission MaxSpeech needs to dictate inside the app. Audio is never stored.",
                             granted = micGranted,
                             onContinue = onMic,
-                            onProceed = { step = 3 },
+                            onProceed = onDone,
                         )
-                        3 -> PermStep(
-                            title = "Display over other apps",
-                            body = "Lets the dictation capsule pop up over WhatsApp, Gmail, Messages — above the field you’re typing in.",
-                            granted = overlayGranted,
-                            onContinue = onOverlay,
-                            onProceed = { step = 4 },
-                        )
-                        else -> A11yPermStep(
-                            granted = a11yGranted,
-                            onOpenAppInfo = onAppInfo,
-                            onOpenA11y = onA11y,
+                        else -> PermStep(
+                            title = "Microphone",
+                            body = "The only permission MaxSpeech needs to dictate inside the app. Audio is never stored.",
+                            granted = micGranted,
+                            onContinue = onMic,
                             onProceed = onDone,
                         )
                     }

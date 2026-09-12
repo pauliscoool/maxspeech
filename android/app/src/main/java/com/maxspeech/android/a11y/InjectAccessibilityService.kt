@@ -9,6 +9,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
+import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
@@ -27,29 +28,34 @@ data class InputFocus(
 
 class InjectAccessibilityService : AccessibilityService() {
     private val focusHandler = Handler(Looper.getMainLooper())
-    private val publishRunnable = Runnable { publishFocusNow() }
+    private val publishRunnable = Runnable {
+        runCatching { publishFocusNow() }
+            .onFailure { Log.w(TAG, "publishFocus failed", it) }
+    }
 
     override fun onServiceConnected() {
         instance = this
         _bound.value = true
-        publishFocusNow()
+        focusHandler.post(publishRunnable)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        val pkg = event?.packageName?.toString().orEmpty()
-        if (pkg == packageName) return
-        if (pkg.isNotBlank()) lastPackage = pkg
-        when (event?.eventType) {
-            AccessibilityEvent.TYPE_VIEW_FOCUSED,
-            AccessibilityEvent.TYPE_VIEW_CLICKED,
-            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
-            AccessibilityEvent.TYPE_WINDOWS_CHANGED,
-            AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED,
-            -> {
-                focusHandler.removeCallbacks(publishRunnable)
-                focusHandler.postDelayed(publishRunnable, 80)
+        runCatching {
+            val pkg = event?.packageName?.toString().orEmpty()
+            if (pkg == packageName) return
+            if (pkg.isNotBlank()) lastPackage = pkg
+            when (event?.eventType) {
+                AccessibilityEvent.TYPE_VIEW_FOCUSED,
+                AccessibilityEvent.TYPE_VIEW_CLICKED,
+                AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
+                AccessibilityEvent.TYPE_WINDOWS_CHANGED,
+                AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED,
+                -> {
+                    focusHandler.removeCallbacks(publishRunnable)
+                    focusHandler.postDelayed(publishRunnable, 80)
+                }
             }
-        }
+        }.onFailure { Log.w(TAG, "onAccessibilityEvent failed", it) }
     }
 
     override fun onInterrupt() = Unit
@@ -64,7 +70,7 @@ class InjectAccessibilityService : AccessibilityService() {
         super.onDestroy()
     }
 
-    fun insert(text: String): Boolean {
+    fun insert(text: String): Boolean = runCatching {
         val root = rootInActiveWindow ?: return false
         val focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: findEditable(root)
         if (focused == null) return false
@@ -75,8 +81,8 @@ class InjectAccessibilityService : AccessibilityService() {
         if (focused.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)) return true
         val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         cm.setPrimaryClip(ClipData.newPlainText("MaxSpeech", text))
-        return focused.performAction(AccessibilityNodeInfo.ACTION_PASTE)
-    }
+        focused.performAction(AccessibilityNodeInfo.ACTION_PASTE)
+    }.getOrDefault(false)
 
     private fun publishFocusNow() {
         val imeTop = imeTopPx()
@@ -110,7 +116,7 @@ class InjectAccessibilityService : AccessibilityService() {
     }
 
     private fun imeTopPx(): Int {
-        val list = windows ?: return -1
+        val list = runCatching { windows }.getOrNull() ?: return -1
         for (window in list) {
             if (window.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD) {
                 val bounds = Rect()
@@ -132,6 +138,7 @@ class InjectAccessibilityService : AccessibilityService() {
     }
 
     companion object {
+        private const val TAG = "MaxSpeechA11y"
         @Volatile var instance: InjectAccessibilityService? = null
         @Volatile var lastPackage: String? = null
         private val _focus = MutableStateFlow(InputFocus())
@@ -148,19 +155,21 @@ object TextInjector {
     fun isAccessibilityOn(context: Context? = null): Boolean {
         if (InjectAccessibilityService.instance != null) return true
         if (context == null) return false
-        val enabled = Settings.Secure.getString(
-            context.contentResolver,
-            Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
-        ) ?: return false
-        val needle = "${context.packageName}/${InjectAccessibilityService::class.java.name}"
-        return enabled.split(':').any { entry ->
-            entry.equals(needle, ignoreCase = true) ||
-                entry.contains(InjectAccessibilityService::class.java.name, ignoreCase = true)
-        }
+        return runCatching {
+            val enabled = Settings.Secure.getString(
+                context.contentResolver,
+                Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
+            ) ?: return false
+            val needle = "${context.packageName}/${InjectAccessibilityService::class.java.name}"
+            enabled.split(':').any { entry ->
+                entry.equals(needle, ignoreCase = true) ||
+                    entry.contains(InjectAccessibilityService::class.java.name, ignoreCase = true)
+            }
+        }.getOrDefault(false)
     }
 
     fun overlayGranted(context: Context): Boolean =
-        android.provider.Settings.canDrawOverlays(context)
+        runCatching { Settings.canDrawOverlays(context) }.getOrDefault(false)
 
     fun micGranted(context: Context): Boolean =
         androidx.core.content.ContextCompat.checkSelfPermission(

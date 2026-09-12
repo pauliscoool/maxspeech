@@ -33,7 +33,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -78,7 +77,6 @@ fun MaxSpeechRoot(vm: AppViewModel) {
         var micOk by remember { mutableStateOf(TextInjector.micGranted(ctx)) }
         var overlayOk by remember { mutableStateOf(TextInjector.overlayGranted(ctx)) }
         var a11yOk by remember { mutableStateOf(TextInjector.isAccessibilityOn(ctx)) }
-        var permEpoch by remember { mutableIntStateOf(0) }
         val snack = remember { SnackbarHostState() }
         val lifecycle = LocalLifecycleOwner.current.lifecycle
 
@@ -86,11 +84,10 @@ fun MaxSpeechRoot(vm: AppViewModel) {
             ActivityResultContracts.RequestPermission(),
         ) { granted ->
             micOk = granted || TextInjector.micGranted(ctx)
-            permEpoch++
         }
         val notifLauncher = rememberLauncherForActivityResult(
             ActivityResultContracts.RequestPermission(),
-        ) { permEpoch++ }
+        ) { }
 
         fun refreshPerms() {
             micOk = TextInjector.micGranted(ctx)
@@ -102,34 +99,18 @@ fun MaxSpeechRoot(vm: AppViewModel) {
             lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
                 refreshPerms()
                 vm.refreshUsage()
-                permEpoch++
-                while (true) {
-                    kotlinx.coroutines.delay(700)
-                    val beforeMic = micOk
-                    val beforeOverlay = overlayOk
-                    val beforeA11y = a11yOk
-                    refreshPerms()
-                    if (beforeMic != micOk || beforeOverlay != overlayOk || beforeA11y != a11yOk) permEpoch++
-                }
             }
         }
 
+        // Floating paste is OFF by default. Only start when the user enables it in Settings
+        // and both overlay + Accessibility are granted — never during first-run setup.
         LaunchedEffect(state.settings.overlayEnabled, overlayOk, a11yOk, state.settings.onboarded) {
-            refreshPerms()
-            // Capsule needs overlay + a11y. Starting the FGS earlier caused a restart/close loop
-            // while Android was still flipping Accessibility / restricted settings.
-            val wantOverlay = state.settings.overlayEnabled && overlayOk && a11yOk && state.settings.onboarded
-            if (wantOverlay) {
+            val want = state.settings.overlayEnabled && overlayOk && a11yOk && state.settings.onboarded
+            if (want) {
                 if (Build.VERSION.SDK_INT >= 33 && !TextInjector.notificationGranted(ctx)) {
                     notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                 }
-                kotlinx.coroutines.delay(400)
-                refreshPerms()
-                if (state.settings.overlayEnabled && TextInjector.overlayGranted(ctx) &&
-                    TextInjector.isAccessibilityOn(ctx) && state.settings.onboarded
-                ) {
-                    OverlayService.start(ctx)
-                }
+                OverlayService.start(ctx)
             } else {
                 OverlayService.stop(ctx)
             }
@@ -275,14 +256,6 @@ fun MaxSpeechRoot(vm: AppViewModel) {
                                     },
                                     onOpenA11ySettings = {
                                         ctx.startActivity(Intent(AndroidSettings.ACTION_ACCESSIBILITY_SETTINGS))
-                                    },
-                                    onOpenAppInfo = {
-                                        ctx.startActivity(
-                                            Intent(
-                                                AndroidSettings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                                                Uri.parse("package:${ctx.packageName}"),
-                                            ),
-                                        )
                                     },
                                 )
                             }

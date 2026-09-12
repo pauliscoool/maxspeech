@@ -20,7 +20,7 @@ data class AppSettings(
     val glassAlpha: Float = 0.50f,
     val blurStrength: Float = 0.70f,
     val theme: UiTheme = UiTheme.Dark,
-    val overlayEnabled: Boolean = true,
+    val overlayEnabled: Boolean = false,
     val overlayConfirm: Boolean = true,
     val aiEnhance: Boolean = true,
     val enhanceSpeed: EnhanceSpeed = EnhanceSpeed.Thinking,
@@ -113,7 +113,7 @@ class SettingsRepository(private val context: Context) {
                 "light" -> UiTheme.Light
                 else -> UiTheme.Dark
             },
-            overlayEnabled = this[Keys.overlay] ?: true,
+            overlayEnabled = this[Keys.overlay] ?: false,
             overlayConfirm = this[Keys.confirm] ?: true,
             aiEnhance = this[Keys.enhance] ?: true,
             enhanceSpeed = when (this[Keys.speed]) {

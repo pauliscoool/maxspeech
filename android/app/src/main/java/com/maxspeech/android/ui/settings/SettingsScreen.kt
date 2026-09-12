@@ -59,7 +59,6 @@ fun SettingsScreen(
     onSignOut: () -> Unit,
     onOpenOverlaySettings: () -> Unit,
     onOpenA11ySettings: () -> Unit,
-    onOpenAppInfo: () -> Unit,
     signingOut: Boolean = false,
 ) {
     val c = LocalMsColors.current
@@ -126,10 +125,14 @@ fun SettingsScreen(
             }
         }
 
-        Section("Overlay")
+        Section("Paste into other apps")
         GlassSurface(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {
-                ToggleRow("Floating capsule", "Pop up over the app you’re typing in", overlayOn) {
+                ToggleRow(
+                    "Floating capsule",
+                    "Optional. Pop up over WhatsApp / Gmail when a text field is focused.",
+                    overlayOn,
+                ) {
                     onToggle("overlay", it)
                     if (it) onOpenOverlaySettings()
                 }
@@ -137,39 +140,24 @@ fun SettingsScreen(
                     onToggle("confirm", it)
                 }
                 Text(
-                    if (overlayOn) "Overlay is on — the capsule appears over chat fields."
-                    else "Turn on “Display over other apps” so the capsule can pop up over WhatsApp, Gmail, Messages.",
+                    if (overlayOn && a11yOn) "Ready — tap a chat field in another app and the capsule appears."
+                    else "In-app dictation only needs the microphone. Turn this on only if you want paste into other apps.\n\n" +
+                        "If Accessibility is locked for sideloaded apps: Settings → Apps → MaxSpeech → top-right ⋮ → " +
+                        "Allow restricted settings. Do not tap Clear cache or Clear data.\n" +
+                        "Then Accessibility → MaxSpeech → on. Turn off Wispr Flow Accessibility while testing.",
                     color = c.textDim,
                     fontSize = 12.sp,
                     modifier = Modifier.padding(top = 8.dp),
                 )
                 if (!overlayOn) {
                     Text(
-                        "Continue — allow overlay",
+                        "Allow display over other apps",
                         color = c.turquoise,
                         modifier = Modifier.padding(top = 8.dp).clickable(onClick = onOpenOverlaySettings),
                     )
                 }
                 Text(
-                    if (a11yOn) "Accessibility is on — paste goes into the focused app."
-                    else "Sideloaded apps hide Accessibility until you unlock it:\n" +
-                        "1. Settings → search Apps → MaxSpeech (search or scroll).\n" +
-                        "2. Top-right ⋮ → Allow restricted settings. Don’t tap Clear cache.\n" +
-                        "3. Open Accessibility, find MaxSpeech, turn it on, then Proceed.\n" +
-                        "Turn off Wispr Flow / Whisper Flow Accessibility while using MaxSpeech — two overlays will fight and the app can close.",
-                    color = c.textDim,
-                    fontSize = 12.sp,
-                    modifier = Modifier.padding(top = 8.dp),
-                )
-                if (!a11yOn) {
-                    Text(
-                        "1. Open app info",
-                        color = c.turquoise,
-                        modifier = Modifier.padding(top = 8.dp).clickable(onClick = onOpenAppInfo),
-                    )
-                }
-                Text(
-                    if (a11yOn) "Accessibility settings" else "2. Open Accessibility",
+                    if (a11yOn) "Accessibility settings" else "Open Accessibility settings",
                     color = c.turquoise,
                     modifier = Modifier.padding(top = 8.dp).clickable(onClick = onOpenA11ySettings),
                 )
