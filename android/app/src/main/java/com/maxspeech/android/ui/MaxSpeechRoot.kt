@@ -114,16 +114,24 @@ fun MaxSpeechRoot(vm: AppViewModel) {
             }
         }
 
-        LaunchedEffect(state.settings.overlayEnabled, overlayOk, state.settings.onboarded) {
+        LaunchedEffect(state.settings.overlayEnabled, overlayOk, a11yOk, state.settings.onboarded) {
             refreshPerms()
-            val intent = Intent(ctx, OverlayService::class.java)
-            if (state.settings.overlayEnabled && overlayOk && state.settings.onboarded) {
+            // Capsule needs overlay + a11y. Starting the FGS earlier caused a restart/close loop
+            // while Android was still flipping Accessibility / restricted settings.
+            val wantOverlay = state.settings.overlayEnabled && overlayOk && a11yOk && state.settings.onboarded
+            if (wantOverlay) {
                 if (Build.VERSION.SDK_INT >= 33 && !TextInjector.notificationGranted(ctx)) {
                     notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                 }
-                runCatching { ctx.startForegroundService(intent) }
+                kotlinx.coroutines.delay(400)
+                refreshPerms()
+                if (state.settings.overlayEnabled && TextInjector.overlayGranted(ctx) &&
+                    TextInjector.isAccessibilityOn(ctx) && state.settings.onboarded
+                ) {
+                    OverlayService.start(ctx)
+                }
             } else {
-                ctx.stopService(intent)
+                OverlayService.stop(ctx)
             }
         }
         LaunchedEffect(state.toast) {
