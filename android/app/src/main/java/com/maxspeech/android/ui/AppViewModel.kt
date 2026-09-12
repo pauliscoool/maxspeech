@@ -8,13 +8,15 @@ import com.maxspeech.android.a11y.TextInjector
 import com.maxspeech.android.data.AppProfileEntity
 import com.maxspeech.android.data.AppSettings
 import com.maxspeech.android.data.AuthUser
+import com.maxspeech.android.data.DictionaryEntity
 import com.maxspeech.android.data.HistoryEntity
 import com.maxspeech.android.data.PlanCalculator
 import com.maxspeech.android.data.PlanStatus
+import com.maxspeech.android.data.PlanTier
+import com.maxspeech.android.data.SnippetEntity
 import com.maxspeech.android.data.SttLanguages
 import com.maxspeech.android.data.UiTheme
 import com.maxspeech.android.pipeline.DictationUi
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -28,10 +30,10 @@ data class UiState(
     val user: AuthUser? = null,
     val history: List<HistoryEntity> = emptyList(),
     val profiles: List<AppProfileEntity> = emptyList(),
-    val snippets: List<com.maxspeech.android.data.SnippetEntity> = emptyList(),
+    val snippets: List<SnippetEntity> = emptyList(),
     val dictionary: List<String> = emptyList(),
     val dictation: DictationUi = DictationUi(),
-    val plan: PlanStatus = PlanStatus(com.maxspeech.android.data.PlanTier.Free, 0, 0),
+    val plan: PlanStatus = PlanStatus(PlanTier.Free, 0, 0),
     val appCount: Int = 0,
     val enhancedCount: Int = 0,
     val editedCount: Int = 0,
@@ -43,71 +45,88 @@ data class UiState(
 )
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
-    private val ms = app as MaxSpeechApp
+    private val ms = getApplication<MaxSpeechApp>()
     private val authBusy = MutableStateFlow(false)
     private val authError = MutableStateFlow<String?>(null)
     private val authInfo = MutableStateFlow<String?>(null)
     private val toast = MutableStateFlow<String?>(null)
     private val boot = MutableStateFlow(false)
 
+    // Flat combines only — nested combine + R8 previously produced ClassCastException on launch.
+    private val core = combine(
+        ms.settings.flow,
+        ms.auth.user,
+        ms.db.historyDao().observe(),
+        ms.db.profileDao().observe(),
+    ) { settings, user, history, profiles ->
+        Core(settings, user, history, profiles)
+    }
+
+    private val extras = combine(
+        ms.db.usageDao().observeWordsSince(PlanCalculator.weekStartUtc()),
+        ms.db.historyDao().observeDistinctApps(),
+        ms.db.snippetDao().observe(),
+        ms.db.dictionaryDao().observe(),
+    ) { words, apps, snippets, dictionary ->
+        Extras(words, apps, snippets, dictionary)
+    }
+
+    private val counts = combine(
+        ms.db.historyDao().observeEnhanced(),
+        ms.db.historyDao().observeEdited(),
+        boot,
+    ) { enhanced, edited, ready ->
+        Counts(enhanced, edited, ready)
+    }
+
+    private val flash = combine(authBusy, authError, authInfo, toast) { busy, err, info, t ->
+        Flash(busy, err, info, t)
+    }
+
     val state: StateFlow<UiState> = combine(
-        combine(ms.settings.flow, ms.auth.user, ms.db.historyDao().observe(), ms.db.profileDao().observe()) { s, u, h, p ->
-            Quad(s, u, h, p)
-        },
-        combine(ms.dictation.ui, authBusy, authError, authInfo, toast) { d, b, e, i, t ->
-            Quint(d, b, e, i, t)
-        },
-        combine(
-            ms.db.usageDao().observeWordsSince(PlanCalculator.weekStartUtc()),
-            ms.db.historyDao().observeDistinctApps(),
-            ms.db.snippetDao().observe(),
-            ms.db.dictionaryDao().observe(),
-        ) { w, a, sn, dict ->
-            Extra(w, a, sn, dict)
-        },
-        combine(
-            ms.db.historyDao().observeEnhanced(),
-            ms.db.historyDao().observeEdited(),
-            boot,
-        ) { enh, ed, ready -> Triple(enh, ed, ready) },
-    ) { quad, quint, extra, counts ->
-        val user = quad.u
+        core,
+        extras,
+        counts,
+        flash,
+        ms.dictation.ui,
+    ) { c, e, k, f, dictation ->
         UiState(
-            settings = quad.s,
-            user = user,
-            history = quad.h,
-            profiles = quad.p,
-            snippets = extra.sn,
-            dictionary = extra.dict,
-            dictation = quint.d,
-            plan = PlanCalculator.from(user, extra.w),
-            appCount = extra.a,
-            enhancedCount = counts.first,
-            editedCount = counts.second,
-            authBusy = quint.b,
-            authError = quint.e,
-            authInfo = quint.i,
-            toast = quint.t,
-            ready = counts.third,
+            settings = c.settings,
+            user = c.user,
+            history = c.history,
+            profiles = c.profiles,
+            snippets = e.snippets,
+            dictionary = e.dictionary,
+            dictation = dictation,
+            plan = PlanCalculator.from(c.user, e.words),
+            appCount = e.apps,
+            enhancedCount = k.enhanced,
+            editedCount = k.edited,
+            authBusy = f.busy,
+            authError = f.error,
+            authInfo = f.info,
+            toast = f.toast,
+            ready = k.ready,
         )
-    }.stateIn(viewModelScope, SharingStarted.Eagerly, UiState())
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), UiState())
 
     init {
         viewModelScope.launch {
-            val started = System.currentTimeMillis()
-            ms.settings.snapshot()
-            val user = ms.auth.current()
-            if (user?.local == true) ms.auth.signOut()
-            val wait = max(0L, 520L - (System.currentTimeMillis() - started))
-            delay(wait)
+            runCatching {
+                val started = System.currentTimeMillis()
+                ms.settings.snapshot()
+                val user = ms.auth.current()
+                if (user?.local == true) ms.auth.signOut()
+                val wait = max(0L, 520L - (System.currentTimeMillis() - started))
+                kotlinx.coroutines.delay(wait)
+            }
             boot.value = true
         }
     }
 
     fun refreshUsage() {
-        // Live Room flows already push counts; this keeps week-window queries fresh on resume.
         viewModelScope.launch {
-            ms.settings.snapshot()
+            runCatching { ms.settings.snapshot() }
         }
     }
 
@@ -199,7 +218,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         authInfo.value = null
         runCatching { ms.auth.signUp(email, password, username) }
             .onSuccess { (_, confirm) ->
-                if (confirm) authInfo.value = "Check your email to confirm. The link opens the MaxSpeech website, then sign in here."
+                if (confirm) {
+                    authInfo.value =
+                        "Check your email to confirm. The link opens the MaxSpeech website, then sign in here."
+                }
             }
             .onFailure { authError.value = it.message ?: "Could not create account" }
         authBusy.value = false
@@ -210,7 +232,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         authError.value = null
         authInfo.value = null
         runCatching { ms.auth.requestPasswordReset(email) }
-            .onSuccess { authInfo.value = "Check your email. The reset link opens the MaxSpeech website, then sign in here." }
+            .onSuccess {
+                authInfo.value =
+                    "Check your email. The reset link opens the MaxSpeech website, then sign in here."
+            }
             .onFailure { authError.value = it.message ?: "Could not send reset email" }
         authBusy.value = false
     }
@@ -238,9 +263,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun addSnippet(trigger: String, expansion: String) = viewModelScope.launch {
-        val t = trigger.trim(); val e = expansion.trim()
+        val t = trigger.trim()
+        val e = expansion.trim()
         if (t.isEmpty() || e.isEmpty()) return@launch
-        ms.db.snippetDao().upsert(com.maxspeech.android.data.SnippetEntity(t, e))
+        ms.db.snippetDao().upsert(SnippetEntity(t, e))
     }
 
     fun deleteSnippet(trigger: String) = viewModelScope.launch {
@@ -249,14 +275,37 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun addWord(word: String) = viewModelScope.launch {
         val w = word.trim()
-        if (w.isNotEmpty()) ms.db.dictionaryDao().insert(com.maxspeech.android.data.DictionaryEntity(w))
+        if (w.isNotEmpty()) ms.db.dictionaryDao().insert(DictionaryEntity(w))
     }
 
     fun deleteWord(word: String) = viewModelScope.launch {
         ms.db.dictionaryDao().delete(word)
     }
 
-    private data class Quad<A, B, C, D>(val s: A, val u: B, val h: C, val p: D)
-    private data class Quint<A, B, C, D, E>(val d: A, val b: B, val e: C, val i: D, val t: E)
-    private data class Extra<A, B, C, D>(val w: A, val a: B, val sn: C, val dict: D)
+    private data class Core(
+        val settings: AppSettings,
+        val user: AuthUser?,
+        val history: List<HistoryEntity>,
+        val profiles: List<AppProfileEntity>,
+    )
+
+    private data class Extras(
+        val words: Int,
+        val apps: Int,
+        val snippets: List<SnippetEntity>,
+        val dictionary: List<String>,
+    )
+
+    private data class Counts(
+        val enhanced: Int,
+        val edited: Int,
+        val ready: Boolean,
+    )
+
+    private data class Flash(
+        val busy: Boolean,
+        val error: String?,
+        val info: String?,
+        val toast: String?,
+    )
 }

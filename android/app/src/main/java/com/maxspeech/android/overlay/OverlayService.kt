@@ -167,7 +167,6 @@ class OverlayService : LifecycleService(), SavedStateRegistryOwner, ViewModelSto
             .setOngoing(true)
             .setSilent(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
-            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .build()
     }
 

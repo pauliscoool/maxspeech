@@ -1,6 +1,7 @@
 package com.maxspeech.android
 
 import android.app.Application
+import android.util.Log
 import androidx.room.Room
 import com.maxspeech.android.data.AppDatabase
 import com.maxspeech.android.data.AppProfileEntity
@@ -11,6 +12,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import java.io.File
 
 class MaxSpeechApp : Application() {
     val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -26,6 +28,25 @@ class MaxSpeechApp : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        Thread.setDefaultUncaughtExceptionHandler { thread, error ->
+            runCatching {
+                val file = File(filesDir, "last-crash.txt")
+                file.writeText(
+                    buildString {
+                        appendLine("thread=${thread.name}")
+                        appendLine(error.stackTraceToString())
+                    },
+                )
+                Log.e(TAG, "Uncaught crash", error)
+            }
+            val previous = defaultHandler
+            if (previous != null) {
+                previous.uncaughtException(thread, error)
+            } else {
+                Log.e(TAG, "Fatal", error)
+                android.os.Process.killProcess(android.os.Process.myPid())
+            }
+        }
         db = Room.databaseBuilder(this, AppDatabase::class.java, "maxspeech.db")
             .fallbackToDestructiveMigration()
             .build()
@@ -33,8 +54,10 @@ class MaxSpeechApp : Application() {
         auth = AuthRepository(this, settings)
         dictation = DictationController(this, db, settings, auth)
         appScope.launch {
-            settings.ensureDefaults()
-            seedProfiles()
+            runCatching {
+                settings.ensureDefaults()
+                seedProfiles()
+            }.onFailure { Log.e(TAG, "Startup seed failed", it) }
         }
     }
 
@@ -58,6 +81,8 @@ class MaxSpeechApp : Application() {
     }
 
     companion object {
+        private const val TAG = "MaxSpeech"
+        private val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
         lateinit var instance: MaxSpeechApp
             private set
     }
