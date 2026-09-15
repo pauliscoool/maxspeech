@@ -232,6 +232,18 @@ Function PageReinstall
 
  nsis_tauri_utils::SemverCompare "${VERSION}" $R0
  Pop $R0
+
+ ; In-app /S /UPDATE and silent/passive must never show this custom page.
+ ; nsDialogs::Show can hang a silent installer, so the download "never installs".
+ ${If} $UpdateMode = 1
+   Abort
+ ${EndIf}
+ ${If} $PassiveMode = 1
+ ${OrIf} ${Silent}
+   Call PageLeaveReinstall
+   Abort
+ ${EndIf}
+
  ; Reinstalling the same version
  ${If} $R0 = 0
  StrCpy $R1 "$(alreadyInstalledLong)"
@@ -258,15 +270,6 @@ Function PageReinstall
  Abort
  ${EndIf}
 
- ; Skip showing the page if passive
- ;
- ; Note that we don't call this earlier at the beginning
- ; of this function because we need to populate some variables
- ; related to current installed version if detected and whether
- ; we are downgrading or not.
- ${If} $PassiveMode = 1
- Call PageLeaveReinstall
- ${Else}
  nsDialogs::Create 1018
  Pop $R4
  ${IfThen} $(^RTL) = 1 ${|} nsDialogs::SetRTL $(^RTL) ${|}
@@ -297,7 +300,6 @@ Function PageReinstall
 
  ${NSD_SetFocus} $R2
  nsDialogs::Show
- ${EndIf}
 FunctionEnd
 Function PageReinstallUpdateSelection
  ${NSD_GetState} $R2 $R1
@@ -748,8 +750,10 @@ Section Install
  !insertmacro NSIS_HOOK_POSTINSTALL
  !endif
 
- ; Auto close this page for passive mode
+ ; Auto close this page for passive / silent / in-app update
  ${If} $PassiveMode = 1
+ ${OrIf} ${Silent}
+ ${OrIf} $UpdateMode = 1
  SetAutoClose true
  ${EndIf}
 SectionEnd

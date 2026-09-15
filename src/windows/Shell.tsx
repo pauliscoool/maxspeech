@@ -16,7 +16,9 @@ import ThemeWipe from "../components/ThemeWipe";
 import AppToast from "../components/AppToast";
 import {
   checkForUpdate,
+  formatUpdateFailure,
   installAvailableUpdate,
+  openUpdateWebsite,
   type UpdateInfo,
 } from "../lib/updater";
 import { type PlanStatus } from "../lib/plan";
@@ -59,6 +61,7 @@ export default function Shell({ authUser }: { authUser: AuthUser | null }) {
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [updating, setUpdating] = useState(false);
   const [updatePct, setUpdatePct] = useState<number | null>(null);
+  const [updateError, setUpdateError] = useState("");
   const [plan, setPlan] = useState<PlanStatus | null>(null);
   const [plansOpen, setPlansOpen] = useState(false);
   const [identity, setIdentity] = useState<ProfileIdentity | null>(null);
@@ -196,10 +199,12 @@ export default function Shell({ authUser }: { authUser: AuthUser | null }) {
     if (updating) return;
     setUpdating(true);
     setUpdatePct(0);
+    setUpdateError("");
     try {
       await installAvailableUpdate((pct) => setUpdatePct(pct));
     } catch (e) {
       console.error(e);
+      setUpdateError(formatUpdateFailure(e));
       setUpdating(false);
       setUpdatePct(null);
     }
@@ -224,31 +229,62 @@ export default function Shell({ authUser }: { authUser: AuthUser | null }) {
         <div
           className="shrink-0 px-4 py-2.5 flex items-center justify-between gap-3"
           style={{
-            background: "var(--ms-turquoise-glow)",
+            background: updateError
+              ? "rgba(239,68,68,0.12)"
+              : "var(--ms-turquoise-glow)",
             borderBottom: "1px solid var(--ms-hairline)",
           }}
         >
           <div className="min-w-0">
-            <div className="text-sm font-medium text-[var(--ms-turquoise)]">
-              Update available — v{updateInfo.version}
+            <div
+              className={`text-sm font-medium ${
+                updateError
+                  ? "text-[var(--ms-error)]"
+                  : "text-[var(--ms-turquoise)]"
+              }`}
+            >
+              {updateError
+                ? "Update failed"
+                : `Update available — v${updateInfo.version}`}
             </div>
-            <div className="text-xs text-[var(--ms-text-dim)] truncate">
-              Downloads, installs, and restarts MaxSpeech automatically
+            <div
+              className={`text-xs ${
+                updateError
+                  ? "text-[var(--ms-error)]"
+                  : "text-[var(--ms-text-dim)]"
+              }`}
+            >
+              {updateError ||
+                "Downloads, installs, and restarts MaxSpeech automatically"}
             </div>
           </div>
-          <button
-            onClick={applyUpdate}
-            disabled={updating}
-            className="btn-primary px-3.5 py-1.5 text-xs shrink-0 disabled:opacity-70"
-          >
-            {updating
-              ? updatePct != null && updatePct >= 100
-                ? "Restarting…"
-                : updatePct != null
-                  ? `${updatePct}%`
-                  : "Restarting…"
-              : "Update now"}
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            {updateError ? (
+              <button
+                type="button"
+                onClick={() => void openUpdateWebsite()}
+                className="px-3.5 py-1.5 text-xs rounded-full font-semibold text-[var(--ms-text)] hover:text-[var(--ms-hover-fg)] transition-colors"
+                style={{ background: "var(--ms-fill-muted)" }}
+              >
+                Open website
+              </button>
+            ) : null}
+            <button
+              onClick={applyUpdate}
+              disabled={updating}
+              className="btn-primary px-3.5 py-1.5 text-xs disabled:opacity-70"
+            >
+              {updating
+                ? updatePct != null && updatePct >= 100
+                  ? "Restarting…"
+                  : updatePct != null
+                    ? `${updatePct}%`
+                    : "Restarting…"
+                : updateError
+                  ? "Try again"
+                  : "Update now"}
+            </button>
+          </div>
         </div>
       )}
       <div className="flex flex-1 min-h-0 overflow-hidden">
@@ -323,14 +359,22 @@ export default function Shell({ authUser }: { authUser: AuthUser | null }) {
                     : "Updating…"
                   : "Update available"}
               </div>
-              <div className="text-[11px] text-[var(--ms-text-dim)] mt-1">
-                {updating
-                  ? updatePct != null && updatePct >= 100
-                    ? "Restarting…"
-                    : updatePct != null
-                      ? `Downloading… ${updatePct}%`
-                      : "Restarting…"
-                  : `v${updateInfo.version} — tap to install`}
+              <div
+                className={`text-[11px] mt-1 ${
+                  updateError
+                    ? "text-[var(--ms-error)]"
+                    : "text-[var(--ms-text-dim)]"
+                }`}
+              >
+                {updateError
+                  ? "Update failed — tap to retry, or install from the website"
+                  : updating
+                    ? updatePct != null && updatePct >= 100
+                      ? "Restarting…"
+                      : updatePct != null
+                        ? `Downloading… ${updatePct}%`
+                        : "Restarting…"
+                    : `v${updateInfo.version} — tap to install`}
               </div>
             </button>
           )}

@@ -28,11 +28,11 @@ const AGC_RELEASE: f32 = 0.08;
 const STT_GATE_FLOOR_OPEN: f32 = 0.0032;
 const STT_GATE_FLOOR_CLOSE: f32 = 0.0015;
 const STT_GATE_REL_OPEN: f32 = 0.12;
-const STT_GATE_REL_CLOSE: f32 = 0.055;
+const STT_GATE_REL_CLOSE: f32 = 0.042;
 const STT_GATE_PEAK_ATTACK: f32 = 0.28;
 const STT_GATE_PEAK_DECAY_OPEN: f32 = 0.996;
 const STT_GATE_PEAK_DECAY_CLOSED: f32 = 0.97;
-const STT_GATE_HANGOVER_MS: u32 = 220;
+const STT_GATE_HANGOVER_MS: u32 = 350;
 const STT_GATE_START_PEAK: f32 = 0.012;
 
 struct SttGate {
@@ -774,6 +774,25 @@ mod gate_tests {
     }
 
     #[test]
+    fn quiet_tail_stays_open_through_hangover() {
+        let mut gate = SttGate::new();
+        let speech = tone(160, 0.22);
+        let quiet = tone(160, 0.004);
+        for _ in 0..20 {
+            assert!(passed(&apply_near_field_gate_inner(&speech, &mut gate, 16000)));
+        }
+        // ~250ms of trailing-off speech — shorter than hangover, must still pass.
+        for i in 0..25 {
+            let out = apply_near_field_gate_inner(&quiet, &mut gate, 16000);
+            assert!(
+                passed(&out),
+                "quiet phrase ending muted at frame {i} (peak={:.3})",
+                gate.peak
+            );
+        }
+    }
+
+    #[test]
     fn reopens_after_mid_hold_pause() {
         let mut gate = SttGate::new();
         let speech = tone(160, 0.22);
@@ -781,8 +800,8 @@ mod gate_tests {
         for _ in 0..20 {
             assert!(passed(&apply_near_field_gate_inner(&speech, &mut gate, 16000)));
         }
-        // ~400ms of silence — longer than hangover, gate should close.
-        for _ in 0..40 {
+        // Longer than hangover so the gate actually closes.
+        for _ in 0..50 {
             let _ = apply_near_field_gate_inner(&silence, &mut gate, 16000);
         }
         assert!(!gate.open, "expected gate to close after a pause");
@@ -806,7 +825,7 @@ mod gate_tests {
         for _ in 0..15 {
             assert!(passed(&apply_near_field_gate_inner(&close, &mut gate, 16000)));
         }
-        for _ in 0..40 {
+        for _ in 0..50 {
             let _ = apply_near_field_gate_inner(&vec![0.0; 160], &mut gate, 16000);
         }
         for _ in 0..20 {
