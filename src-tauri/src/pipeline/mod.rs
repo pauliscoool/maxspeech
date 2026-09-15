@@ -102,34 +102,40 @@ fn hide_overlay_if_current(app: &tauri::AppHandle, paste_token: u64) {
     hide_overlay_fast(app);
 }
 
+/// Bottom-center pill slot on the monitor under the cursor (falls back to
+/// primary). Recomputed every hotkey — a OnceLock left Ctrl+Win stuck on the
+/// first screen forever, and `current_monitor()` is wrong while parked off-screen.
+fn overlay_listening_slot(w: &tauri::WebviewWindow) -> (i32, i32) {
+    let monitor = w
+        .cursor_position()
+        .ok()
+        .and_then(|p| w.monitor_from_point(p.x, p.y).ok().flatten())
+        .or_else(|| w.primary_monitor().ok().flatten())
+        .or_else(|| w.current_monitor().ok().flatten());
+
+    if let Some(monitor) = monitor {
+        let scale = monitor.scale_factor();
+        let size = monitor.size();
+        let origin = monitor.position();
+        let pill_w = (148.0 * scale).round() as i32;
+        let pill_h = (36.0 * scale).round() as i32;
+        let margin = (48.0 * scale).round() as i32;
+        (
+            origin.x + (size.width as i32 - pill_w) / 2,
+            origin.y + size.height as i32 - pill_h - margin,
+        )
+    } else {
+        (873, 996)
+    }
+}
+
 fn show_overlay_fast_inner(app: &tauri::AppHandle) {
-    use std::sync::OnceLock;
-
-    /// Physical bottom-center slot, resolved once. Idle parks the same-sized
-    /// HWND off-screen, so the hotkey only has to clip (off-screen) and move.
-    static SLOT: OnceLock<(i32, i32)> = OnceLock::new();
-
     // Only create a WebView2 here if startup pre-warm missed. Callers start
     // mic + Deepgram *before* this so a cold overlay cannot steal the first seconds.
     let cold = app.get_webview_window("overlay").is_none();
     crate::ensure_overlay_window(app);
     if let Some(w) = app.get_webview_window("overlay") {
-        let (x, y) = *SLOT.get_or_init(|| {
-            if let Ok(Some(monitor)) = w.current_monitor() {
-                let scale = monitor.scale_factor();
-                let size = monitor.size();
-                let origin = monitor.position();
-                let pill_w = (148.0 * scale).round() as i32;
-                let pill_h = (36.0 * scale).round() as i32;
-                let margin = (48.0 * scale).round() as i32;
-                (
-                    origin.x + (size.width as i32 - pill_w) / 2,
-                    origin.y + size.height as i32 - pill_h - margin,
-                )
-            } else {
-                (873, 996)
-            }
-        });
+        let (x, y) = overlay_listening_slot(&w);
         // Clip while still parked, then one SetWindowPos — never reveal a
         // rectangular HWND for a frame.
         crate::overlay_win::reveal_listening(&w, x, y);
