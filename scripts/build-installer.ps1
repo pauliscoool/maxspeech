@@ -34,7 +34,7 @@ $sizeBytes = (Get-Item $webDlStable).Length
 $stableUrl = "https://maxspeech.vercel.app/downloads/MaxSpeech_x64-setup.exe"
 $manifest = @{
   version = $ver
-  notes   = "MaxSpeech $ver - full Windows installer with embedded WebView2"
+  notes   = "MaxSpeech $ver - Windows installer (downloads WebView2 only if missing)"
   # Always advertise the stable EXE — versioned URLs 307-redirect and break
   # some browser download= / in-app updater flows.
   url     = $stableUrl

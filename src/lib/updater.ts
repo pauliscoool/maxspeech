@@ -339,15 +339,10 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
     const update = await check();
     if (update && isNewerVersion(update.version, currentVersion)) {
       cached = update;
-      const os = detectHostOs();
       return {
         version: update.version,
         body: update.body ?? null,
         currentVersion,
-        downloadUrl:
-          os === "windows"
-            ? windowsInstallerCandidates(update.version)[0]
-            : undefined,
         source: "tauri",
       };
     }
@@ -474,12 +469,22 @@ export async function installAvailableUpdate(
     throw new Error("You're already on the latest version.");
   }
 
+  // Prefer the signed Tauri package (app files only — no 200MB WebView2 offline
+  // blob). Fall back to the compact NSIS setup + detached reinstaller when the
+  // signed channel is missing or fails.
+  if (info.source === "tauri" && cached) {
+    try {
+      await installSignedTauriUpdate(onProgress);
+      return;
+    } catch (err) {
+      console.warn("Signed Tauri update failed; falling back to NSIS", err);
+      cached = null;
+    }
+  }
+
   const windows = detectHostOs() === "windows";
   const url = resolveInstallUrl(info);
 
-  // Windows: always download the full NSIS setup and hand it to the
-  // detached reinstaller (quit → silent /S /UPDATE → relaunch). Do not use
-  // Tauri's install() here — it ShellExecutes while we still hold the exe.
   if (windows) {
     const installerUrl = looksLikeDirectInstaller(url)
       ? url
