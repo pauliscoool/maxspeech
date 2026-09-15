@@ -13,6 +13,7 @@ mod secrets;
 mod sound;
 mod store;
 mod stt;
+mod win_update;
 
 use store::Store;
 use tauri::{
@@ -22,7 +23,7 @@ use tauri::{
 };
 
 /// Native error dialog — works even when the WebView never starts.
-fn show_native_error(title: &str, message: &str) {
+pub(crate) fn show_native_error(title: &str, message: &str) {
     #[cfg(windows)]
     {
         use std::os::windows::ffi::OsStrExt;
@@ -675,145 +676,6 @@ async fn preview_sound_cue(app: tauri::AppHandle, volume: Option<String>) -> Res
     Ok(())
 }
 
-#[cfg(windows)]
-fn spawn_detached_nsis_updater(installer: &std::path::Path) -> Result<(), String> {
-    use std::os::windows::process::CommandExt;
-    // CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB | CREATE_NO_WINDOW
-    const FLAGS: u32 = 0x0000_0200 | 0x0000_0008 | 0x0100_0000 | 0x0800_0000;
-    std::process::Command::new(installer)
-        .args(["/S", "/UPDATE"])
-        .creation_flags(FLAGS)
-        .spawn()
-        .map_err(|e| format!("Could not launch installer: {e}"))?;
-    Ok(())
-}
-
-/// Terminate any other maxspeech.exe so NSIS can overwrite. Leaves this PID
-/// alone; `process::exit` finishes the job. Overlay lives in this process.
-#[cfg(windows)]
-fn kill_other_maxspeech_processes() {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let pid = std::process::id();
-    let _ = std::process::Command::new("taskkill")
-        .args([
-            "/F",
-            "/IM",
-            "maxspeech.exe",
-            "/FI",
-            &format!("PID ne {pid}"),
-        ])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output();
-}
-
-/// Download the latest installer from `url`, emit progress, then launch it.
-/// Used when the signed Tauri updater isn't available yet.
-#[tauri::command]
-async fn download_and_run_installer(app: tauri::AppHandle, url: String) -> Result<(), String> {
-    use futures_util::StreamExt;
-    use std::io::Write;
-
-    let client = reqwest::Client::new();
-    let response = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| format!("Download failed: {e}"))?;
-
-    if !response.status().is_success() {
-        return Err(format!("Download failed: HTTP {}", response.status()));
-    }
-
-    let total = response.content_length().unwrap_or(0);
-    let filename = url
-        .rsplit('/')
-        .next()
-        .and_then(|s| {
-            let clean = s.split('?').next().unwrap_or(s);
-            if clean.is_empty() { None } else { Some(clean) }
-        })
-        .unwrap_or("MaxSpeech-update.bin");
-
-    let path = std::env::temp_dir().join(filename);
-    let mut file = std::fs::File::create(&path)
-        .map_err(|e| format!("Could not write installer: {e}"))?;
-
-    let mut downloaded: u64 = 0;
-    let mut stream = response.bytes_stream();
-    let _ = app.emit("installer-download-progress", 0i32);
-
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| format!("Download interrupted: {e}"))?;
-        file.write_all(&chunk)
-            .map_err(|e| format!("Could not write installer: {e}"))?;
-        downloaded += chunk.len() as u64;
-        if total > 0 {
-            let pct = ((downloaded * 100) / total).min(99) as i32;
-            let _ = app.emit("installer-download-progress", pct);
-        }
-    }
-    file.flush()
-        .map_err(|e| format!("Could not finish installer write: {e}"))?;
-    let _ = app.emit("installer-download-progress", 100u32);
-
-    #[cfg(target_os = "windows")]
-    {
-        // Brief pause so the UI can show "Restarting…" before we die.
-        tokio::time::sleep(std::time::Duration::from_millis(1400)).await;
-
-        // Silent + update mode. Do NOT pass /R: Tauri's RunAsUser waits until
-        // the tray app exits and hangs the installer. POSTINSTALL ShellExecute
-        // launches the app asynchronously instead. /UPDATE skips uninstall-first.
-        //
-        // Detach from our job/process group so exiting MaxSpeech cannot take
-        // the installer down with it (WebView2 job objects).
-        spawn_detached_nsis_updater(&path)?;
-        for (_, w) in app.webview_windows() {
-            let _ = w.hide();
-        }
-        kill_other_maxspeech_processes();
-        // Hard-quit so NSIS can overwrite the running binary. `app.exit` can
-        // race with tray keep-alive; process::exit is definitive. PREINSTALL
-        // also KillProcess as a backup; POSTINSTALL starts the new build.
-        // Do not return Ok(()) — the IPC completing lets the frontend think
-        // install finished while this process is still locking the exe.
-        std::process::exit(0);
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("open")
-            .arg(&path)
-            .spawn()
-            .map_err(|e| format!("Could not open installer: {e}"))?;
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if path.extension().and_then(|e| e.to_str()) == Some("AppImage") {
-            let mut perms = std::fs::metadata(&path)
-                .map_err(|e| e.to_string())?
-                .permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&path, perms).map_err(|e| e.to_string())?;
-            std::process::Command::new(&path)
-                .spawn()
-                .map_err(|e| format!("Could not launch AppImage: {e}"))?;
-            tokio::time::sleep(std::time::Duration::from_millis(600)).await;
-            app.exit(0);
-        } else {
-            std::process::Command::new("xdg-open")
-                .arg(&path)
-                .spawn()
-                .map_err(|e| format!("Could not open installer: {e}"))?;
-        }
-    }
-
-    Ok(())
-}
-
 /// Re-transcribe a recent local recording. Types into the focused app when it
 /// isn't MaxSpeech; otherwise copies to the clipboard (injecting into our own
 /// WebView scrolls the history list via Space key events).
@@ -980,6 +842,9 @@ fn ensure_default_autostart(app: &tauri::AppHandle) {
 fn main() {
     install_panic_hook();
     ensure_logs_dir();
+    // Must run before WebView2 / single-instance — the helper is a renamed
+    // copy of this exe and must not open the tray app.
+    win_update::run_if_reinstaller();
 
     if std::env::args().any(|a| a == "--diagnose") {
         match write_diagnose_report() {
@@ -1111,7 +976,7 @@ fn main() {
             park_overlay_idle,
             set_overlay_click_through,
             preview_sound_cue,
-            download_and_run_installer,
+            win_update::download_and_run_installer,
             remake_dictation,
             update_history_text,
         ])

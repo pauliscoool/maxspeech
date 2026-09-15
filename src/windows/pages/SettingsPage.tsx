@@ -5,8 +5,11 @@ import { enable, disable, isEnabled } from "@tauri-apps/plugin-autostart";
 import Toggle from "../../components/Toggle";
 import {
   checkForUpdate,
+  formatUpdateFailure,
   getAppVersion,
   installAvailableUpdate,
+  openUpdateWebsite,
+  UPDATE_FAILED_MESSAGE,
   type UpdateInfo,
 } from "../../lib/updater";
 import {
@@ -477,16 +480,14 @@ export default function SettingsPage({
       });
       setUpdateMsg("Restarting…");
     } catch (e) {
-      const msg = String(e).replace(/^Error:\s*/i, "");
+      const msg = formatUpdateFailure(e);
       if (msg.includes("latest version")) {
         setUpdateInfo(null);
         onUpdateFound?.(null);
+        setUpdateMsg(msg);
+      } else {
+        setUpdateMsg(msg || UPDATE_FAILED_MESSAGE);
       }
-      setUpdateMsg(
-        msg.includes("Opened the download") || msg.includes("latest version")
-          ? msg
-          : `Update failed: ${msg}`,
-      );
       setUpdating(false);
       setUpdatePct(null);
     }
@@ -970,7 +971,30 @@ export default function SettingsPage({
           )}
 
           {updateMsg && (
-            <p className="px-4 pb-3 text-xs text-[var(--ms-text-dim)]">{updateMsg}</p>
+            <div className="px-4 pb-3 space-y-2">
+              <p
+                className={`text-xs leading-relaxed ${
+                  updateMsg.toLowerCase().includes("fail") ||
+                  updateMsg.toLowerCase().includes("couldn't") ||
+                  updateMsg.toLowerCase().includes("could not")
+                    ? "text-[var(--ms-error)]"
+                    : "text-[var(--ms-text-dim)]"
+                }`}
+              >
+                {updateMsg}
+              </p>
+              {(updateMsg.toLowerCase().includes("fail") ||
+                updateMsg.toLowerCase().includes("website")) && (
+                <button
+                  type="button"
+                  onClick={() => void openUpdateWebsite()}
+                  className="px-3 py-1.5 text-xs rounded-full font-semibold text-[var(--ms-turquoise)] hover:text-[var(--ms-hover-fg)] transition-colors"
+                  style={{ background: "var(--ms-fill-muted)" }}
+                >
+                  Open website
+                </button>
+              )}
+            </div>
           )}
 
           <div className="settings-row">

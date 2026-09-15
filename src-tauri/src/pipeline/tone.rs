@@ -183,31 +183,43 @@ Prefer the reading that makes the sentence sensible. Examples: \
   'tail scale' / 'tailscale' / 'tale scale' → 'Tailscale' \
   (do NOT rewrite unrelated 'tail' or 'scale') \
 - common: 'there'/'their'/'they're', 'to'/'too'/'two', 'its'/'it's' by grammar \
-- numbers: ASR often inserts digits for homophones ('for'→'4', 'to'→'2', 'won'→'1'). \
-  Prefer the word that fits the sentence; only use digits when the speaker clearly \
-  dictated a number, code, time, or quantity (e.g. 'meet at 4pm', 'room 101'). \
-  In normal prose keep spelled-out numbers as words unless obviously numeric. \
+- numbers: ASR (numerals=true) turns spoken words into digits. \
+  Spell out 0–20 in prose ('I have 2 apples'→'I have two apples', \
+  'wait 10 minutes'→'wait ten minutes', 'Covenant Core 1'→'Covenant Core one'). \
+  Use digits from 21 up ('47', '101', '2024') and for phone/ID strings. \
+  Keep digits for labeled codes/times ('meet at 4pm', 'room 2', 'version 2', \
+  'page 3', 'issue 1042') and numeric ranges ('2 to 5'). \
+  Also fix digit homophones ('for'→'4', 'to'→'2', 'won'→'1') when context is not numeric. \
+- okay: spoken 'k' / 'ok' / 'kay' → 'okay'. Do NOT rewrite the letter K after \
+  vitamin/press/grade/key, or the name Kay ('Hi Kay'). \
 - percents (VERY common): '10 times' / 'ten times' → '10%' when the speaker meant \
   a percentage (at/by/of/about/only/discount/rate/tax/tip), NOT repetition \
   ('do it 10 times') or comparison ('10 times faster'). \
   'ten percent' / '10 percent' → '10%'. \
 - contractions: ASR drops apostrophes — dont→don't, doesnt→doesn't, im→I'm, \
-  ive→I've, thats→that's, youre→you're, theyre→they're, wont→won't, cant→can't. \
+  ive→I've, thats→that's, youre→you're, theyre→they're, wont→won't, cant→can't, \
+  aint→ain't, ill go→I'll go (not 'ill' as in sick). \
   'lets go/see/try' → 'let's …'. 'id like' → 'I'd like' (not user id). \
 - numeral homophones (numerals=true): 'thanks 4 the'→'thanks for the', \
   'need 2 go'→'need to go', '2 much'→'too much', '1 of'→'one of', 'no 1'→'no one'. \
-  Keep real quantities, times, and codes ('room 2', 'meet at 4pm', 'version 2'). \
+  0–20 in titles/names/prose → words ('Covenant Core 1'→'Covenant Core one'). \
+  Keep real codes/times, ranges, 21+, and long numeric IDs as digits \
+  ('room 2', 'meet at 4pm', 'version 2', 'call 555-1212', 'issue 1042'). \
 - split product names: 'type script'→TypeScript, 'java script'→JavaScript, \
   'super base'→Supabase, 'verse cell'→Vercel, 'cloud flare'→Cloudflare, \
   'chat gpt'→ChatGPT, 'open ai'→OpenAI, 'vs code'→VS Code, \
   'curse forge'→CurseForge (not Cursor), 'post grass'→Postgres, \
   'covenant court'/'covenant corner'/'covenant core'→Covenant Core, \
   'tail scale'/'tale scale'/'tailscale'→Tailscale. \
-- 'could of'/'would of'/'should of' → could've/would've/should've \
-  (unless 'of the/a/course'). \
+- 'could of'/'would of'/'should of'/'might of' → could've/would've/should've/might've \
+  (unless 'of the/a/course'). woulda/coulda/shoulda → would've/could've/should've. \
 - comparatives: 'better then' / 'more then' / 'rather then' → than. \
 - 'to much' / 'to many' / 'to late' → too. \
-- 'its a' / 'its not' / 'its been' → it's; 'your going' / 'your welcome' → you're. \
+- 'its a' / 'its not' / 'its been' / 'its okay' → it's; 'your going' / 'your welcome' / 'your k' → you're. \
+- 'whose going/gonna/not' → who's. \
+- fused slips: alot→a lot, atleast→at least, aswell→as well, incase→in case, \
+  eachother→each other, nevermind→never mind, noone→no one, everytime→every time, \
+  cuz→because, tho→though, dunno→don't know. \
 - possessives: if a known name appears as Names, restore Name's. \
 Do NOT invent new content. Only swap clearly wrong ASR tokens. \
 Do NOT change ordinary English 'get' ('I want to get coffee'). \
@@ -469,7 +481,8 @@ pub fn local_asr_cleanup(text: &str) -> String {
     let after_contractions = fix_spoken_contractions(text);
     let after_numerals = fix_numeral_homophones(&after_contractions);
     let after_homophones = fix_common_homophones(&after_numerals);
-    let after_percent_word = fix_spoken_percent_word(&after_homophones);
+    let after_okay = fix_spoken_okay(&after_homophones);
+    let after_percent_word = fix_spoken_percent_word(&after_okay);
     fix_percent_heard_as_times(&after_percent_word)
 }
 
@@ -557,12 +570,26 @@ fn contraction_for(lower: &str, next: &str) -> Option<&'static str> {
         )
         .then_some("I'd");
     }
+    if lower == "ill" {
+        return matches!(
+            next,
+            "go" | "be" | "have" | "get" | "do" | "see" | "take" | "make"
+                | "come" | "send" | "call" | "ask" | "try" | "start" | "stop"
+                | "let" | "put" | "use" | "need" | "just" | "also" | "still"
+                | "probably" | "maybe" | "check" | "wait" | "add" | "fix"
+        )
+        .then_some("I'll");
+    }
     Some(match lower {
         "dont" => "don't",
         "doesnt" => "doesn't",
         "didnt" => "didn't",
         "wont" => "won't",
         "cant" => "can't",
+        "aint" => "ain't",
+        "hows" => "how's",
+        "whens" => "when's",
+        "oclock" => "o'clock",
         "isnt" => "isn't",
         "arent" => "aren't",
         "wasnt" => "wasn't",
@@ -596,16 +623,12 @@ fn contraction_for(lower: &str, next: &str) -> Option<&'static str> {
 fn is_quantity_prev(prev: &str) -> bool {
     matches!(
         prev,
-        "at" | "around" | "about" | "room" | "page" | "version" | "v"
+        "at" | "around" | "room" | "page" | "version" | "v"
             | "chapter" | "item" | "number" | "line" | "port" | "issue"
-            | "age" | "aged" | "volume" | "size" | "count" | "plus" | "minus"
+            | "age" | "aged" | "volume" | "size" | "count"
             | "versus" | "vs" | "episode" | "season" | "track" | "level"
             | "floor" | "apartment" | "apt" | "suite" | "gate" | "build"
-            | "revision" | "model" | "of" | "no" | "than" | "between" | "over"
-            | "under" | "from" | "last" | "next" | "first" | "step" | "part"
-            | "day" | "days" | "hour" | "hours" | "minute" | "minutes" | "week"
-            | "weeks" | "month" | "months" | "year" | "years" | "dollar"
-            | "dollars" | "pound" | "pounds" | "euro" | "euros" | "percent"
+            | "revision" | "model" | "step" | "part"
     )
 }
 
@@ -615,13 +638,25 @@ fn is_unit_or_quantity_next(next: &str) -> bool {
     }
     matches!(
         next,
+        // Keep digits only where numbers are labels, clock times, percents,
+        // ordinals, or tech units — prose amounts become words instead.
         "times" | "time" | "percent" | "percentage" | "pm" | "am" | "st"
-            | "nd" | "rd" | "th" | "dollars" | "cents" | "minutes" | "hours"
-            | "seconds" | "days" | "weeks" | "months" | "years" | "people"
-            | "items" | "plus" | "minus" | "bucks" | "km" | "miles" | "meters"
-            | "kg" | "lbs" | "gb" | "mb" | "kb" | "tb" | "ghz" | "mhz" | "px"
-            | "bit" | "bits" | "bytes"
+            | "nd" | "rd" | "th" | "km" | "kg" | "lbs" | "gb" | "mb" | "kb"
+            | "tb" | "ghz" | "mhz" | "px" | "bit" | "bits" | "bytes" | "k"
     )
+}
+
+fn is_numeric_token(bare: &str) -> bool {
+    !bare.is_empty() && bare.chars().all(|c| c.is_ascii_digit())
+}
+
+fn is_range_keep(prev: &str, prev2: &str, next: &str, next2: &str) -> bool {
+    if is_numeric_token(prev) || is_numeric_token(next) {
+        return true;
+    }
+    const LINK: &[&str] = &["to", "and", "or", "through", "thru", "versus", "vs"];
+    (LINK.contains(&next) && is_numeric_token(next2))
+        || (LINK.contains(&prev) && is_numeric_token(prev2))
 }
 
 fn is_for_next(next: &str) -> bool {
@@ -690,6 +725,44 @@ fn capitalize_if_needed(prev_orig: Option<&str>, word: &str) -> String {
     }
 }
 
+/// Spoken 0–20 → English words. 21+ and decimals stay numeric.
+fn prose_number_word(bare: &str) -> Option<&'static str> {
+    match bare {
+        "0" => Some("zero"),
+        "1" => Some("one"),
+        "2" => Some("two"),
+        "3" => Some("three"),
+        "4" => Some("four"),
+        "5" => Some("five"),
+        "6" => Some("six"),
+        "7" => Some("seven"),
+        "8" => Some("eight"),
+        "9" => Some("nine"),
+        "10" => Some("ten"),
+        "11" => Some("eleven"),
+        "12" => Some("twelve"),
+        "13" => Some("thirteen"),
+        "14" => Some("fourteen"),
+        "15" => Some("fifteen"),
+        "16" => Some("sixteen"),
+        "17" => Some("seventeen"),
+        "18" => Some("eighteen"),
+        "19" => Some("nineteen"),
+        "20" => Some("twenty"),
+        _ => None,
+    }
+}
+
+fn is_spelled_small_number(lower: &str) -> bool {
+    matches!(
+        lower,
+        "zero" | "one" | "two" | "three" | "four" | "five" | "six" | "seven"
+            | "eight" | "nine" | "ten" | "eleven" | "twelve" | "thirteen"
+            | "fourteen" | "fifteen" | "sixteen" | "seventeen" | "eighteen"
+            | "nineteen" | "twenty"
+    )
+}
+
 fn fix_numeral_homophones(text: &str) -> String {
     let words: Vec<&str> = text.split_whitespace().collect();
     if words.is_empty() {
@@ -700,10 +773,21 @@ fn fix_numeral_homophones(text: &str) -> String {
         let w = words[i];
         let (lead, bare, trail) = split_word_punct(w);
         let next = next_bare_lower(&words, i);
+        let next2 = words
+            .get(i + 2)
+            .map(|n| split_word_punct(n).1.to_ascii_lowercase())
+            .unwrap_or_default();
         let prev = out
             .last()
             .map(|p| split_word_punct(p).1.to_ascii_lowercase())
             .unwrap_or_default();
+        let prev2 = out
+            .get(out.len().saturating_sub(2))
+            .map(|p| split_word_punct(p).1.to_ascii_lowercase())
+            .unwrap_or_default();
+        let keep_digit = is_quantity_prev(&prev)
+            || is_unit_or_quantity_next(&next)
+            || is_range_keep(&prev, &prev2, &next, &next2);
 
         let mapped = if prev == "no" && bare == "1" {
             Some("one")
@@ -716,7 +800,8 @@ fn fix_numeral_homophones(text: &str) -> String {
                 "2" if is_too_next(&next) => Some("too"),
                 "2" if is_to_next(&next) => Some("to"),
                 "1" if next == "of" => Some("one"),
-                _ => None,
+                // Prose / product titles: "Covenant Core 1" → "… one", "10 apples" → "ten".
+                _ => prose_number_word(bare),
             }
         } else {
             None
@@ -736,8 +821,9 @@ fn is_its_contraction_next(next: &str) -> bool {
     matches!(
         next,
         "a" | "an" | "the" | "not" | "been" | "going" | "gonna" | "ok"
-            | "okay" | "just" | "really" | "already" | "always" | "never"
+            | "okay" | "k" | "kay" | "just" | "really" | "already" | "always" | "never"
             | "still" | "also" | "only" | "actually" | "currently" | "probably"
+            | "fine" | "ready" | "done" | "time" | "working" | "broken"
     )
 }
 
@@ -746,6 +832,7 @@ fn is_youre_next(next: &str) -> bool {
         next,
         "going" | "gonna" | "not" | "welcome" | "being" | "doing" | "getting"
             | "looking" | "trying" | "having" | "making" | "coming"
+            | "k" | "ok" | "okay" | "kay" | "right" | "sure" | "fine" | "ready"
     )
 }
 
@@ -782,7 +869,7 @@ fn fix_common_homophones(text: &str) -> String {
             .map(|p| split_word_punct(p).1.to_ascii_lowercase())
             .unwrap_or_default();
 
-        if matches!(prev.as_str(), "could" | "would" | "should" | "must")
+        if matches!(prev.as_str(), "could" | "would" | "should" | "must" | "might")
             && lower == "of"
             && of_after_modal_ok(&next)
         {
@@ -792,6 +879,7 @@ fn fix_common_homophones(text: &str) -> String {
                 "could" => "could've",
                 "would" => "would've",
                 "should" => "should've",
+                "might" => "might've",
                 _ => "must've",
             };
             out.push(format!(
@@ -837,10 +925,133 @@ fn fix_common_homophones(text: &str) -> String {
             continue;
         }
 
+        if lower == "whose"
+            && matches!(
+                next.as_str(),
+                "going" | "gonna" | "not" | "been" | "doing" | "coming"
+                    | "got" | "here" | "there" | "that" | "this"
+            )
+        {
+            out.push(format!("{lead}{}{trail}", copy_casing(bare, "who's")));
+            i += 1;
+            continue;
+        }
+
+        if let Some(repl) = fused_grammar_fix(&lower) {
+            out.push(format!("{lead}{}{trail}", copy_casing(bare, repl)));
+            i += 1;
+            continue;
+        }
+
         out.push(w.to_string());
         i += 1;
     }
     out.join(" ")
+}
+
+fn fused_grammar_fix(lower: &str) -> Option<&'static str> {
+    Some(match lower {
+        "alot" => "a lot",
+        "aswell" => "as well",
+        "atleast" => "at least",
+        "incase" => "in case",
+        "eachother" => "each other",
+        "nevermind" => "never mind",
+        "noone" => "no one",
+        "everytime" => "every time",
+        "infront" => "in front",
+        "woulda" => "would've",
+        "coulda" => "could've",
+        "shoulda" => "should've",
+        "cuz" => "because",
+        "tho" => "though",
+        "dunno" => "don't know",
+        "lemme" => "let me",
+        "gimme" => "give me",
+        "outta" => "out of",
+        "supposably" => "supposedly",
+        "expresso" => "espresso",
+        "yea" => "yeah",
+        _ => return None,
+    })
+}
+
+/// Spoken "k" / "ok" / "kay" → "okay". Short replies skip the LLM, so this
+/// has to be local. Skip the letter K and the name Kay.
+fn fix_spoken_okay(text: &str) -> String {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if words.is_empty() {
+        return text.to_string();
+    }
+    let only = words.len() == 1;
+    let mut out: Vec<String> = Vec::with_capacity(words.len());
+    for (i, w) in words.iter().enumerate() {
+        let (lead, bare, trail) = split_word_punct(w);
+        let lower = bare.to_ascii_lowercase();
+        let next = next_bare_lower(&words, i);
+        let prev = out
+            .last()
+            .map(|p| split_word_punct(p).1.to_ascii_lowercase())
+            .unwrap_or_default();
+        if should_expand_okay(&lower, &prev, &next, only) {
+            let cased = spoken_okay_casing(bare, out.last().map(|s| s.as_str()));
+            out.push(format!("{lead}{cased}{trail}"));
+        } else {
+            out.push((*w).to_string());
+        }
+    }
+    out.join(" ")
+}
+
+fn should_expand_okay(lower: &str, prev: &str, next: &str, only_word: bool) -> bool {
+    if !matches!(lower, "k" | "ok" | "kay") {
+        return false;
+    }
+    if is_numeric_token(prev)
+        || is_numeric_token(next)
+        || is_spelled_small_number(prev)
+    {
+        return false;
+    }
+    if matches!(
+        prev,
+        "vitamin" | "letter" | "grade" | "key" | "press" | "hit" | "type"
+            | "factor" | "model" | "alt" | "ctrl" | "control" | "shift"
+    ) {
+        return false;
+    }
+    if lower == "ok" || lower == "k" {
+        return true;
+    }
+    // "kay" is also the name Kay.
+    if matches!(
+        prev,
+        "hi" | "hey" | "dear" | "ask" | "tell" | "call" | "from" | "with"
+            | "thanks" | "thank" | "meet"
+    ) {
+        return false;
+    }
+    if only_word {
+        return true;
+    }
+    matches!(
+        next,
+        "thanks" | "thank" | "cool" | "sounds" | "got" | "great" | "sure"
+            | "yeah" | "yes" | "no" | "i" | "we" | "you" | "lets" | "good"
+            | "perfect" | "fine" | "bet"
+    ) ||     matches!(
+        prev,
+        "thats" | "that's" | "its" | "it's" | "im" | "i'm" | "yeah" | "so"
+            | "but" | "alright" | "yes" | "no" | "ok" | "okay"
+    )
+}
+
+fn spoken_okay_casing(bare: &str, prev: Option<&str>) -> String {
+    let alpha: String = bare.chars().filter(|c| c.is_alphabetic()).collect();
+    if !alpha.is_empty() && alpha.chars().all(|c| c.is_lowercase()) {
+        return "okay".to_string();
+    }
+    capitalize_if_needed(prev, "okay")
 }
 
 fn fix_spoken_percent_word(text: &str) -> String {
@@ -1531,8 +1742,11 @@ mod tests {
         assert_eq!(local_asr_cleanup("lets go"), "let's go");
         assert_eq!(local_asr_cleanup("lets the user in"), "lets the user in");
         assert_eq!(local_asr_cleanup("id like coffee"), "I'd like coffee");
-        assert_eq!(local_asr_cleanup("user id is 7"), "user id is 7");
+        assert_eq!(local_asr_cleanup("user id is 7"), "user id is seven");
         assert_eq!(local_asr_cleanup("Doesnt work"), "Doesn't work");
+        assert_eq!(local_asr_cleanup("ill go later"), "I'll go later");
+        assert_eq!(local_asr_cleanup("feel ill today"), "feel ill today");
+        assert_eq!(local_asr_cleanup("aint ready"), "ain't ready");
     }
 
     #[test]
@@ -1543,11 +1757,37 @@ mod tests {
         assert_eq!(local_asr_cleanup("1 of us"), "One of us");
         assert_eq!(local_asr_cleanup("no 1 else"), "no one else");
         assert_eq!(local_asr_cleanup("4 the meeting"), "For the meeting");
-        // Real quantities / times stay digits.
+        // Real codes / times stay digits.
         assert_eq!(local_asr_cleanup("meet at 4pm"), "meet at 4pm");
         assert_eq!(local_asr_cleanup("room 2"), "room 2");
         assert_eq!(local_asr_cleanup("version 2"), "version 2");
-        assert_eq!(local_asr_cleanup("I have 2 apples"), "I have 2 apples");
+        // 0–20 in prose → words; 21+ and labeled codes stay numeric.
+        assert_eq!(
+            local_asr_cleanup("Covenant Core 1"),
+            "Covenant Core one"
+        );
+        assert_eq!(
+            local_asr_cleanup("I have 2 apples"),
+            "I have two apples"
+        );
+        assert_eq!(
+            local_asr_cleanup("I have 10 apples"),
+            "I have ten apples"
+        );
+        assert_eq!(
+            local_asr_cleanup("wait 15 minutes"),
+            "wait fifteen minutes"
+        );
+        assert_eq!(
+            local_asr_cleanup("I counted 21 people"),
+            "I counted 21 people"
+        );
+        assert_eq!(local_asr_cleanup("from 2 to 5"), "from 2 to 5");
+        assert_eq!(local_asr_cleanup("chapter 3 is ready"), "chapter 3 is ready");
+        assert_eq!(local_asr_cleanup("issue 1042"), "issue 1042");
+        assert_eq!(local_asr_cleanup("call me at 5551212"), "call me at 5551212");
+        assert_eq!(local_asr_cleanup("built in 2024"), "built in 2024");
+        assert_eq!(local_asr_cleanup("needs 16 gb"), "needs 16 gb");
     }
 
     #[test]
@@ -1562,6 +1802,33 @@ mod tests {
         assert_eq!(local_asr_cleanup("could of course"), "could of course");
         assert_eq!(local_asr_cleanup("their going home"), "they're going home");
         assert_eq!(local_asr_cleanup("and then we left"), "and then we left");
+        assert_eq!(local_asr_cleanup("might of been worse"), "might've been worse");
+        assert_eq!(local_asr_cleanup("I shoulda known"), "I should've known");
+        assert_eq!(local_asr_cleanup("whose going later"), "who's going later");
+        assert_eq!(local_asr_cleanup("whose car is that"), "whose car is that");
+        assert_eq!(local_asr_cleanup("I have alot to do"), "I have a lot to do");
+        assert_eq!(local_asr_cleanup("atleast try"), "at least try");
+        assert_eq!(local_asr_cleanup("cuz I said so"), "because I said so");
+        assert_eq!(local_asr_cleanup("oh yea"), "oh yeah");
+    }
+
+    #[test]
+    fn expands_spoken_k_to_okay() {
+        assert_eq!(local_asr_cleanup("k"), "okay");
+        assert_eq!(local_asr_cleanup("K"), "Okay");
+        assert_eq!(local_asr_cleanup("k thanks"), "okay thanks");
+        assert_eq!(local_asr_cleanup("ok"), "okay");
+        assert_eq!(local_asr_cleanup("OK"), "Okay");
+        assert_eq!(local_asr_cleanup("kay"), "okay");
+        assert_eq!(local_asr_cleanup("that's k"), "that's okay");
+        assert_eq!(local_asr_cleanup("its k"), "it's okay");
+        assert_eq!(local_asr_cleanup("your k"), "you're okay");
+        assert_eq!(local_asr_cleanup("Kay thanks"), "Okay thanks");
+        // Letter K / name Kay stay put.
+        assert_eq!(local_asr_cleanup("vitamin k"), "vitamin k");
+        assert_eq!(local_asr_cleanup("press k"), "press k");
+        assert_eq!(local_asr_cleanup("Hi Kay"), "Hi Kay");
+        assert_eq!(local_asr_cleanup("costs 10 k"), "costs 10 k");
     }
 
     #[test]

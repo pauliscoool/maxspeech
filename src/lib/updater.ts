@@ -41,6 +41,14 @@ const WEBSITE_PAGES = {
   linux: "https://maxspeech.vercel.app/linux",
 } as const;
 
+const WEBSITE_WINDOWS_INSTALLER =
+  "https://maxspeech.vercel.app/downloads/MaxSpeech_x64-setup.exe";
+
+export const UPDATE_WEBSITE_URL = WEBSITE_PAGES.windows;
+
+export const UPDATE_FAILED_MESSAGE =
+  "Update failed. Please go to https://maxspeech.vercel.app and install the latest version. If that doesn't work, this issue will be resolved soon.";
+
 let cached: Update | null = null;
 let cachedManifest: UpdateInfo | null = null;
 
@@ -158,25 +166,59 @@ async function pickManifestDownloadUrl(
           ? manifest.platforms?.windows
           : undefined;
 
-  // Prefer the website's canonical / platform URL first. GitHub assets come
-  // later and are filtered by version so a stale release can't win.
+  // Prefer a real installer EXE. Never return a landing page while an
+  // installer URL is still on the list — browser HEAD is often blocked by
+  // CORS and used to drop the website/GitHub setup files.
   const candidates = [
     fromPlatforms,
     os === "windows" || os === "unknown" ? manifest.url : undefined,
+    os === "windows" || os === "unknown" ? WEBSITE_WINDOWS_INSTALLER : undefined,
     githubAssetUrl,
-    websitePageFallback(os),
+    ...windowsInstallerCandidates(targetVersion),
     manifest.github,
     GITHUB_RELEASES_PAGE,
+    websitePageFallback(os),
   ].filter((u): u is string => !!u);
 
+  const installers: string[] = [];
+  const pages: string[] = [];
   for (const url of candidates) {
     if (!installerUrlMatchesTarget(url, targetVersion)) continue;
-    if (!looksLikeDirectInstaller(url)) return url;
+    if (looksLikeDirectInstaller(url)) installers.push(url);
+    else pages.push(url);
+  }
+
+  for (const url of installers) {
+    if (isTrustedInstallerHost(url)) return url;
     if (await urlExists(url)) return url;
   }
 
-  return websitePageFallback(os);
+  return pages[0] || websitePageFallback(os);
 }
+
+function isTrustedInstallerHost(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return (
+      host === "maxspeech.vercel.app" ||
+      host === "github.com" ||
+      host.endsWith(".githubusercontent.com")
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function windowsInstallerCandidates(version: string): string[] {
+  const ver = version.trim().replace(/^v/i, "");
+  if (!ver) return [WEBSITE_WINDOWS_INSTALLER];
+  return [
+    WEBSITE_WINDOWS_INSTALLER,
+    `https://github.com/pauliscoool/maxspeech/releases/download/v${ver}/MaxSpeech_${ver}_x64-setup.exe`,
+    `https://github.com/pauliscoool/maxspeech/releases/latest/download/MaxSpeech_${ver}_x64-setup.exe`,
+  ];
+}
+
 
 export async function getAppVersion(): Promise<string> {
   try {
@@ -297,10 +339,15 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
     const update = await check();
     if (update && isNewerVersion(update.version, currentVersion)) {
       cached = update;
+      const os = detectHostOs();
       return {
         version: update.version,
         body: update.body ?? null,
         currentVersion,
+        downloadUrl:
+          os === "windows"
+            ? windowsInstallerCandidates(update.version)[0]
+            : undefined,
         source: "tauri",
       };
     }
@@ -427,44 +474,85 @@ export async function installAvailableUpdate(
     throw new Error("You're already on the latest version.");
   }
 
+  const windows = detectHostOs() === "windows";
+  const url = resolveInstallUrl(info);
+
+  // Windows: always download the full NSIS setup and hand it to the
+  // detached reinstaller (quit → silent /S /UPDATE → relaunch). Do not use
+  // Tauri's install() here — it ShellExecutes while we still hold the exe.
+  if (windows) {
+    const installerUrl = looksLikeDirectInstaller(url)
+      ? url
+      : WEBSITE_WINDOWS_INSTALLER;
+    const embedded = versionFromUrl(installerUrl);
+    if (embedded && isNewerVersion(info.currentVersion, embedded)) {
+      await failUpdateAndOpenWebsite(
+        "Opened the download page — the linked installer was outdated.",
+      );
+    }
+    try {
+      await downloadAndRunInstaller(installerUrl, onProgress);
+    } catch (err) {
+      if (!isFatalInstallerError(err)) {
+        try {
+          await exit(0);
+        } catch {
+          // Process may already be exiting.
+        }
+        return;
+      }
+      await failUpdateAndOpenWebsite();
+    }
+    try {
+      await exit(0);
+    } catch {
+      // Process may already be exiting.
+    }
+    return;
+  }
+
   if (info.source === "tauri" && cached) {
     await installSignedTauriUpdate(onProgress);
     return;
   }
 
-  const url =
-    info.downloadUrl ||
-    cachedManifest?.downloadUrl ||
-    websitePageFallback();
-
-  // Hard stop: never download/run an installer whose filename embeds a version
-  // older than what we're currently running. Open the landing page instead.
   if (looksLikeDirectInstaller(url)) {
-    const embedded = versionFromUrl(url);
-    if (embedded && isNewerVersion(info.currentVersion, embedded)) {
-      console.warn(
-        `Refusing downgrade installer ${url} (embedded ${embedded} < running ${info.currentVersion})`,
-      );
-      await openUrl(websitePageFallback());
-      throw new Error(
-        "Opened the download page — the linked installer was outdated.",
-      );
-    }
     await downloadAndRunInstaller(url, onProgress);
-    if (detectHostOs() === "windows") {
-      // Rust hard-exits after spawning NSIS; backup if invoke returned.
-      try {
-        await exit(0);
-      } catch {
-        // Process may already be exiting.
-      }
-    }
     return;
   }
 
-  // Landing page / releases page — open in browser.
-  await openUrl(url);
-  throw new Error(
+  await failUpdateAndOpenWebsite(
     "Couldn't start the installer automatically. Opened the download page instead.",
   );
+}
+
+function resolveInstallUrl(info: UpdateInfo): string {
+  if (info.downloadUrl) return info.downloadUrl;
+  if (cachedManifest?.downloadUrl) return cachedManifest.downloadUrl;
+  if (detectHostOs() === "windows") return WEBSITE_WINDOWS_INSTALLER;
+  return websitePageFallback();
+}
+
+export async function openUpdateWebsite(): Promise<void> {
+  try {
+    await openUrl(websitePageFallback());
+  } catch {
+    // UI still shows the website URL.
+  }
+}
+
+/** Show the user-facing failure copy and open the download page. */
+export async function failUpdateAndOpenWebsite(detail?: string): Promise<never> {
+  await openUpdateWebsite();
+  if (detail && /latest version/i.test(detail)) {
+    throw new Error(detail);
+  }
+  throw new Error(UPDATE_FAILED_MESSAGE);
+}
+
+export function formatUpdateFailure(err: unknown): string {
+  const msg = String(err).replace(/^Error:\s*/i, "").trim();
+  if (/already on the latest/i.test(msg)) return msg;
+  if (msg === UPDATE_FAILED_MESSAGE) return msg;
+  return UPDATE_FAILED_MESSAGE;
 }

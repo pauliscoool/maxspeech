@@ -864,10 +864,10 @@ pub fn stop_dictation(app: &tauri::AppHandle) {
         *gen
     };
 
-    // Trail keeps the mic open past Deepgram endpointing so the last syllable
-    // finalizes. Short holds stay snappy but need enough tail for soft endings
-    // (40ms was dropping the last word ~1/5–1/10 of the time).
-    let trail_ms: u64 = if elapsed_secs < 5.0 { 140 } else { 280 };
+    // Keep capturing after hotkey-up. People release during the last syllable,
+    // and 140–280ms was still chopping endings. Snappy paste matters less than
+    // hearing the full phrase.
+    let trail_ms: u64 = if elapsed_secs < 5.0 { 520 } else { 800 };
 
     let stop_tx = state.stop_tx.lock().unwrap().take();
     let app_trail = app.clone();
