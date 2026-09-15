@@ -791,10 +791,7 @@ fn fix_numeral_homophones(text: &str) -> String {
 
         let mapped = if prev == "no" && bare == "1" {
             Some("one")
-        } else if matches!(bare, "1" | "2" | "4")
-            && !is_quantity_prev(&prev)
-            && !is_unit_or_quantity_next(&next)
-        {
+        } else if !keep_digit {
             match bare {
                 "4" if is_for_next(&next) => Some("for"),
                 "2" if is_too_next(&next) => Some("too"),
