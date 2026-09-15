@@ -4,6 +4,9 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   getCurrentWindow,
   currentMonitor,
+  cursorPosition,
+  monitorFromPoint,
+  primaryMonitor,
   LogicalSize,
   LogicalPosition,
 } from "@tauri-apps/api/window";
@@ -63,7 +66,6 @@ export default function Overlay() {
   useEffect(() => {
     // Warm path: keep WebView shown, but park OFF-SCREEN while idle so a failed
     // alpha composite cannot leave a permanent white strip on the desktop.
-    void ensureScreen();
     void clearOverlayChrome();
     void resizeForState("idle");
   }, []);
@@ -462,9 +464,6 @@ function truncate(s: string, n: number) {
   return t.length <= n ? t : t.slice(0, n - 1) + "…";
 }
 
-/** Cached monitor size so hotkey resize doesn't wait on currentMonitor every time. */
-let cachedScreen: { w: number; h: number } | null = null;
-
 async function clearOverlayChrome() {
   const win = getCurrentWindow();
   try {
@@ -490,29 +489,37 @@ async function setClickThrough(enabled: boolean) {
   }
 }
 
-async function ensureScreen(): Promise<{ w: number; h: number } | null> {
-  if (cachedScreen) return cachedScreen;
-  const monitor = await currentMonitor();
-  if (!monitor) return null;
-  const scale = monitor.scaleFactor;
-  cachedScreen = {
-    w: monitor.size.width / scale,
-    h: monitor.size.height / scale,
-  };
-  return cachedScreen;
+/** Fresh each call — monitor under cursor, not a Once-cached primary slot. */
+async function resolveTargetMonitor() {
+  try {
+    const cursor = await cursorPosition();
+    const underCursor = await monitorFromPoint(cursor.x, cursor.y);
+    if (underCursor) return underCursor;
+  } catch {
+    /* fall through */
+  }
+  return (await primaryMonitor()) ?? (await currentMonitor());
 }
 
 async function positionBottomCenter(w: number, h: number) {
   try {
     const win = getCurrentWindow();
-    const screen = await ensureScreen();
-    if (!screen) return;
+    const monitor = await resolveTargetMonitor();
+    if (!monitor) return;
+    const scale = monitor.scaleFactor;
+    const screenW = monitor.size.width / scale;
+    const screenH = monitor.size.height / scale;
+    const originX = monitor.position.x / scale;
+    const originY = monitor.position.y / scale;
     // Await chrome clear before paint — fire-and-forget left WebView2 white up.
     await clearOverlayChrome();
     await Promise.all([
       win.setSize(new LogicalSize(w, h)),
       win.setPosition(
-        new LogicalPosition((screen.w - w) / 2, screen.h - h - 48),
+        new LogicalPosition(
+          originX + (screenW - w) / 2,
+          originY + screenH - h - 48,
+        ),
       ),
       win.setAlwaysOnTop(true),
     ]);
