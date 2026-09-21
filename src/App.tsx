@@ -5,6 +5,7 @@ import Shell from "./windows/Shell";
 import Onboarding from "./windows/Onboarding";
 import AuthPanel from "./components/AuthPanel";
 import ErrorBoundary from "./components/ErrorBoundary";
+import AppleSpinner from "./components/AppleSpinner";
 import { loadAndApplyTheme } from "./lib/theme";
 import { getSessionUser, onAuthChange, type AuthUser } from "./lib/auth";
 import { pullCloudSettings } from "./lib/cloudSync";
@@ -98,8 +99,8 @@ export default function App() {
 
   if (!authReady) {
     return (
-      <div className="flex h-screen items-center justify-center bg-[var(--ms-bg)] text-[var(--ms-text-dim)] text-sm">
-        Loading…
+      <div className="flex h-screen flex-col items-center justify-center gap-3 bg-[var(--ms-bg)]">
+        <AppleSpinner size={28} />
       </div>
     );
   }

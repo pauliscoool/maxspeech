@@ -5,6 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { PageId } from "../Shell";
 import { friendlyAppName } from "../../lib/appNames";
 import ConfirmModal from "../../components/ConfirmModal";
+import AppleSpinner from "../../components/AppleSpinner";
 
 interface HistoryEntry {
   id: number;
@@ -414,8 +415,8 @@ export default function HomePage({
       </div>
 
       {loading && entries.length === 0 ? (
-        <div className="surface-card p-8 text-center">
-          <p className="text-xs text-[var(--ms-text-dim)]">Loading…</p>
+        <div className="surface-card p-8 flex items-center justify-center">
+          <AppleSpinner size={24} />
         </div>
       ) : entries.length === 0 ? (
         <div className="surface-card p-8 text-center space-y-2">

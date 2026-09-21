@@ -1517,16 +1517,71 @@ html[data-window="shell"] .flex.h-screen {
   }
 }
 
-/* Inline action spinner for Copy / Remake */
-.ms-spin {
-  width: 10px;
-  height: 10px;
-  border: 1.5px solid currentColor;
-  border-right-color: transparent;
-  border-radius: 50%;
+/* Apple-style asterisk activity indicator — bare radial ticks. */
+.ms-apple-spin {
+  position: relative;
   display: inline-block;
-  animation: msSpin 0.55s linear infinite;
+  flex-shrink: 0;
+  color: var(--ms-spin-color, var(--ms-turquoise));
+  vertical-align: middle;
+}
+
+.ms-apple-spin-tick {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  justify-content: center;
+  animation: msAppleTick 0.85s linear infinite;
+}
+
+.ms-apple-spin-tick::before {
+  content: "";
+  width: 11%;
+  height: 26%;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+@keyframes msAppleTick {
+  0% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0.12;
+  }
+}
+
+/* Compact inline busy tick (Copy / Remake) — same asterisk language. */
+.ms-spin {
+  position: relative;
+  width: 11px;
+  height: 11px;
+  display: inline-block;
   vertical-align: -1px;
+  color: currentColor;
+  border-radius: 50%;
+  animation: msSpin 0.75s steps(8) infinite;
+  background: conic-gradient(
+    from 0deg,
+    currentColor 0 8deg,
+    transparent 8deg 45deg,
+    currentColor 45deg 53deg,
+    transparent 53deg 90deg,
+    currentColor 90deg 98deg,
+    transparent 98deg 135deg,
+    currentColor 135deg 143deg,
+    transparent 143deg 180deg,
+    currentColor 180deg 188deg,
+    transparent 188deg 225deg,
+    currentColor 225deg 233deg,
+    transparent 233deg 270deg,
+    currentColor 270deg 278deg,
+    transparent 278deg 315deg,
+    currentColor 315deg 323deg,
+    transparent 323deg 360deg
+  );
+  -webkit-mask: radial-gradient(farthest-side, transparent 48%, #000 49% 72%, transparent 73%);
+  mask: radial-gradient(farthest-side, transparent 48%, #000 49% 72%, transparent 73%);
 }
 
 @keyframes msSpin {

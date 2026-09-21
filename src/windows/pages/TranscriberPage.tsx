@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import AppleSpinner from "../../components/AppleSpinner";
 
 interface TranscriptionResult {
   text: string;
@@ -63,8 +64,9 @@ export default function TranscriberPage() {
       )}
 
       {loading && (
-        <div className="surface-card p-10 text-center text-[var(--ms-turquoise)] animate-pulse text-sm">
-          Transcribing…
+        <div className="surface-card p-10 flex flex-col items-center justify-center gap-3">
+          <AppleSpinner size={26} />
+          <p className="text-sm text-[var(--ms-text-dim)]">Transcribing…</p>
         </div>
       )}
 
