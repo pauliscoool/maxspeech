@@ -33,6 +33,7 @@ pub struct PipelineState {
     session_gen: Mutex<u64>,
     /// Bumped only when a *new* recording starts. A finishing enhance/inject from an
     /// older recording skips paste if this no longer matches (prevents half+half).
+    /// Re-checked inside inject after the modifier wait so mid-wait starts cancel.
     paste_epoch: Mutex<u64>,
     /// 16 kHz mono PCM for the active session (Remake cache).
     session_pcm: Mutex<Option<Arc<Mutex<Vec<i16>>>>>,
@@ -544,6 +545,7 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                 // Do not emit idle — a newer listening session may already own the UI.
                 return;
             }
+            let epoch_alive = || paste_still_current(&app_handle, paste_token);
             match cmd_result {
                 commands::CommandResult::ScratchThat => {
                     let last = pipeline_state.last_insertion.lock().unwrap();
@@ -561,21 +563,34 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                         // something to replace it with (LLM failure used to wipe text).
                         match tone::rewrite_with_llm(&old, &instruction).await {
                             Ok(rewritten) => {
+                                if !epoch_alive() {
+                                    log::info!(
+                                        "Skipping rewrite inject for stale paste={paste_token}"
+                                    );
+                                    return;
+                                }
                                 let _ = inject::undo_insertion(&LastInsertion {
                                     text: old.clone(),
                                     char_count: count,
                                     pasted_at: Instant::now(),
                                 });
-                                match inject::inject_text(&rewritten) {
+                                match inject::inject_text_if(&rewritten, epoch_alive) {
                                     Ok(new_ins) => {
                                         *pipeline_state.last_insertion.lock().unwrap() =
                                             Some(new_ins);
+                                    }
+                                    Err(e) if e.to_string().contains("cancelled") => {
+                                        log::info!(
+                                            "Rewrite inject cancelled (stale paste={paste_token})"
+                                        );
                                     }
                                     Err(e) => {
                                         log::warn!(
                                             "Rewrite inject failed after undo, restoring original: {e}"
                                         );
-                                        if let Ok(restored) = inject::inject_text(&old) {
+                                        if let Ok(restored) =
+                                            inject::inject_text_if(&old, epoch_alive)
+                                        {
                                             *pipeline_state.last_insertion.lock().unwrap() =
                                                 Some(restored);
                                         }
@@ -589,8 +604,16 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                     }
                 }
                 commands::CommandResult::InsertText(t) => {
-                    if let Ok(ins) = inject::inject_text(&t) {
-                        *pipeline_state.last_insertion.lock().unwrap() = Some(ins);
+                    match inject::inject_text_if(&t, epoch_alive) {
+                        Ok(ins) => {
+                            *pipeline_state.last_insertion.lock().unwrap() = Some(ins);
+                        }
+                        Err(e) if e.to_string().contains("cancelled") => {
+                            log::info!(
+                                "Command inject cancelled (stale paste={paste_token})"
+                            );
+                        }
+                        Err(e) => log::warn!("Command inject failed: {e}"),
                     }
                 }
             }
@@ -736,16 +759,29 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                 return;
             }
 
-            if let Ok(ins) = inject::inject_text(&final_output) {
-                let prev = pipeline_state.pending_learn_from.lock().unwrap().take();
-                if let Some(prev_text) = prev {
-                    learn_substitutions::learn_from_redictate(
-                        &prev_text,
-                        &final_output,
-                        &store,
-                    );
+            let epoch_alive = || paste_still_current(&app_handle, paste_token);
+            match inject::inject_text_if(&final_output, epoch_alive) {
+                Ok(ins) => {
+                    let prev = pipeline_state.pending_learn_from.lock().unwrap().take();
+                    if let Some(prev_text) = prev {
+                        learn_substitutions::learn_from_redictate(
+                            &prev_text,
+                            &final_output,
+                            &store,
+                        );
+                    }
+                    *pipeline_state.last_insertion.lock().unwrap() = Some(ins);
                 }
-                *pipeline_state.last_insertion.lock().unwrap() = Some(ins);
+                Err(e) if e.to_string().contains("cancelled") => {
+                    log::info!(
+                        "Paste cancelled mid-inject for stale session paste={paste_token}"
+                    );
+                    // Newer session owns the field — don't emit idle / toast.
+                    return;
+                }
+                Err(e) => {
+                    log::warn!("Paste failed: {e}");
+                }
             }
 
             // Grammarly-like toast before WAV I/O so it isn't delayed by Remake save.
@@ -803,6 +839,13 @@ pub fn start_dictation(app: &tauri::AppHandle) {
         hide_overlay_if_current(&app_handle, paste_token);
         emit_state_if_current(&app_handle, paste_token, "idle");
     });
+}
+
+/// True while this paste token is still the newest recording start.
+fn paste_still_current(app: &tauri::AppHandle, paste_token: u64) -> bool {
+    let state = app.state::<PipelineState>();
+    let epoch = state.paste_epoch.lock().unwrap();
+    *epoch == paste_token
 }
 
 /// Only the current paste epoch may drive overlay state — prevents a finishing
