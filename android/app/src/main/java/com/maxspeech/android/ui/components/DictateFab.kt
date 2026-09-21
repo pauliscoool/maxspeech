@@ -61,7 +61,7 @@ fun DictateFab(
     }
     Box(
         modifier = modifier
-            .size(72.dp)
+            .size(58.dp)
             .scale(scale)
             .clip(CircleShape)
             .background(bg)
@@ -69,6 +69,6 @@ fun DictateFab(
             .semantics { contentDescription = label },
         contentAlignment = Alignment.Center,
     ) {
-        Icon(icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(32.dp))
+        Icon(icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(26.dp))
     }
 }

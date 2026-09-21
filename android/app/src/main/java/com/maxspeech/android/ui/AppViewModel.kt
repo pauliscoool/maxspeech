@@ -154,6 +154,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun setGlass(v: Float) = viewModelScope.launch { ms.settings.setGlassAlpha(v) }
     fun setBlur(v: Float) = viewModelScope.launch { ms.settings.setBlur(v) }
     fun setTheme(t: UiTheme) = viewModelScope.launch { ms.settings.setTheme(t) }
+    fun setOverlaySize(v: Float) = viewModelScope.launch { ms.settings.setOverlaySize(v) }
+    fun setOverlayAlpha(v: Float) = viewModelScope.launch { ms.settings.setOverlayAlpha(v) }
 
     fun toggle(key: String, on: Boolean) = viewModelScope.launch {
         when (key) {

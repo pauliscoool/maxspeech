@@ -249,6 +249,8 @@ fun MaxSpeechRoot(vm: AppViewModel) {
                                     onGlass = vm::setGlass,
                                     onBlur = vm::setBlur,
                                     onTheme = vm::setTheme,
+                                    onOverlaySize = vm::setOverlaySize,
+                                    onOverlayAlpha = vm::setOverlayAlpha,
                                     onToggle = { k, v ->
                                         vm.toggle(k, v)
                                         if (k == "overlay" && v && !overlayOk) {

@@ -22,6 +22,10 @@ data class AppSettings(
     val theme: UiTheme = UiTheme.Dark,
     val overlayEnabled: Boolean = true,
     val overlayConfirm: Boolean = true,
+    /** Floating mic / pill scale. 0.80 = 20% smaller than the original. */
+    val overlaySize: Float = 0.80f,
+    /** Floating surface opacity. 0.80 = 20% transparent. */
+    val overlayAlpha: Float = 0.80f,
     val aiEnhance: Boolean = true,
     val enhanceSpeed: EnhanceSpeed = EnhanceSpeed.Thinking,
     val multilingual: Boolean = false,
@@ -57,6 +61,8 @@ class SettingsRepository(private val context: Context) {
     suspend fun setTheme(theme: UiTheme) = set(Keys.theme, theme.name.lowercase())
     suspend fun setOverlayEnabled(on: Boolean) = set(Keys.overlay, on)
     suspend fun setOverlayConfirm(on: Boolean) = set(Keys.confirm, on)
+    suspend fun setOverlaySize(value: Float) = set(Keys.overlaySize, value.coerceIn(0.55f, 1.45f))
+    suspend fun setOverlayAlpha(value: Float) = set(Keys.overlayAlpha, value.coerceIn(0.25f, 1f))
     suspend fun setAiEnhance(on: Boolean) = set(Keys.enhance, on)
     suspend fun setEnhanceSpeed(speed: EnhanceSpeed) = set(Keys.speed, speed.name.lowercase())
     suspend fun setMultilingual(on: Boolean) = set(Keys.multi, on)
@@ -89,6 +95,8 @@ class SettingsRepository(private val context: Context) {
         val theme = stringPreferencesKey("ui_theme")
         val overlay = booleanPreferencesKey("overlay_enabled")
         val confirm = booleanPreferencesKey("overlay_confirm")
+        val overlaySize = floatPreferencesKey("overlay_size")
+        val overlayAlpha = floatPreferencesKey("overlay_alpha")
         val enhance = booleanPreferencesKey("ai_enhance")
         val speed = stringPreferencesKey("enhance_speed")
         val multi = booleanPreferencesKey("stt_multilingual")
@@ -122,6 +130,8 @@ class SettingsRepository(private val context: Context) {
             },
             overlayEnabled = this[Keys.overlay] ?: true,
             overlayConfirm = this[Keys.confirm] ?: true,
+            overlaySize = this[Keys.overlaySize] ?: 0.80f,
+            overlayAlpha = this[Keys.overlayAlpha] ?: 0.80f,
             aiEnhance = this[Keys.enhance] ?: true,
             enhanceSpeed = when (this[Keys.speed]) {
                 "fast" -> EnhanceSpeed.Fast

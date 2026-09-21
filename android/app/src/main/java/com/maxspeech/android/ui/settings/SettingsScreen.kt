@@ -54,6 +54,8 @@ fun SettingsScreen(
     onGlass: (Float) -> Unit,
     onBlur: (Float) -> Unit,
     onTheme: (UiTheme) -> Unit,
+    onOverlaySize: (Float) -> Unit,
+    onOverlayAlpha: (Float) -> Unit,
     onToggle: (String, Boolean) -> Unit,
     onLanguage: (String) -> Unit,
     onSignOut: () -> Unit,
@@ -139,6 +141,31 @@ fun SettingsScreen(
                 ToggleRow("Confirm before paste", "Review text before it goes into the field", settings.overlayConfirm) {
                     onToggle("confirm", it)
                 }
+                Spacer(Modifier.height(12.dp))
+                Text("Floating mic size", color = c.text)
+                Text(
+                    "${(settings.overlaySize * 100).roundToInt()}% — default 80% (20% smaller)",
+                    color = c.textDim,
+                    fontSize = 12.sp,
+                )
+                Slider(
+                    value = settings.overlaySize,
+                    onValueChange = onOverlaySize,
+                    valueRange = 0.55f..1.45f,
+                    colors = SliderDefaults.colors(thumbColor = Turquoise, activeTrackColor = Turquoise),
+                )
+                Text("Floating mic transparency", color = c.text)
+                Text(
+                    "${((1f - settings.overlayAlpha) * 100).roundToInt()}% transparent — default 20%",
+                    color = c.textDim,
+                    fontSize = 12.sp,
+                )
+                Slider(
+                    value = 1f - settings.overlayAlpha,
+                    onValueChange = { onOverlayAlpha(1f - it) },
+                    valueRange = 0f..0.75f,
+                    colors = SliderDefaults.colors(thumbColor = Turquoise, activeTrackColor = Turquoise),
+                )
                 Text(
                     if (overlayOn && a11yOn) "Ready — open any text field; the mic pops up above the keyboard. Drag to move, tap to dictate."
                     else "Needs: (1) Display over other apps, (2) Accessibility → MaxSpeech on.\n\n" +

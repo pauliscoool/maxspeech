@@ -66,6 +66,9 @@ class FloatingMicController(private val app: MaxSpeechApp) :
     private var layoutParams: WindowManager.LayoutParams? = null
     private var userMovedX = false
     private var attached = false
+    /** Sub-pixel drag accumulation for smoother window moves. */
+    private var posX = 0f
+    private var posY = 0f
 
     override val lifecycle: Lifecycle get() = registry
     override val savedStateRegistry: SavedStateRegistry
@@ -105,7 +108,7 @@ class FloatingMicController(private val app: MaxSpeechApp) :
         val wm = app.getSystemService(Context.WINDOW_SERVICE) as WindowManager
         windowManager = wm
         val dm = app.resources.displayMetrics
-        val bubble = (72 * dm.density).toInt()
+        val bubble = (56 * dm.density).toInt()
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -113,12 +116,15 @@ class FloatingMicController(private val app: MaxSpeechApp) :
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
             PixelFormat.TRANSLUCENT,
         )
         params.gravity = Gravity.TOP or Gravity.START
         params.x = (dm.widthPixels - bubble - (24 * dm.density).toInt()).coerceAtLeast(0)
         params.y = (dm.heightPixels * 0.58f).toInt()
+        posX = params.x.toFloat()
+        posY = params.y.toFloat()
         if (Build.VERSION.SDK_INT >= 28) {
             params.layoutInDisplayCutoutMode =
                 WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
@@ -132,9 +138,6 @@ class FloatingMicController(private val app: MaxSpeechApp) :
             setContent {
                 val settings by MaxSpeechApp.instance.settings.flow.collectAsState(initial = AppSettings())
                 val ui by MaxSpeechApp.instance.dictation.ui.collectAsState()
-                val focus by TextInjector.inputFocus.collectAsState()
-                val dictating = ui.phase != DictationPhase.Idle && ui.phase != DictationPhase.Error
-                // Always visible once overlay permission is granted.
                 MaxSpeechTheme(
                     theme = settings.theme,
                     glassAlpha = settings.glassAlpha,
@@ -142,12 +145,13 @@ class FloatingMicController(private val app: MaxSpeechApp) :
                 ) {
                     AnimatedVisibility(
                         visible = true,
-                        enter = fadeIn(tween(160)) + scaleIn(tween(180), initialScale = 0.86f),
-                        exit = fadeOut(tween(120)) + scaleOut(tween(120), targetScale = 0.9f),
+                        enter = fadeIn(tween(160)) + scaleIn(tween(200), initialScale = 0.88f),
+                        exit = fadeOut(tween(120)) + scaleOut(tween(120), targetScale = 0.92f),
                     ) {
                         OverlayCapsule(
                             ui = ui,
-                            glassAlpha = settings.glassAlpha,
+                            sizeScale = settings.overlaySize,
+                            surfaceAlpha = settings.overlayAlpha,
                             onHoldStart = {
                                 val pkg = TextInjector.foregroundPackage().orEmpty()
                                 OverlayService.notifyRecording(app, true)
@@ -187,10 +191,12 @@ class FloatingMicController(private val app: MaxSpeechApp) :
     private fun applyDrag(dx: Float, dy: Float) {
         val params = layoutParams ?: return
         val dm = app.resources.displayMetrics
-        val pad = (8 * dm.density).toInt()
-        val size = (72 * dm.density).toInt()
-        params.x = (params.x + dx.toInt()).coerceIn(pad, (dm.widthPixels - size - pad).coerceAtLeast(pad))
-        params.y = (params.y + dy.toInt()).coerceIn(pad, (dm.heightPixels - size - pad).coerceAtLeast(pad))
+        val pad = (8 * dm.density)
+        val size = (56 * dm.density)
+        posX = (posX + dx).coerceIn(pad, (dm.widthPixels - size - pad).coerceAtLeast(pad))
+        posY = (posY + dy).coerceIn(pad, (dm.heightPixels - size - pad).coerceAtLeast(pad))
+        params.x = kotlin.math.round(posX).toInt()
+        params.y = kotlin.math.round(posY).toInt()
         userMovedX = true
         runCatching { windowManager?.updateViewLayout(host, params) }
     }
@@ -202,18 +208,23 @@ class FloatingMicController(private val app: MaxSpeechApp) :
                 .collect { (ui, focus) ->
                     val params = layoutParams ?: return@collect
                     val dm = app.resources.displayMetrics
-                    val bubble = (72 * dm.density).toInt()
+                    val bubble = (56 * dm.density).toInt()
                     val pad = (12 * dm.density).toInt()
                     val dictating = ui.phase != DictationPhase.Idle && ui.phase != DictationPhase.Error
                     if (focus.imeTop > bubble) {
-                        params.y = (focus.imeTop - bubble - pad)
+                        posY = (focus.imeTop - bubble - pad)
                             .coerceIn(pad, (dm.heightPixels - bubble - pad).coerceAtLeast(pad))
+                            .toFloat()
                     } else if (dictating) {
-                        params.y = (dm.heightPixels * 0.55f).toInt()
+                        posY = dm.heightPixels * 0.55f
                     }
                     if (!userMovedX) {
-                        params.x = (dm.widthPixels - bubble - (24 * dm.density).toInt()).coerceAtLeast(pad)
+                        posX = (dm.widthPixels - bubble - (24 * dm.density).toInt())
+                            .coerceAtLeast(pad)
+                            .toFloat()
                     }
+                    params.x = kotlin.math.round(posX).toInt()
+                    params.y = kotlin.math.round(posY).toInt()
                     runCatching { windowManager?.updateViewLayout(host, params) }
                 }
         }
