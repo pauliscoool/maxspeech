@@ -131,59 +131,64 @@ class FloatingMicController(private val app: MaxSpeechApp) :
         }
         layoutParams = params
 
+        // Host first with ViewTree owners, then ComposeView, then setContent after
+        // the overlay window is attached — avoids ViewTreeLifecycleOwner crashes.
+        val frame = FrameLayout(app).apply {
+            setViewTreeLifecycleOwner(this@FloatingMicController)
+            setViewTreeSavedStateRegistryOwner(this@FloatingMicController)
+            setViewTreeViewModelStoreOwner(this@FloatingMicController)
+        }
         val compose = ComposeView(app).apply {
             setViewTreeLifecycleOwner(this@FloatingMicController)
             setViewTreeSavedStateRegistryOwner(this@FloatingMicController)
             setViewTreeViewModelStoreOwner(this@FloatingMicController)
-            setContent {
-                val settings by MaxSpeechApp.instance.settings.flow.collectAsState(initial = AppSettings())
-                val ui by MaxSpeechApp.instance.dictation.ui.collectAsState()
-                MaxSpeechTheme(
-                    theme = settings.theme,
-                    glassAlpha = settings.glassAlpha,
-                    blurStrength = settings.blurStrength,
-                ) {
-                    AnimatedVisibility(
-                        visible = true,
-                        enter = fadeIn(tween(160)) + scaleIn(tween(200), initialScale = 0.88f),
-                        exit = fadeOut(tween(120)) + scaleOut(tween(120), targetScale = 0.92f),
-                    ) {
-                        OverlayCapsule(
-                            ui = ui,
-                            sizeScale = settings.overlaySize,
-                            surfaceAlpha = settings.overlayAlpha,
-                            onHoldStart = {
-                                val pkg = TextInjector.foregroundPackage().orEmpty()
-                                OverlayService.notifyRecording(app, true)
-                                MaxSpeechApp.instance.dictation.start(pkg, paste = true)
-                            },
-                            onHoldEnd = { MaxSpeechApp.instance.dictation.stopAndFinish() },
-                            onCancel = {
-                                MaxSpeechApp.instance.dictation.cancel()
-                                OverlayService.notifyRecording(app, false)
-                            },
-                            onConfirm = {
-                                MaxSpeechApp.instance.dictation.confirmPaste()
-                                OverlayService.notifyRecording(app, false)
-                            },
-                            onDragBy = { dx, dy -> applyDrag(dx, dy) },
-                            modifier = Modifier.padding(4.dp),
-                        )
-                    }
-                }
-            }
         }
+        frame.addView(compose)
         composeView = compose
-        val frame = FrameLayout(app).apply {
-            // Compose walks the parent chain for ViewTree owners — must be on the host.
-            setViewTreeLifecycleOwner(this@FloatingMicController)
-            setViewTreeSavedStateRegistryOwner(this@FloatingMicController)
-            setViewTreeViewModelStoreOwner(this@FloatingMicController)
-            addView(compose)
-        }
         wm.addView(frame, params)
         host = frame
         attached = true
+        compose.setContent {
+            val settings by MaxSpeechApp.instance.settings.flow.collectAsState(initial = AppSettings())
+            val ui by MaxSpeechApp.instance.dictation.ui.collectAsState()
+            val mainUi by MaxSpeechApp.instance.mainUiResumed.collectAsState()
+            val dictating = ui.phase != DictationPhase.Idle && ui.phase != DictationPhase.Error
+            // Never stack the system bubble on top of MaxSpeech's own home UI.
+            val showBubble = dictating || !mainUi
+            MaxSpeechTheme(
+                theme = settings.theme,
+                glassAlpha = settings.glassAlpha,
+                blurStrength = settings.blurStrength,
+            ) {
+                AnimatedVisibility(
+                    visible = showBubble,
+                    enter = fadeIn(tween(160)) + scaleIn(tween(200), initialScale = 0.88f),
+                    exit = fadeOut(tween(120)) + scaleOut(tween(120), targetScale = 0.92f),
+                ) {
+                    OverlayCapsule(
+                        ui = ui,
+                        sizeScale = settings.overlaySize,
+                        surfaceAlpha = settings.overlayAlpha,
+                        onHoldStart = {
+                            val pkg = TextInjector.foregroundPackage().orEmpty()
+                            OverlayService.notifyRecording(app, true)
+                            MaxSpeechApp.instance.dictation.start(pkg, paste = true)
+                        },
+                        onHoldEnd = { MaxSpeechApp.instance.dictation.stopAndFinish() },
+                        onCancel = {
+                            MaxSpeechApp.instance.dictation.cancel()
+                            OverlayService.notifyRecording(app, false)
+                        },
+                        onConfirm = {
+                            MaxSpeechApp.instance.dictation.confirmPaste()
+                            OverlayService.notifyRecording(app, false)
+                        },
+                        onDragBy = { dx, dy -> applyDrag(dx, dy) },
+                        modifier = Modifier.padding(4.dp),
+                    )
+                }
+            }
+        }
         startPlacing()
         Log.i(TAG, "attach: window added")
     }

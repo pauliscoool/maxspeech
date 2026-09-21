@@ -1,6 +1,8 @@
 package com.maxspeech.android
 
+import android.app.Activity
 import android.app.Application
+import android.os.Bundle
 import android.util.Log
 import androidx.room.Room
 import com.maxspeech.android.data.AppDatabase
@@ -12,6 +14,9 @@ import com.maxspeech.android.pipeline.DictationController
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import java.io.File
 
@@ -28,9 +33,28 @@ class MaxSpeechApp : Application() {
     lateinit var floatingMic: FloatingMicController
         private set
 
+    private val _mainUiResumed = MutableStateFlow(false)
+    /** True while MainActivity is resumed — hide the system overlay over our own UI. */
+    val mainUiResumed: StateFlow<Boolean> = _mainUiResumed.asStateFlow()
+
     override fun onCreate() {
         super.onCreate()
         instance = this
+        registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
+            override fun onActivityResumed(activity: Activity) {
+                if (activity is MainActivity) _mainUiResumed.value = true
+            }
+
+            override fun onActivityPaused(activity: Activity) {
+                if (activity is MainActivity) _mainUiResumed.value = false
+            }
+
+            override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) = Unit
+            override fun onActivityStarted(activity: Activity) = Unit
+            override fun onActivityStopped(activity: Activity) = Unit
+            override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) = Unit
+            override fun onActivityDestroyed(activity: Activity) = Unit
+        })
         Thread.setDefaultUncaughtExceptionHandler { thread, error ->
             runCatching {
                 val file = File(filesDir, "last-crash.txt")
