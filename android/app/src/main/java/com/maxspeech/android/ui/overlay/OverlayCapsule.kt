@@ -6,17 +6,23 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.drag
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
@@ -39,13 +45,21 @@ import androidx.compose.ui.unit.dp
 import com.maxspeech.android.pipeline.DictationPhase
 import com.maxspeech.android.pipeline.DictationUi
 import com.maxspeech.android.ui.components.WindowsWaveform
+import com.maxspeech.android.ui.theme.LocalMsColors
+import com.maxspeech.android.ui.theme.Orange
 import com.maxspeech.android.ui.theme.Turquoise
 import kotlin.math.hypot
 
-/** Windows pill scaled ~20% down; bars halved (10 vs desktop 20). */
-private val BasePillW = 118.dp
-private val BasePillH = 29.dp
+/** Idle mic disc — 20% smaller than the original 64dp. */
 private val BaseMic = 51.dp
+/** Compact listening controls. */
+private val SideBtn = 36.dp
+private val WaveBarCount = 5
+private val WaveBarW = 3.dp
+private val WaveBarGap = 3.dp
+private val WavePadH = 10.dp
+private val WavePadV = 5.dp
+private val WaveH = 16.dp
 
 @Composable
 fun OverlayCapsule(
@@ -63,18 +77,18 @@ fun OverlayCapsule(
     val alpha = surfaceAlpha.coerceIn(0.25f, 1f)
     when (ui.phase) {
         DictationPhase.Confirm, DictationPhase.Listening, DictationPhase.Processing -> {
-            WindowsListeningPill(
+            ListeningControls(
                 levels = ui.levels,
                 phase = ui.phase,
                 sizeScale = scale,
                 surfaceAlpha = alpha,
-                onTap = {
+                onCancel = onCancel,
+                onProceed = {
                     when (ui.phase) {
                         DictationPhase.Confirm -> onConfirm()
                         else -> onHoldEnd()
                     }
                 },
-                onLongCancel = onCancel,
                 onDragBy = onDragBy,
                 modifier = modifier,
             )
@@ -91,62 +105,98 @@ fun OverlayCapsule(
     }
 }
 
+/**
+ * Compact row: [X] [thin 5-bar pill] [✓]
+ * Middle width hugs the bars — not a wide Windows-length strip.
+ */
 @Composable
-private fun WindowsListeningPill(
+private fun ListeningControls(
     levels: List<Float>,
     phase: DictationPhase,
     sizeScale: Float,
     surfaceAlpha: Float,
-    onTap: () -> Unit,
-    onLongCancel: () -> Unit,
+    onCancel: () -> Unit,
+    onProceed: () -> Unit,
     onDragBy: (Float, Float) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    var pressing by remember { mutableStateOf(false) }
-    val pressAlpha by animateFloatAsState(
-        targetValue = if (pressing) (surfaceAlpha * 0.88f).coerceAtLeast(0.2f) else surfaceAlpha,
-        animationSpec = tween(90),
-        label = "pillPressAlpha",
-    )
-    val pressScale by animateFloatAsState(
-        targetValue = if (pressing) 0.97f else 1f,
-        animationSpec = spring(dampingRatio = 0.75f, stiffness = 480f),
-        label = "pillPressScale",
-    )
-    val shape = RoundedCornerShape(percent = 50)
+    val c = LocalMsColors.current
+    val btn = SideBtn * sizeScale
+    val waveH = WaveH * sizeScale
+    val pillShape = RoundedCornerShape(percent = 50)
     val pillBg = Brush.linearGradient(
         listOf(Color(0xFF0A0A0A), Color(0xFF080808), Color(0xFF040404)),
     )
-    Box(
+    val checkBg = if (phase == DictationPhase.Confirm) Orange else Turquoise
+
+    Row(
         modifier = modifier
-            .scale(pressScale)
-            .width(BasePillW * sizeScale)
-            .height(BasePillH * sizeScale)
-            .alpha(pressAlpha)
-            .clip(shape)
-            .background(pillBg, shape)
-            .border(1.5.dp, Color.Black.copy(alpha = 0.95f * pressAlpha), shape)
-            .draggableOverlay(
-                onDragBy = onDragBy,
-                onTap = onTap,
-                onLongPress = onLongCancel,
-                onPressing = { pressing = it },
-            )
-            .semantics {
-                contentDescription = when (phase) {
-                    DictationPhase.Confirm -> "Confirm dictation"
-                    else -> "Stop dictation"
-                }
-            }
-            .padding(horizontal = 10.dp * sizeScale, vertical = 4.dp * sizeScale),
-        contentAlignment = Alignment.Center,
+            .wrapContentWidth()
+            .alpha(surfaceAlpha)
+            .draggableOverlay(onDragBy = onDragBy),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp * sizeScale),
     ) {
-        WindowsWaveform(
-            levels = levels,
-            barCount = 10,
-            maxBarHeight = 14.dp * sizeScale,
-            modifier = Modifier.height(14.dp * sizeScale),
-        )
+        Box(
+            Modifier
+                .size(btn)
+                .clip(CircleShape)
+                .background(c.glassFill.copy(alpha = 0.35f.coerceAtMost(surfaceAlpha)), CircleShape)
+                .border(1.dp, Color.White.copy(alpha = 0.12f), CircleShape)
+                .clickable(onClick = onCancel)
+                .semantics { contentDescription = "Cancel dictation" },
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                Icons.Filled.Close,
+                contentDescription = null,
+                tint = Color.White.copy(alpha = 0.92f),
+                modifier = Modifier.size(btn * 0.45f),
+            )
+        }
+
+        Box(
+            Modifier
+                .wrapContentWidth()
+                .height(btn * 0.92f)
+                .clip(pillShape)
+                .background(pillBg, pillShape)
+                .border(1.dp, Color.Black.copy(alpha = 0.9f), pillShape)
+                .padding(horizontal = WavePadH * sizeScale, vertical = WavePadV * sizeScale),
+            contentAlignment = Alignment.Center,
+        ) {
+            WindowsWaveform(
+                levels = levels,
+                barCount = WaveBarCount,
+                maxBarHeight = waveH,
+                barWidth = WaveBarW * sizeScale,
+                barGap = WaveBarGap * sizeScale,
+                modifier = Modifier.height(waveH),
+            )
+        }
+
+        Box(
+            Modifier
+                .size(btn)
+                .clip(CircleShape)
+                .background(checkBg, CircleShape)
+                .clickable(onClick = onProceed)
+                .semantics {
+                    contentDescription = if (phase == DictationPhase.Confirm) {
+                        "Confirm dictation"
+                    } else {
+                        "Finish dictation"
+                    }
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                Icons.Filled.Check,
+                contentDescription = null,
+                tint = Color.White,
+                modifier = Modifier.size(btn * 0.45f),
+            )
+        }
     }
 }
 
