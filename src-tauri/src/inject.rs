@@ -11,8 +11,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 
 /// Serialize all keyboard/clipboard injection so two sessions never interleave.
 static INJECT_LOCK: Mutex<()> = Mutex::new(());
-/// Bumped on every inject attempt so deferred clipboard restores from an older
-/// paste cannot clobber a newer session's clipboard mid-flight.
+/// Bumped on every inject so a cancelled attempt cannot race a newer paste.
 static CLIPBOARD_GEN: AtomicU64 = AtomicU64::new(0);
 
 pub struct LastInsertion {
@@ -108,17 +107,26 @@ fn inject_via_clipboard<F>(
 where
     F: Fn() -> bool,
 {
-    let old_clipboard = get_clipboard_text();
-    let gen = CLIPBOARD_GEN.fetch_add(1, Ordering::SeqCst) + 1;
-    set_clipboard_text(text)?;
-    thread::sleep(Duration::from_millis(50));
+    let _gen = CLIPBOARD_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+
+    // Set + verify before Ctrl+V. Windows clipboard can lag or briefly fail to
+    // open — without a read-back, Ctrl+V pastes whatever was there before
+    // (often a copied URL) instead of the dictation.
+    ensure_clipboard_text(text)?;
 
     if !still_wanted() {
-        // Don't leave the cancelled session's text sitting on the clipboard.
-        if let Some(old) = old_clipboard {
-            let _ = set_clipboard_text(&old);
-        }
         return Err("inject cancelled before Ctrl+V (stale session)".into());
+    }
+
+    // Final read-back immediately before the keystroke.
+    let on_clip = get_clipboard_text().unwrap_or_default();
+    if on_clip != text {
+        return Err(format!(
+            "clipboard drifted before paste (got {} chars, want {})",
+            on_clip.len(),
+            text.len()
+        )
+        .into());
     }
 
     let mod_key = paste_modifier();
@@ -132,19 +140,38 @@ where
     // Always release even if Click failed mid-way.
     let _ = enigo.key(mod_key, Direction::Release);
 
-    let old = old_clipboard;
-    thread::spawn(move || {
-        // Slow apps (Electron, browsers) often read clipboard asynchronously.
-        thread::sleep(Duration::from_millis(900));
-        // Skip restore if a newer inject owns the clipboard now.
-        if CLIPBOARD_GEN.load(Ordering::SeqCst) != gen {
-            return;
-        }
-        if let Some(old_text) = old {
-            let _ = set_clipboard_text(&old_text);
-        }
-    });
+    // Do NOT restore the previous clipboard. Slow apps (Electron, browsers,
+    // chat clients) often read the clipboard asynchronously after Ctrl+V —
+    // restoring a prior URL/link ~1s later made those apps paste the old link
+    // instead of (or after) the dictation. Leaving the dictated text on the
+    // clipboard is intentional and safe.
     Ok(())
+}
+
+/// Write `text` to the clipboard and retry until a read-back matches.
+fn ensure_clipboard_text(text: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let deadline = Instant::now() + Duration::from_millis(400);
+    let mut last_err: Option<String> = None;
+    while Instant::now() < deadline {
+        match set_clipboard_text(text) {
+            Ok(()) => {
+                thread::sleep(Duration::from_millis(25));
+                if get_clipboard_text().as_deref() == Some(text) {
+                    return Ok(());
+                }
+                last_err = Some("clipboard read-back mismatch".into());
+            }
+            Err(e) => {
+                last_err = Some(e.to_string());
+                thread::sleep(Duration::from_millis(30));
+            }
+        }
+    }
+    Err(format!(
+        "clipboard set failed: {}",
+        last_err.unwrap_or_else(|| "unknown".into())
+    )
+    .into())
 }
 
 fn wait_for_modifiers_up(timeout: Duration) {
