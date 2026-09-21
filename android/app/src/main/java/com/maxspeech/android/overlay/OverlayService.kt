@@ -19,8 +19,6 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -66,6 +64,8 @@ class OverlayService : LifecycleService(), SavedStateRegistryOwner, ViewModelSto
     private var placeJob: Job? = null
     private var recording = false
     private var foregroundReady = false
+    /** User dragged the bubble — keep X; still snap Y above the keyboard. */
+    private var userMovedX = false
 
     init {
         savedStateRegistryController.performAttach()
@@ -114,7 +114,6 @@ class OverlayService : LifecycleService(), SavedStateRegistryOwner, ViewModelSto
                 attachOverlay()
             }
         }
-        // Never sticky — a failed FGS + sticky restart kills/reopens the whole app process.
         return START_NOT_STICKY
     }
 
@@ -144,7 +143,7 @@ class OverlayService : LifecycleService(), SavedStateRegistryOwner, ViewModelSto
             nm.createNotificationChannel(
                 NotificationChannel(CHANNEL, "Overlay", NotificationManager.IMPORTANCE_LOW).apply {
                     setShowBadge(false)
-                    description = "Keeps the dictation capsule available over other apps"
+                    description = "Keeps the dictation mic available when the keyboard is open"
                 },
             )
         }
@@ -182,6 +181,8 @@ class OverlayService : LifecycleService(), SavedStateRegistryOwner, ViewModelSto
         runCatching {
             val wm = getSystemService(WINDOW_SERVICE) as WindowManager
             windowManager = wm
+            val dm = resources.displayMetrics
+            val bubble = (72 * dm.density).toInt()
             val params = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.WRAP_CONTENT,
@@ -192,8 +193,9 @@ class OverlayService : LifecycleService(), SavedStateRegistryOwner, ViewModelSto
                     WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
                 PixelFormat.TRANSLUCENT,
             )
-            params.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-            params.y = resources.displayMetrics.heightPixels / 2
+            params.gravity = Gravity.TOP or Gravity.START
+            params.x = (dm.widthPixels - bubble - (20 * dm.density).toInt()).coerceAtLeast(0)
+            params.y = (dm.heightPixels * 0.55f).toInt()
             layoutParams = params
             val compose = ComposeView(this).apply {
                 setViewTreeLifecycleOwner(this@OverlayService)
@@ -204,9 +206,13 @@ class OverlayService : LifecycleService(), SavedStateRegistryOwner, ViewModelSto
                         initial = AppSettings(),
                     )
                     val ui by MaxSpeechApp.instance.dictation.ui.collectAsState()
-                    // Always show the idle mic when overlay mode is on. Previously we
-                    // hid until a foreign text field was focused — users saw no button.
-                    val visible = true
+                    val focus by TextInjector.inputFocus.collectAsState()
+                    val dictating = ui.phase != DictationPhase.Idle && ui.phase != DictationPhase.Error
+                    val keyboardUp = focus.imeTop > 0
+                    val a11yOn = TextInjector.isAccessibilityOn(this@OverlayService)
+                    // With Accessibility: pop up when the keyboard is up (or while dictating).
+                    // Without it yet: keep the bubble visible so the control is discoverable.
+                    val visible = dictating || keyboardUp || !a11yOn
                     MaxSpeechTheme(
                         theme = settings.theme,
                         glassAlpha = settings.glassAlpha,
@@ -214,10 +220,8 @@ class OverlayService : LifecycleService(), SavedStateRegistryOwner, ViewModelSto
                     ) {
                         AnimatedVisibility(
                             visible = visible,
-                            enter = fadeIn(tween(200)) + slideInVertically(tween(220)) { it / 3 } +
-                                scaleIn(tween(220), initialScale = 0.96f),
-                            exit = fadeOut(tween(160)) + slideOutVertically(tween(180)) { it / 4 } +
-                                scaleOut(tween(160), targetScale = 0.96f),
+                            enter = fadeIn(tween(180)) + scaleIn(tween(200), initialScale = 0.85f),
+                            exit = fadeOut(tween(140)) + scaleOut(tween(140), targetScale = 0.9f),
                         ) {
                             OverlayCapsule(
                                 ui = ui,
@@ -236,7 +240,8 @@ class OverlayService : LifecycleService(), SavedStateRegistryOwner, ViewModelSto
                                     MaxSpeechApp.instance.dictation.confirmPaste()
                                     notifyRecording(this@OverlayService, false)
                                 },
-                                modifier = Modifier.padding(8.dp),
+                                onDragBy = { dx, dy -> applyDrag(dx, dy) },
+                                modifier = Modifier.padding(4.dp),
                             )
                         }
                     }
@@ -253,6 +258,17 @@ class OverlayService : LifecycleService(), SavedStateRegistryOwner, ViewModelSto
         }
     }
 
+    private fun applyDrag(dx: Float, dy: Float) {
+        val params = layoutParams ?: return
+        val dm = resources.displayMetrics
+        val pad = (8 * dm.density).toInt()
+        val size = (72 * dm.density).toInt()
+        params.x = (params.x + dx.toInt()).coerceIn(pad, (dm.widthPixels - size - pad).coerceAtLeast(pad))
+        params.y = (params.y + dy.toInt()).coerceIn(pad, (dm.heightPixels - size - pad).coerceAtLeast(pad))
+        userMovedX = true
+        runCatching { windowManager?.updateViewLayout(host, params) }
+    }
+
     private fun startPlacing() {
         if (placeJob?.isActive == true) return
         val app = MaxSpeechApp.instance
@@ -261,19 +277,19 @@ class OverlayService : LifecycleService(), SavedStateRegistryOwner, ViewModelSto
                 .collect { (ui, focus) ->
                     val params = layoutParams ?: return@collect
                     val dm = resources.displayMetrics
-                    val overlayH = (68 * dm.density).toInt()
+                    val bubble = (72 * dm.density).toInt()
                     val pad = (12 * dm.density).toInt()
+                    val dictating = ui.phase != DictationPhase.Idle && ui.phase != DictationPhase.Error
+                    // Park just above the keyboard when it opens; keep user's X if they dragged.
                     val y = when {
-                        ui.phase != DictationPhase.Idle -> {
-                            if (focus.imeTop > overlayH) focus.imeTop - overlayH - pad
-                            else (dm.heightPixels * 0.62f).toInt()
-                        }
-                        focus.imeTop > overlayH -> focus.imeTop - overlayH - pad
-                        focus.editable && focus.fieldTop > overlayH + pad ->
-                            (focus.fieldTop - overlayH - pad).coerceAtLeast(pad)
-                        else -> (dm.heightPixels * 0.62f).toInt()
+                        focus.imeTop > bubble -> focus.imeTop - bubble - pad
+                        dictating -> (dm.heightPixels * 0.55f).toInt()
+                        else -> params.y
                     }
-                    params.y = y.coerceIn(pad, (dm.heightPixels - overlayH - pad).coerceAtLeast(pad))
+                    params.y = y.coerceIn(pad, (dm.heightPixels - bubble - pad).coerceAtLeast(pad))
+                    if (!userMovedX) {
+                        params.x = (dm.widthPixels - bubble - (20 * dm.density).toInt()).coerceAtLeast(pad)
+                    }
                     runCatching { windowManager?.updateViewLayout(host, params) }
                 }
         }
@@ -285,6 +301,7 @@ class OverlayService : LifecycleService(), SavedStateRegistryOwner, ViewModelSto
         host?.let { runCatching { windowManager?.removeViewImmediate(it) } }
         host = null
         layoutParams = null
+        userMovedX = false
     }
 
     companion object {

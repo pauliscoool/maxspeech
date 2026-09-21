@@ -116,10 +116,10 @@ fun MaxSpeechRoot(vm: AppViewModel) {
             }
         }
 
-        // Floating paste is OFF by default. Only start when the user enables it in Settings
-        // and both overlay + Accessibility are granted — never during first-run setup.
-        LaunchedEffect(state.settings.overlayEnabled, overlayOk, a11yOk, state.settings.onboarded) {
-            val want = state.settings.overlayEnabled && overlayOk && a11yOk && state.settings.onboarded
+        // Floating mic: start once draw-over-apps is granted. Accessibility is needed
+        // for keyboard detection + paste, but the bubble can still show without it.
+        LaunchedEffect(state.settings.overlayEnabled, overlayOk, state.settings.onboarded) {
+            val want = state.settings.overlayEnabled && overlayOk && state.settings.onboarded
             if (want) {
                 if (Build.VERSION.SDK_INT >= 33 && !TextInjector.notificationGranted(ctx)) {
                     notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
@@ -127,6 +127,25 @@ fun MaxSpeechRoot(vm: AppViewModel) {
                 OverlayService.start(ctx)
             } else {
                 OverlayService.stop(ctx)
+            }
+        }
+        // Nudge once for the two permissions the floating keyboard mic needs.
+        var promptedOverlay by remember { mutableStateOf(false) }
+        var promptedA11y by remember { mutableStateOf(false) }
+        LaunchedEffect(state.settings.onboarded, overlayOk, a11yOk, state.settings.overlayEnabled) {
+            if (!state.settings.onboarded || !state.settings.overlayEnabled) return@LaunchedEffect
+            if (!overlayOk && !promptedOverlay) {
+                promptedOverlay = true
+                snack.showSnackbar("Allow display over other apps for the floating keyboard mic")
+                ctx.startActivity(
+                    Intent(
+                        AndroidSettings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                        Uri.parse("package:${ctx.packageName}"),
+                    ),
+                )
+            } else if (overlayOk && !a11yOk && !promptedA11y) {
+                promptedA11y = true
+                snack.showSnackbar("Turn on Accessibility → MaxSpeech so the mic appears with the keyboard")
             }
         }
         LaunchedEffect(state.toast) {

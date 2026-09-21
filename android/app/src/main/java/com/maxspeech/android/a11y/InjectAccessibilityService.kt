@@ -88,10 +88,10 @@ class InjectAccessibilityService : AccessibilityService() {
         val imeTop = imeTopPx()
         val focused = rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
         val pkg = focused?.packageName?.toString()
-        if (focused != null && focused.isEditable && pkg != packageName) {
+        if (focused != null && focused.isEditable && pkg != null && pkg != packageName) {
             val bounds = Rect()
             focused.getBoundsInScreen(bounds)
-            lastPackage = pkg ?: lastPackage
+            lastPackage = pkg
             _focus.value = InputFocus(
                 editable = true,
                 packageName = pkg,
@@ -101,15 +101,16 @@ class InjectAccessibilityService : AccessibilityService() {
             )
             return
         }
-        val last = _focus.value
-        if (last.editable && last.packageName != null && last.packageName != packageName) {
-            if (pkg == packageName || focused == null || imeTop > 0) {
-                _focus.value = last.copy(imeTop = if (imeTop > 0) imeTop else last.imeTop)
-                return
-            }
-        }
-        if (imeTop > 0 && last.editable) {
-            _focus.value = last.copy(imeTop = imeTop)
+        // Keyboard open alone is enough to surface the floating mic.
+        if (imeTop > 0) {
+            val last = _focus.value
+            _focus.value = InputFocus(
+                editable = last.editable,
+                packageName = last.packageName ?: lastPackage,
+                fieldTop = last.fieldTop,
+                fieldBottom = last.fieldBottom,
+                imeTop = imeTop,
+            )
             return
         }
         _focus.value = InputFocus()

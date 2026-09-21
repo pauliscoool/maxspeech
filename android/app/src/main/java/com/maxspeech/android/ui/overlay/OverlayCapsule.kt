@@ -2,7 +2,9 @@ package com.maxspeech.android.ui.overlay
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -16,16 +18,18 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Icon
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.maxspeech.android.pipeline.DictationPhase
 import com.maxspeech.android.pipeline.DictationUi
 import com.maxspeech.android.ui.components.RibbonWaveform
@@ -34,6 +38,7 @@ import com.maxspeech.android.ui.theme.LocalBlurStrength
 import com.maxspeech.android.ui.theme.LocalMsColors
 import com.maxspeech.android.ui.theme.Orange
 import com.maxspeech.android.ui.theme.Turquoise
+import kotlin.math.hypot
 
 @Composable
 fun OverlayCapsule(
@@ -43,6 +48,7 @@ fun OverlayCapsule(
     onHoldEnd: () -> Unit,
     onCancel: () -> Unit,
     onConfirm: () -> Unit,
+    onDragBy: (dxPx: Float, dyPx: Float) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val c = LocalMsColors.current
@@ -53,7 +59,7 @@ fun OverlayCapsule(
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
-                modifier = modifier,
+                modifier = modifier.draggableOverlay(onDragBy),
             ) {
                 Box(
                     Modifier
@@ -89,32 +95,68 @@ fun OverlayCapsule(
             }
         }
         else -> {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = modifier
-                    .widthIn(min = 260.dp)
-                    .height(52.dp)
-                    .clip(shape)
-                    .background(c.capsule, shape)
-                    .pointerInput(Unit) {
-                        detectTapGestures(
-                            onPress = {
-                                onHoldStart()
-                                val released = tryAwaitRelease()
-                                if (released) onHoldEnd()
-                            },
-                        )
-                    }
-                    .padding(horizontal = 18.dp),
-            ) {
-                Text(
-                    text = ui.liveText.ifBlank { ui.error ?: "Hold to speak" },
-                    color = Color.White.copy(alpha = 0.92f),
-                    fontSize = 16.sp,
-                    modifier = Modifier.weight(1f),
-                )
-                Icon(Icons.Filled.Mic, contentDescription = "Microphone", tint = Color.White)
+            FloatingMicBubble(
+                listening = false,
+                onToggle = onHoldStart,
+                onDragBy = onDragBy,
+                modifier = modifier,
+            )
+        }
+    }
+}
+
+/** Compact draggable mic that pops up over the keyboard. Tap to dictate. */
+@Composable
+fun FloatingMicBubble(
+    listening: Boolean,
+    onToggle: () -> Unit,
+    onDragBy: (dxPx: Float, dyPx: Float) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val bg = if (listening) {
+        Brush.linearGradient(listOf(Orange, Color(0xFFFB923C)))
+    } else {
+        Brush.linearGradient(listOf(Color(0xFF5B8CFF), Turquoise, Color(0xFF86EFD0)))
+    }
+    Box(
+        modifier = modifier
+            .size(64.dp)
+            .clip(CircleShape)
+            .background(bg, CircleShape)
+            .draggableOverlay(onDragBy, onTap = onToggle)
+            .semantics {
+                contentDescription = if (listening) "Stop dictation" else "Start dictation"
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            if (listening) Icons.Filled.Stop else Icons.Filled.Mic,
+            contentDescription = null,
+            tint = Color.White,
+            modifier = Modifier.size(30.dp),
+        )
+    }
+}
+
+private fun Modifier.draggableOverlay(
+    onDragBy: (dxPx: Float, dyPx: Float) -> Unit,
+    onTap: (() -> Unit)? = null,
+): Modifier = pointerInput(onTap) {
+    val tapSlop = 18f
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false)
+        var dragDist = 0f
+        drag(down.id) { change ->
+            val dx = change.position.x - change.previousPosition.x
+            val dy = change.position.y - change.previousPosition.y
+            dragDist += hypot(dx, dy)
+            if (dragDist > tapSlop) {
+                onDragBy(dx, dy)
             }
+            change.consume()
+        }
+        if (dragDist <= tapSlop) {
+            onTap?.invoke()
         }
     }
 }

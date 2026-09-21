@@ -130,7 +130,7 @@ fun SettingsScreen(
             Column(Modifier.padding(16.dp)) {
                 ToggleRow(
                     "Floating capsule",
-                    "Optional. Always-on mic bubble over other apps (paste needs Accessibility).",
+                    "Draggable mic bubble above the keyboard in other apps.",
                     overlayOn,
                 ) {
                     onToggle("overlay", it)
@@ -140,11 +140,11 @@ fun SettingsScreen(
                     onToggle("confirm", it)
                 }
                 Text(
-                    if (overlayOn && a11yOn) "Ready — floating mic stays on screen; speak, then paste into the focused field."
-                    else "In-app dictation only needs the microphone (use the big mic button). Turn this on only if you want paste into other apps.\n\n" +
+                    if (overlayOn && a11yOn) "Ready — open any text field; the mic pops up above the keyboard. Drag to move, tap to dictate."
+                    else "Needs: (1) Display over other apps, (2) Accessibility → MaxSpeech on.\n\n" +
                         "If Accessibility is locked for sideloaded apps: Settings → Apps → MaxSpeech → top-right ⋮ → " +
                         "Allow restricted settings. Do not tap Clear cache or Clear data.\n" +
-                        "Then Accessibility → MaxSpeech → on. Turn off Wispr Flow Accessibility while testing.",
+                        "Then Accessibility → MaxSpeech → on.",
                     color = c.textDim,
                     fontSize = 12.sp,
                     modifier = Modifier.padding(top = 8.dp),

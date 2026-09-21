@@ -20,7 +20,7 @@ data class AppSettings(
     val glassAlpha: Float = 0.50f,
     val blurStrength: Float = 0.70f,
     val theme: UiTheme = UiTheme.Dark,
-    val overlayEnabled: Boolean = false,
+    val overlayEnabled: Boolean = true,
     val overlayConfirm: Boolean = true,
     val aiEnhance: Boolean = true,
     val enhanceSpeed: EnhanceSpeed = EnhanceSpeed.Thinking,
@@ -43,7 +43,13 @@ class SettingsRepository(private val context: Context) {
     suspend fun snapshot(): AppSettings = context.dataStore.data.first().toSettings()
 
     suspend fun ensureDefaults() {
-        snapshot()
+        context.dataStore.edit { prefs ->
+            // One-time: turn on floating keyboard mic for existing installs.
+            if (prefs[Keys.overlayBubbleV1] != true) {
+                prefs[Keys.overlay] = true
+                prefs[Keys.overlayBubbleV1] = true
+            }
+        }
     }
 
     suspend fun setGlassAlpha(value: Float) = set(Keys.glass, value.coerceIn(0f, 1f))
@@ -96,6 +102,7 @@ class SettingsRepository(private val context: Context) {
         val dg = stringPreferencesKey("deepgram_api_key")
         val llm = stringPreferencesKey("llm_api_key")
         val tone = stringPreferencesKey("tone_override")
+        val overlayBubbleV1 = booleanPreferencesKey("overlay_keyboard_bubble_v1")
     }
 
     private fun Preferences.toSettings(): AppSettings {
@@ -113,7 +120,7 @@ class SettingsRepository(private val context: Context) {
                 "light" -> UiTheme.Light
                 else -> UiTheme.Dark
             },
-            overlayEnabled = this[Keys.overlay] ?: false,
+            overlayEnabled = this[Keys.overlay] ?: true,
             overlayConfirm = this[Keys.confirm] ?: true,
             aiEnhance = this[Keys.enhance] ?: true,
             enhanceSpeed = when (this[Keys.speed]) {

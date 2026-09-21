@@ -252,7 +252,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         authBusy.value = false
     }
 
-    fun finishOnboarding() = viewModelScope.launch { ms.settings.setOnboarded(true) }
+    fun finishOnboarding() = viewModelScope.launch {
+        ms.settings.setOverlayEnabled(true)
+        ms.settings.setOnboarded(true)
+    }
 
     fun copied(text: String) {
         toast.value = "Copied"
