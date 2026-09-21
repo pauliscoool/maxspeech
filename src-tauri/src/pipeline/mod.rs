@@ -927,6 +927,10 @@ pub fn stop_dictation(app: &tauri::AppHandle) {
     });
 
     log::info!("Dictation stopped after {elapsed_secs:.1}s ({trail_ms}ms trail)");
+    // Switch to the thinking wave while Deepgram drains + enhance runs — frozen
+    // mic bars after release look stuck when transcription takes a moment.
+    let paste_token = *state.paste_epoch.lock().unwrap();
+    emit_state_if_current(app, paste_token, "processing");
 }
 
 fn invalidate_session(state: &PipelineState) {

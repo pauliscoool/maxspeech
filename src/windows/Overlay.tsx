@@ -10,7 +10,6 @@ import {
   LogicalSize,
   LogicalPosition,
 } from "@tauri-apps/api/window";
-import AppleSpinner from "../components/AppleSpinner";
 
 type DictationState = "idle" | "listening" | "processing" | "done" | "error" | "limit";
 
@@ -26,6 +25,8 @@ const BAR_WIDTH_PX = 3;
 const BAR_GAP_PX = 3;
 /** Shared ribbon width: bars sample one continuous wash, not per-bar paints. */
 const WAVEFORM_W_PX = BAR_COUNT * BAR_WIDTH_PX + (BAR_COUNT - 1) * BAR_GAP_PX;
+/** After this long still processing, switch from ping-pong wave → digging sweep. */
+const THINKING_DIG_AFTER_S = 3;
 /** 20×3 + 19×3 = 117px bars + ~28px side padding. */
 const OVERLAY_W = 148;
 const OVERLAY_H = 36;
@@ -73,7 +74,7 @@ export default function Overlay() {
   }, []);
 
   useEffect(() => {
-    // Listening uses live audio levels. Processing shows AppleSpinner — no wave RAF.
+    // Processing: synthetic left↔right / dig wave. Listening: real audio levels.
     if (state !== "listening" && state !== "processing") {
       if (raf.current) cancelAnimationFrame(raf.current);
       raf.current = null;
@@ -82,8 +83,38 @@ export default function Overlay() {
       return;
     }
     listening.current = state === "listening";
-    if (raf.current) cancelAnimationFrame(raf.current);
-    raf.current = null;
+    if (state !== "processing") {
+      if (raf.current) cancelAnimationFrame(raf.current);
+      raf.current = null;
+      return;
+    }
+    let t0 = performance.now();
+    let lastTick = 0;
+    const FRAME_MS = 1000 / 50;
+    let alive = true;
+    const paint = (now: number) => {
+      const t = (now - t0) / 1000;
+      const next = Array.from({ length: BAR_COUNT }, (_, i) => thinkingBarLevel(t, i));
+      smoothed.current = next;
+      setLevels(next);
+    };
+    const tick = (now: number) => {
+      if (!alive) return;
+      if (now - lastTick < FRAME_MS) {
+        raf.current = requestAnimationFrame(tick);
+        return;
+      }
+      lastTick = now;
+      paint(now);
+      raf.current = requestAnimationFrame(tick);
+    };
+    paint(t0);
+    raf.current = requestAnimationFrame(tick);
+    return () => {
+      alive = false;
+      listening.current = false;
+      if (raf.current) cancelAnimationFrame(raf.current);
+    };
   }, [state]);
 
   function clearToastSoon() {
@@ -369,11 +400,7 @@ export default function Overlay() {
                       : ""
           }`}
         >
-          {!showLimit && state === "processing" && (
-            <AppleSpinner size={18} className="overlay-apple-spin" />
-          )}
-
-          {!showLimit && state !== "processing" && (
+          {!showLimit && (
             <div
               className="overlay-waveform flex items-end justify-center"
               style={{
@@ -417,6 +444,36 @@ export default function Overlay() {
 function truncate(s: string, n: number) {
   const t = s.trim().replace(/\s+/g, " ");
   return t.length <= n ? t : t.slice(0, n - 1) + "…";
+}
+
+function pingPong01(t: number, oneWayS: number): number {
+  const cycle = oneWayS * 2;
+  const x = ((t % cycle) + cycle) % cycle;
+  return x < oneWayS ? x / oneWayS : 2 - x / oneWayS;
+}
+
+function gaussian(dist: number, sigma: number): number {
+  return Math.exp(-(dist * dist) / (2 * sigma * sigma));
+}
+
+/** Processing / enhance: traveling left↔right pulse, then a slower dual-phase dig. */
+function thinkingBarLevel(t: number, i: number): number {
+  const n = BAR_COUNT - 1;
+  const pulse = pingPong01(t, 1.05);
+  const a1 = 0.14 + gaussian(i - pulse * n, 1.65) * 0.8;
+
+  const t2 = Math.max(0, t - THINKING_DIG_AFTER_S);
+  const dig = pingPong01(t2, 1.9);
+  const pos = dig * n;
+  const wide = gaussian(i - pos, 3.5);
+  const counter = gaussian(i - (n - pos), 1.5);
+  const floor = 0.13 + 0.05 * (0.5 + 0.5 * Math.sin(t2 * 0.9));
+  const a2 = floor + wide * 0.55 + counter * 0.28;
+
+  if (t < THINKING_DIG_AFTER_S) return Math.min(0.98, a1);
+  const k = Math.min(1, (t - THINKING_DIG_AFTER_S) / 0.4);
+  const eased = k * k * (3 - 2 * k);
+  return Math.min(0.98, a1 + (a2 - a1) * eased);
 }
 
 async function clearOverlayChrome() {
