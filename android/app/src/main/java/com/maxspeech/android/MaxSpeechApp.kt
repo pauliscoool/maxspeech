@@ -7,6 +7,7 @@ import com.maxspeech.android.data.AppDatabase
 import com.maxspeech.android.data.AppProfileEntity
 import com.maxspeech.android.data.AuthRepository
 import com.maxspeech.android.data.SettingsRepository
+import com.maxspeech.android.overlay.FloatingMicController
 import com.maxspeech.android.pipeline.DictationController
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -23,6 +24,8 @@ class MaxSpeechApp : Application() {
     lateinit var auth: AuthRepository
         private set
     lateinit var dictation: DictationController
+        private set
+    lateinit var floatingMic: FloatingMicController
         private set
 
     override fun onCreate() {
@@ -53,6 +56,7 @@ class MaxSpeechApp : Application() {
         settings = SettingsRepository(this)
         auth = AuthRepository(this, settings)
         dictation = DictationController(this, db, settings, auth)
+        floatingMic = FloatingMicController(this)
         appScope.launch {
             runCatching {
                 settings.ensureDefaults()

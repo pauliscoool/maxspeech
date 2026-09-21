@@ -46,6 +46,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
+import com.maxspeech.android.MaxSpeechApp
 import com.maxspeech.android.a11y.TextInjector
 import com.maxspeech.android.overlay.OverlayService
 import com.maxspeech.android.pipeline.DictationPhase
@@ -116,36 +117,22 @@ fun MaxSpeechRoot(vm: AppViewModel) {
             }
         }
 
-        // Floating mic: start once draw-over-apps is granted. Accessibility is needed
-        // for keyboard detection + paste, but the bubble can still show without it.
-        LaunchedEffect(state.settings.overlayEnabled, overlayOk, state.settings.onboarded) {
-            val want = state.settings.overlayEnabled && overlayOk && state.settings.onboarded
-            if (want) {
+        // Floating mic is owned by MainActivity + FloatingMicController. Keep the
+        // keep-alive service running whenever draw-over-apps is allowed.
+        LaunchedEffect(overlayOk) {
+            if (overlayOk) {
+                MaxSpeechApp.instance.floatingMic.ensureShown(ctx)
+                OverlayService.start(ctx)
                 if (Build.VERSION.SDK_INT >= 33 && !TextInjector.notificationGranted(ctx)) {
                     notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                 }
-                OverlayService.start(ctx)
-            } else {
-                OverlayService.stop(ctx)
             }
         }
-        // Nudge once for the two permissions the floating keyboard mic needs.
-        var promptedOverlay by remember { mutableStateOf(false) }
-        var promptedA11y by remember { mutableStateOf(false) }
-        LaunchedEffect(state.settings.onboarded, overlayOk, a11yOk, state.settings.overlayEnabled) {
-            if (!state.settings.onboarded || !state.settings.overlayEnabled) return@LaunchedEffect
-            if (!overlayOk && !promptedOverlay) {
-                promptedOverlay = true
-                snack.showSnackbar("Allow display over other apps for the floating keyboard mic")
-                ctx.startActivity(
-                    Intent(
-                        AndroidSettings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                        Uri.parse("package:${ctx.packageName}"),
-                    ),
+        LaunchedEffect(a11yOk, overlayOk) {
+            if (overlayOk && !a11yOk) {
+                snack.showSnackbar(
+                    "Optional: Settings → Accessibility → MaxSpeech ON to paste into other apps",
                 )
-            } else if (overlayOk && !a11yOk && !promptedA11y) {
-                promptedA11y = true
-                snack.showSnackbar("Turn on Accessibility → MaxSpeech so the mic appears with the keyboard")
             }
         }
         LaunchedEffect(state.toast) {
