@@ -87,7 +87,7 @@ fun HistoryScreen(
         } else {
         LazyColumn(
             verticalArrangement = Arrangement.spacedBy(10.dp),
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 120.dp),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 200.dp),
         ) {
             items(filtered, key = { it.id }) { row ->
                 GlassSurface(Modifier.fillMaxWidth()) {

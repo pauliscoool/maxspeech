@@ -92,7 +92,7 @@ fun HomeScreen(
             .statusBarsPadding()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp)
-            .padding(top = 8.dp, bottom = 120.dp),
+            .padding(top = 8.dp, bottom = 200.dp),
     ) {
         IconButton(
             onClick = { (ctx as? Activity)?.moveTaskToBack(true) },
@@ -168,8 +168,9 @@ fun HomeScreen(
                     }
                     else -> {
                         DictateCapsule(
-                            text = ui.liveText.ifBlank { ui.error ?: "Tap to speak" },
+                            text = ui.liveText.ifBlank { ui.error ?: "Hold to speak" },
                             onHoldStart = onHoldStart,
+                            onHoldEnd = onHoldEnd,
                         )
                     }
                 }
@@ -249,7 +250,11 @@ private fun StatCell(label: String, value: String, modifier: Modifier = Modifier
 }
 
 @Composable
-private fun DictateCapsule(text: String, onHoldStart: () -> Unit) {
+private fun DictateCapsule(
+    text: String,
+    onHoldStart: () -> Unit,
+    onHoldEnd: () -> Unit,
+) {
     val c = LocalMsColors.current
     val shape = RoundedCornerShape(28.dp)
     Row(
@@ -263,14 +268,17 @@ private fun DictateCapsule(text: String, onHoldStart: () -> Unit) {
                 detectTapGestures(
                     onPress = {
                         onHoldStart()
-                        tryAwaitRelease()
+                        val released = tryAwaitRelease()
+                        // Released while still Idle press target — finish.
+                        // If UI swapped to ConfirmRow, release is cancelled; user uses ✓.
+                        if (released) onHoldEnd()
                     },
                 )
             }
             .padding(horizontal = 18.dp),
     ) {
         Text(text, color = Color.White, fontSize = 16.sp, modifier = Modifier.weight(1f), maxLines = 1)
-        Icon(Icons.Filled.Mic, contentDescription = "Tap to speak", tint = Color.White)
+        Icon(Icons.Filled.Mic, contentDescription = "Hold to speak", tint = Color.White)
         Spacer(Modifier.width(8.dp))
         Icon(Icons.Filled.MoreHoriz, contentDescription = null, tint = Color.White.copy(alpha = 0.8f))
     }

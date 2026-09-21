@@ -204,12 +204,9 @@ class OverlayService : LifecycleService(), SavedStateRegistryOwner, ViewModelSto
                         initial = AppSettings(),
                     )
                     val ui by MaxSpeechApp.instance.dictation.ui.collectAsState()
-                    val focus by TextInjector.inputFocus.collectAsState()
-                    val dictating = ui.phase != DictationPhase.Idle && ui.phase != DictationPhase.Error
-                    val overOtherApp = focus.editable && focus.packageName != null &&
-                        focus.packageName != packageName
-                    val fromOverlay = dictating && MaxSpeechApp.instance.dictation.pasteIntoFocusedApp
-                    val visible = overOtherApp || fromOverlay
+                    // Always show the idle mic when overlay mode is on. Previously we
+                    // hid until a foreign text field was focused — users saw no button.
+                    val visible = true
                     MaxSpeechTheme(
                         theme = settings.theme,
                         glassAlpha = settings.glassAlpha,

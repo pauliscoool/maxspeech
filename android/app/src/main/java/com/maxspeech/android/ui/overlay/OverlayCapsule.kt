@@ -100,14 +100,15 @@ fun OverlayCapsule(
                         detectTapGestures(
                             onPress = {
                                 onHoldStart()
-                                tryAwaitRelease()
+                                val released = tryAwaitRelease()
+                                if (released) onHoldEnd()
                             },
                         )
                     }
                     .padding(horizontal = 18.dp),
             ) {
                 Text(
-                    text = ui.liveText.ifBlank { ui.error ?: "Tap a field, then hold to speak" },
+                    text = ui.liveText.ifBlank { ui.error ?: "Hold to speak" },
                     color = Color.White.copy(alpha = 0.92f),
                     fontSize = 16.sp,
                     modifier = Modifier.weight(1f),

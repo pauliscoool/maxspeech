@@ -49,6 +49,7 @@ import androidx.lifecycle.repeatOnLifecycle
 import com.maxspeech.android.a11y.TextInjector
 import com.maxspeech.android.overlay.OverlayService
 import com.maxspeech.android.pipeline.DictationPhase
+import com.maxspeech.android.ui.components.DictateFab
 import com.maxspeech.android.ui.components.GlassScrim
 import com.maxspeech.android.ui.components.GlassSurface
 import com.maxspeech.android.ui.components.MsSpinner
@@ -93,6 +94,19 @@ fun MaxSpeechRoot(vm: AppViewModel) {
             micOk = TextInjector.micGranted(ctx)
             overlayOk = TextInjector.overlayGranted(ctx)
             a11yOk = TextInjector.isAccessibilityOn(ctx)
+        }
+
+        fun startDictation() {
+            if (!micOk) micLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            else vm.holdStart()
+        }
+
+        fun toggleDictation() {
+            when (state.dictation.phase) {
+                DictationPhase.Listening, DictationPhase.Processing -> vm.holdEnd()
+                DictationPhase.Confirm -> vm.confirmDictation()
+                else -> startDictation()
+            }
         }
 
         LaunchedEffect(lifecycle) {
@@ -198,10 +212,7 @@ fun MaxSpeechRoot(vm: AppViewModel) {
                                         )
                                     },
                                     ui = state.dictation,
-                                    onHoldStart = {
-                                        if (!micOk) micLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                                        else vm.holdStart()
-                                    },
+                                    onHoldStart = { startDictation() },
                                     onHoldEnd = vm::holdEnd,
                                     onCancel = vm::cancelDictation,
                                     onConfirm = vm::confirmDictation,
@@ -260,7 +271,17 @@ fun MaxSpeechRoot(vm: AppViewModel) {
                                 )
                             }
                         }
-                        Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth()) {
+                        Column(
+                            Modifier
+                                .align(Alignment.BottomCenter)
+                                .fillMaxWidth(),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                        ) {
+                            DictateFab(
+                                phase = state.dictation.phase,
+                                onToggle = { toggleDictation() },
+                                modifier = Modifier.padding(bottom = 8.dp),
+                            )
                             GlassScrim(Modifier.fillMaxWidth().height(28.dp))
                             GlassTabBar(
                                 current = tab,
@@ -269,8 +290,7 @@ fun MaxSpeechRoot(vm: AppViewModel) {
                                 onSelect = { tab = it },
                                 onDictate = {
                                     tab = Tab.Home
-                                    if (!micOk) micLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                                    else vm.holdStart()
+                                    toggleDictation()
                                 },
                             )
                         }
@@ -278,7 +298,7 @@ fun MaxSpeechRoot(vm: AppViewModel) {
                 }
             }
             ThemeWipe(state.settings.theme)
-            SnackbarHost(snack, Modifier.align(Alignment.BottomCenter).padding(bottom = 96.dp))
+            SnackbarHost(snack, Modifier.align(Alignment.BottomCenter).padding(bottom = 168.dp))
         }
     }
 }
