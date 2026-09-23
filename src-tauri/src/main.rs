@@ -407,6 +407,10 @@ async fn clear_session(app: tauri::AppHandle) -> Result<(), String> {
     let store = app.state::<Store>();
     store.clear_all_history().map_err(|e| e.to_string())?;
     store.clear_session_meta().map_err(|e| e.to_string())?;
+    // Shared-PC hygiene: don't let the next account inherit this one's
+    // dictionary, macros, learned corrections, or app-tone customizations.
+    store.clear_account_data().map_err(|e| e.to_string())?;
+    let _ = store.seed_default_profiles();
 
     // Close main shell window(s) and show onboarding fresh.
     for label in ["settings", "main"] {
@@ -444,6 +448,27 @@ async fn add_dict_word(app: tauri::AppHandle, word: String) -> Result<(), String
 async fn delete_dict_word(app: tauri::AppHandle, id: i64) -> Result<(), String> {
     app.state::<Store>()
         .delete_dict_word(id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_substitutions(app: tauri::AppHandle) -> Result<Vec<(String, String)>, String> {
+    app.state::<Store>()
+        .get_substitutions_listed()
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn delete_substitution(app: tauri::AppHandle, from: String) -> Result<(), String> {
+    app.state::<Store>()
+        .delete_substitution(&from)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn clear_substitutions(app: tauri::AppHandle) -> Result<(), String> {
+    app.state::<Store>()
+        .clear_substitutions()
         .map_err(|e| e.to_string())
 }
 
@@ -579,11 +604,24 @@ async fn set_plan_tier(app: tauri::AppHandle, tier: String) -> Result<plan::Plan
     store.get_plan_status().map_err(|e| e.to_string())
 }
 
-/// Apply a plan from cloud sync without the checkout gate (already entitled).
+/// Apply a plan pulled from cloud settings. No real checkout/billing exists yet,
+/// so this must not let a user grant themselves a paid tier by editing their own
+/// cloud `user_settings.plan_tier` — same owner gate as `set_plan_tier`.
 #[tauri::command]
 async fn sync_plan_tier(app: tauri::AppHandle, tier: String) -> Result<plan::PlanStatus, String> {
     let store = app.state::<Store>();
     let parsed = plan::PlanTier::parse(&tier);
+    let email = stored_account_email(&store);
+
+    match parsed {
+        plan::PlanTier::Free => {}
+        plan::PlanTier::Starter | plan::PlanTier::Pro | plan::PlanTier::Max => {
+            if !is_owner_email(&email) {
+                return store.get_plan_status().map_err(|e| e.to_string());
+            }
+        }
+    }
+
     store.set_plan_tier(parsed).map_err(|e| e.to_string())?;
     store.get_plan_status().map_err(|e| e.to_string())
 }
@@ -608,6 +646,22 @@ async fn adjust_usage(app: tauri::AppHandle, delta: i64) -> Result<plan::PlanSta
 async fn set_words_used(app: tauri::AppHandle, words: u64) -> Result<plan::PlanStatus, String> {
     let store = app.state::<Store>();
     require_owner(&store)?;
+    let current = store.words_this_week().map_err(|e| e.to_string())?;
+    let delta = words as i64 - current as i64;
+    store.adjust_usage(delta).map_err(|e| e.to_string())?;
+    store.get_plan_status().map_err(|e| e.to_string())
+}
+
+/// Apply a word count the owner already set on this user's *own* cloud
+/// `admin_words_used` setting (via the Usage admin panel on the owner's
+/// device, over Supabase — never through this command). By the time it
+/// reaches here through the normal cloud-settings pull, authorization has
+/// already happened server-side; gating this device's own local identity
+/// (as `set_words_used` does) would always fail, since the device applying
+/// it is the *target* user's, not the owner's.
+#[tauri::command]
+async fn apply_synced_admin_words(app: tauri::AppHandle, words: u64) -> Result<plan::PlanStatus, String> {
+    let store = app.state::<Store>();
     let current = store.words_this_week().map_err(|e| e.to_string())?;
     let delta = words as i64 - current as i64;
     store.adjust_usage(delta).map_err(|e| e.to_string())?;
@@ -787,6 +841,7 @@ async fn remake_dictation(app: tauri::AppHandle, id: i64) -> Result<String, Stri
         let inserted = inject::inject_text(&output).map_err(|e| e.to_string())?;
         let pipeline_state = app.state::<pipeline::PipelineState>();
         *pipeline_state.last_insertion.lock().unwrap() = Some(inserted);
+        *pipeline_state.last_insertion_app.lock().unwrap() = fg.as_ref().map(|a| a.exe.clone());
     }
     Ok(saved)
 }
@@ -929,7 +984,12 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            open_window(app, "settings", "MaxSpeech", 935, 612);
+            let store = app.state::<Store>();
+            if !store.is_onboarded() {
+                open_window(app, "onboarding", "Welcome to MaxSpeech", 560, 520);
+            } else {
+                open_window(app, "settings", "MaxSpeech", 935, 612);
+            }
         }))
         .manage(store)
         .manage(pipeline::PipelineState::default())
@@ -952,6 +1012,9 @@ fn main() {
             get_dictionary,
             add_dict_word,
             delete_dict_word,
+            get_substitutions,
+            delete_substitution,
+            clear_substitutions,
             get_macros,
             add_macro,
             delete_macro,
@@ -970,6 +1033,7 @@ fn main() {
             set_usage_bonus,
             adjust_usage,
             set_words_used,
+            apply_synced_admin_words,
             open_settings_page,
             open_plans_modal,
             set_overlay_pill_clip,

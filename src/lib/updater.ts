@@ -11,6 +11,8 @@ export type UpdateInfo = {
   currentVersion: string;
   /** When set, in-app signed install isn't available — download/open this URL instead. */
   downloadUrl?: string;
+  /** Expected sha256 of `downloadUrl`'s content, when the manifest provided one. */
+  downloadSha256?: string;
   source: "tauri" | "manifest";
 };
 
@@ -19,6 +21,7 @@ type RemoteManifest = {
   notes?: string;
   url?: string;
   github?: string;
+  sha256?: string;
   /** Optional per-OS installer URLs (preferred over `url` when present). */
   platforms?: {
     windows?: string;
@@ -151,11 +154,19 @@ async function urlExists(url: string): Promise<boolean> {
   }
 }
 
+/** True for URLs that resolve via GitHub's "latest release" redirect rather
+ *  than a version-pinned asset — these can silently serve an older build
+ *  than `targetVersion` if the GitHub release lags the website manifest. */
+function isLatestReleaseRedirect(url: string): boolean {
+  return url === WEBSITE_WINDOWS_INSTALLER || url.includes("/releases/latest/download/");
+}
+
 async function pickManifestDownloadUrl(
   manifest: RemoteManifest,
   os: HostOs,
   targetVersion: string,
-  githubAssetUrl?: string,
+  githubAssetUrl: string | undefined,
+  ghTag: string,
 ): Promise<string> {
   const fromPlatforms =
     os === "macos"
@@ -180,10 +191,17 @@ async function pickManifestDownloadUrl(
     websitePageFallback(os),
   ].filter((u): u is string => !!u);
 
+  // GitHub's actual published tag is behind what the site manifest claims —
+  // a "latest release" redirect would just re-serve that stale build and
+  // loop forever ("update available" never resolving). Drop those candidates
+  // so a version-pinned asset (or the release page) is preferred instead.
+  const ghIsStale = !!ghTag && isNewerVersion(targetVersion, ghTag);
+
   const installers: string[] = [];
   const pages: string[] = [];
   for (const url of candidates) {
     if (!installerUrlMatchesTarget(url, targetVersion)) continue;
+    if (ghIsStale && isLatestReleaseRedirect(url)) continue;
     if (looksLikeDirectInstaller(url)) installers.push(url);
     else pages.push(url);
   }
@@ -295,16 +313,26 @@ async function fetchManifestUpdate(
   if (preferSite && fromSite) {
     const targetVersion = siteVersion;
     const githubAsset = pickGithubAssetUrl(release?.assets, os, targetVersion);
+    const downloadUrl = await pickManifestDownloadUrl(
+      fromSite,
+      os,
+      targetVersion,
+      githubAsset,
+      ghTag,
+    );
+    // The sha256 in the manifest is only meaningful for the exact file it
+    // names (the stable Windows installer URL) — never attach it to a
+    // different resolved URL (a GitHub asset, a landing page, etc.).
+    const downloadSha256 =
+      downloadUrl === WEBSITE_WINDOWS_INSTALLER || downloadUrl === fromSite.url
+        ? fromSite.sha256
+        : undefined;
     return {
       version: targetVersion,
       body: fromSite.notes ?? null,
       currentVersion,
-      downloadUrl: await pickManifestDownloadUrl(
-        fromSite,
-        os,
-        targetVersion,
-        githubAsset,
-      ),
+      downloadUrl,
+      downloadSha256,
       source: "manifest",
     };
   }
@@ -359,16 +387,25 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** IPC dies when Rust `process::exit`s after spawning NSIS — not a failed install. */
+/**
+ * IPC dies when Rust `process::exit`s after spawning NSIS — that death isn't
+ * a failed install. Every *real* failure from `download_and_run_installer`
+ * is prefixed with `UPDATE_FAILED_MESSAGE` (or one of the explicit
+ * download-stage errors below), so matching "update failed" here catches
+ * all of them — including checksum mismatches and "not an installer" —
+ * without needing to enumerate every message by hand.
+ */
 function isFatalInstallerError(err: unknown): boolean {
   const msg = String(err).toLowerCase();
   return (
+    msg.includes("update failed") ||
     msg.includes("download failed") ||
     msg.includes("download interrupted") ||
     msg.includes("could not launch") ||
     msg.includes("could not write") ||
     msg.includes("could not finish") ||
     msg.includes("could not open") ||
+    msg.includes("checksum mismatch") ||
     msg.includes("http ") ||
     msg.includes("outdated") ||
     msg.includes("already on the latest") ||
@@ -378,6 +415,7 @@ function isFatalInstallerError(err: unknown): boolean {
 
 async function downloadAndRunInstaller(
   url: string,
+  sha256: string | undefined,
   onProgress?: (pct: number | null) => void,
 ): Promise<void> {
   let reachedComplete = false;
@@ -390,7 +428,7 @@ async function downloadAndRunInstaller(
   try {
     onProgress?.(0);
     try {
-      await invoke("download_and_run_installer", { url });
+      await invoke("download_and_run_installer", { url, sha256 });
     } catch (err) {
       // Process is exiting after a successful spawn; don't surface IPC death.
       if (reachedComplete && !isFatalInstallerError(err)) return;
@@ -484,6 +522,7 @@ export async function installAvailableUpdate(
 
   const windows = detectHostOs() === "windows";
   const url = resolveInstallUrl(info);
+  const sha256 = resolveInstallSha256(info, url);
 
   if (windows) {
     const installerUrl = looksLikeDirectInstaller(url)
@@ -496,7 +535,11 @@ export async function installAvailableUpdate(
       );
     }
     try {
-      await downloadAndRunInstaller(installerUrl, onProgress);
+      await downloadAndRunInstaller(
+        installerUrl,
+        installerUrl === url ? sha256 : undefined,
+        onProgress,
+      );
     } catch (err) {
       if (!isFatalInstallerError(err)) {
         try {
@@ -522,7 +565,7 @@ export async function installAvailableUpdate(
   }
 
   if (looksLikeDirectInstaller(url)) {
-    await downloadAndRunInstaller(url, onProgress);
+    await downloadAndRunInstaller(url, sha256, onProgress);
     return;
   }
 
@@ -536,6 +579,13 @@ function resolveInstallUrl(info: UpdateInfo): string {
   if (cachedManifest?.downloadUrl) return cachedManifest.downloadUrl;
   if (detectHostOs() === "windows") return WEBSITE_WINDOWS_INSTALLER;
   return websitePageFallback();
+}
+
+/** Only trust the manifest's sha256 when we're about to fetch the exact URL it named. */
+function resolveInstallSha256(info: UpdateInfo, resolvedUrl: string): string | undefined {
+  if (info.downloadUrl === resolvedUrl) return info.downloadSha256;
+  if (cachedManifest?.downloadUrl === resolvedUrl) return cachedManifest.downloadSha256;
+  return undefined;
 }
 
 export async function openUpdateWebsite(): Promise<void> {

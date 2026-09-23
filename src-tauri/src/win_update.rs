@@ -42,13 +42,55 @@ pub fn run_if_reinstaller() {
     std::process::exit(code);
 }
 
-#[tauri::command]
-pub async fn download_and_run_installer(app: AppHandle, url: String) -> Result<(), String> {
-    download_and_run_installer_inner(app, url).await
+/// Hosts we will ever download an installer from. Anything else is refused
+/// before a single byte is fetched — the URL otherwise comes straight from
+/// the website manifest / GitHub API response, both of which are untrusted
+/// network input.
+const ALLOWED_INSTALLER_HOSTS: &[&str] = &["maxspeech.vercel.app", "github.com"];
+
+fn host_is_allowed(url: &str) -> bool {
+    let Ok(parsed) = url::Url::parse(url) else {
+        return false;
+    };
+    if parsed.scheme() != "https" {
+        return false;
+    }
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
+    let host = host.to_ascii_lowercase();
+    ALLOWED_INSTALLER_HOSTS.contains(&host.as_str())
+        || host.ends_with(".githubusercontent.com")
 }
 
-async fn download_and_run_installer_inner(app: AppHandle, url: String) -> Result<(), String> {
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(bytes);
+    digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[tauri::command]
+pub async fn download_and_run_installer(
+    app: AppHandle,
+    url: String,
+    sha256: Option<String>,
+) -> Result<(), String> {
+    download_and_run_installer_inner(app, url, sha256).await
+}
+
+async fn download_and_run_installer_inner(
+    app: AppHandle,
+    url: String,
+    expected_sha256: Option<String>,
+) -> Result<(), String> {
     let mut urls = installer_url_fallbacks(&url);
+    urls.retain(|u| {
+        let ok = host_is_allowed(u);
+        if !ok {
+            append_update_log(&format!("refusing untrusted installer host: {u}"));
+        }
+        ok
+    });
     let mut last_err = String::new();
     let mut path: Option<PathBuf> = None;
 
@@ -73,6 +115,19 @@ async fn download_and_run_installer_inner(app: AppHandle, url: String) -> Result
             format!("{UPDATE_FAILED_MESSAGE} ({last_err})")
         }
     })?;
+
+    if let Some(expected) = expected_sha256.as_deref().filter(|s| !s.trim().is_empty()) {
+        let bytes = std::fs::read(&path)
+            .map_err(|e| format!("{UPDATE_FAILED_MESSAGE} (could not verify download: {e})"))?;
+        let actual = sha256_hex(&bytes);
+        if !actual.eq_ignore_ascii_case(expected.trim()) {
+            let _ = std::fs::remove_file(&path);
+            append_update_log(&format!(
+                "sha256 mismatch: expected {expected}, got {actual}"
+            ));
+            return Err(format!("{UPDATE_FAILED_MESSAGE} (checksum mismatch)"));
+        }
+    }
 
     #[cfg(target_os = "windows")]
     if !looks_like_pe(&path) {

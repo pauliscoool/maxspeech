@@ -3,7 +3,13 @@ import { supabase } from "./supabase";
 import type { PlanTier } from "./plan";
 import { showAccountSavedToast } from "./toast";
 
-/** Local settings keys mirrored to Supabase `user_settings.settings`. */
+/**
+ * Local settings keys mirrored to Supabase `user_settings.settings`.
+ * `profile_avatar` is deliberately excluded — at up to ~1.4MB of base64, it
+ * would otherwise get re-read and re-uploaded on *every* debounced push
+ * (any toggle, hotkey change, mic pick, …), not just when the photo itself
+ * changes. It has its own dedicated push in `pushProfileAvatar` below.
+ */
 export const SYNC_SETTING_KEYS = [
   "show_live_transcript",
   "ai_enhance",
@@ -23,7 +29,6 @@ export const SYNC_SETTING_KEYS = [
   "mic_device",
   "profile_first_name",
   "profile_last_name",
-  "profile_avatar",
 ] as const;
 
 /** Debounce from last settings edit before pushing to the account. */
@@ -247,6 +252,16 @@ async function applyLocalSettings(settings: CloudSettings): Promise<void> {
       /* ignore */
     }
   }
+  // Not in SYNC_SETTING_KEYS (see its comment) — still applied on pull so an
+  // avatar set on one device shows up on another, just never re-pushed by
+  // an unrelated settings save.
+  if (settings.profile_avatar != null) {
+    try {
+      await invoke("set_setting", { key: "profile_avatar", value: settings.profile_avatar });
+    } catch {
+      /* ignore */
+    }
+  }
   await applyLocalCollections(settings);
 }
 
@@ -266,12 +281,28 @@ export async function pushCloudSettings(): Promise<boolean> {
   if (!uid) return false;
 
   const local = await readLocalSettings();
-  const tier = (local.plan_tier || "free") as PlanTier;
+
+  // Never let a stale local plan_tier (e.g. a device that hasn't pulled a
+  // cloud-granted upgrade yet, or a plan cleared by a prior sign-out) push
+  // backward over a plan the cloud already has — same "newer stamp wins"
+  // resolution pullCloudSettings uses.
+  const { data: existingProfile } = await supabase
+    .from("profiles")
+    .select("plan_tier, updated_at")
+    .eq("id", uid)
+    .maybeSingle();
+  const chosenTier = (pickPersistedPlan(
+    local.plan_tier || "",
+    local.plan_updated_at || "",
+    String(existingProfile?.plan_tier || ""),
+    String(existingProfile?.updated_at || ""),
+  ) || "free") as PlanTier;
+  local.plan_tier = chosenTier;
 
   await supabase
     .from("profiles")
     .update({
-      plan_tier: tier,
+      plan_tier: chosenTier,
       updated_at: new Date().toISOString(),
     })
     .eq("id", uid);
@@ -297,6 +328,37 @@ export async function pushCloudSettings(): Promise<boolean> {
   );
   if (error) {
     console.warn("pushCloudSettings:", error.message);
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Push just the avatar to the account (a targeted merge, not the full
+ * settings blob `pushCloudSettings` sends). Called once per photo pick
+ * after its own save debounce, instead of piggybacking on every unrelated
+ * settings save.
+ */
+export async function pushProfileAvatar(dataUrl: string): Promise<boolean> {
+  const { data: session } = await supabase.auth.getSession();
+  const uid = session.session?.user?.id;
+  if (!uid) return false;
+
+  const { data: existing } = await supabase
+    .from("user_settings")
+    .select("settings")
+    .eq("user_id", uid)
+    .maybeSingle();
+  const settings: CloudSettings = {
+    ...((existing?.settings as CloudSettings) || {}),
+    profile_avatar: dataUrl,
+  };
+  const { error } = await supabase.from("user_settings").upsert(
+    { user_id: uid, settings, updated_at: new Date().toISOString() },
+    { onConflict: "user_id" },
+  );
+  if (error) {
+    console.warn("pushProfileAvatar:", error.message);
     return false;
   }
   return true;
@@ -437,7 +499,10 @@ async function applyAdminWordsUsed(settings: CloudSettings): Promise<boolean> {
     const week = settings.admin_words_used_week || "";
     if (week && plan?.week_starts_at && week !== plan.week_starts_at) return false;
     const words = Math.max(0, Math.floor(Number(raw) || 0));
-    await invoke("set_words_used", { words });
+    // Not `set_words_used` — that requires *this* device to be the owner's,
+    // which it never is here (this runs on the target account's own device
+    // applying a value the owner already set via the cloud, over Supabase).
+    await invoke("apply_synced_admin_words", { words });
     return true;
   } catch {
     return false;
