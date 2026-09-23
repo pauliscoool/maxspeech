@@ -218,7 +218,7 @@ class DeepgramClient {
 
     private fun buildUrl(language: String, keyterms: List<String>): String {
         // Same as desktop stt/deepgram.rs build_url.
-        val endpointing = if (language == "multi") 350 else 650
+        val endpointing = if (language == "multi") 700 else 1100
         val sb = StringBuilder(
             "wss://api.deepgram.com/v1/listen?model=nova-3&language=$language&punctuate=true&interim_results=true&smart_format=true&numerals=true&endpointing=$endpointing&encoding=linear16&sample_rate=16000&channels=1",
         )

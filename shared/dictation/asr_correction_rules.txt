@@ -20,22 +20,26 @@ Prefer the reading that makes the sentence sensible. Examples:
   (do NOT rewrite unrelated 'tail' or 'scale')
 - common: 'there'/'their'/'they're', 'to'/'too'/'two', 'its'/'it's' by grammar
 - numbers: ASR (numerals=true) turns spoken words into digits.
-  Spell out single-digit amounts in prose/names ('Covenant Core 1'→'Covenant Core one',
-  'I have 2 apples'→'I have two apples'). Keep multi-digit numbers as digits
-  (101, 2024, phone/ID strings). Keep digits for clear codes/times/quantities
-  ('meet at 4pm', 'room 2', 'version 2', 'page 3').
+  Spell out 0–20 in prose ('I have 2 apples'→'I have two apples',
+  'wait 10 minutes'→'wait ten minutes', 'Covenant Core 1'→'Covenant Core one').
+  Use digits from 21 up ('47', '101', '2024') and for phone/ID strings.
+  Keep digits for labeled codes/times ('meet at 4pm', 'room 2', 'version 2',
+  'page 3', 'issue 1042') and numeric ranges ('2 to 5').
   Also fix digit homophones ('for'→'4', 'to'→'2', 'won'→'1') when context is not numeric.
+- okay: spoken 'k' / 'ok' / 'kay' → 'okay'. Do NOT rewrite the letter K after
+  vitamin/press/grade/key, or the name Kay ('Hi Kay').
 - percents (VERY common): '10 times' / 'ten times' → '10%' when the speaker meant
   a percentage (at/by/of/about/only/discount/rate/tax/tip), NOT repetition
   ('do it 10 times') or comparison ('10 times faster').
   'ten percent' / '10 percent' → '10%'.
 - contractions: ASR drops apostrophes — dont→don't, doesnt→doesn't, im→I'm,
-  ive→I've, thats→that's, youre→you're, theyre→they're, wont→won't, cant→can't.
+  ive→I've, thats→that's, youre→you're, theyre→they're, wont→won't, cant→can't,
+  aint→ain't, ill go→I'll go (not 'ill' as in sick).
   'lets go/see/try' → 'let's …'. 'id like' → 'I'd like' (not user id).
 - numeral homophones (numerals=true): 'thanks 4 the'→'thanks for the',
   'need 2 go'→'need to go', '2 much'→'too much', '1 of'→'one of', 'no 1'→'no one'.
-  Single digits in titles/names/prose → words ('Covenant Core 1'→'Covenant Core one').
-  Keep real codes/times and ALL multi-digit numbers as digits
+  0–20 in titles/names/prose → words ('Covenant Core 1'→'Covenant Core one').
+  Keep real codes/times, ranges, 21+, and long numeric IDs as digits
   ('room 2', 'meet at 4pm', 'version 2', 'call 555-1212', 'issue 1042').
 - split product names: 'type script'→TypeScript, 'java script'→JavaScript,
   'super base'→Supabase, 'verse cell'→Vercel, 'cloud flare'→Cloudflare,
@@ -43,11 +47,15 @@ Prefer the reading that makes the sentence sensible. Examples:
   'curse forge'→CurseForge (not Cursor), 'post grass'→Postgres,
   'covenant court'/'covenant corner'/'covenant core'→Covenant Core,
   'tail scale'/'tale scale'/'tailscale'→Tailscale.
-- 'could of'/'would of'/'should of' → could've/would've/should've
-  (unless 'of the/a/course').
+- 'could of'/'would of'/'should of'/'might of' → could've/would've/should've/might've
+  (unless 'of the/a/course'). woulda/coulda/shoulda → would've/could've/should've.
 - comparatives: 'better then' / 'more then' / 'rather then' → than.
 - 'to much' / 'to many' / 'to late' → too.
-- 'its a' / 'its not' / 'its been' → it's; 'your going' / 'your welcome' → you're.
+- 'its a' / 'its not' / 'its been' / 'its okay' → it's; 'your going' / 'your welcome' / 'your k' → you're.
+- 'whose going/gonna/not' → who's.
+- fused slips: alot→a lot, atleast→at least, aswell→as well, incase→in case,
+  eachother→each other, nevermind→never mind, noone→no one, everytime→every time,
+  cuz→because, tho→though, dunno→don't know.
 - possessives: if a known name appears as Names, restore Name's.
 Do NOT invent new content. Only swap clearly wrong ASR tokens.
 Do NOT change ordinary English 'get' ('I want to get coffee').

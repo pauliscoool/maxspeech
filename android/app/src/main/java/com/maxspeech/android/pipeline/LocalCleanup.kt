@@ -25,6 +25,7 @@ object LocalCleanup {
         var t = fixSpokenContractions(text)
         t = fixNumeralHomophones(t)
         t = fixCommonHomophones(t)
+        t = fixSpokenOkay(t)
         t = fixSpokenPercentWord(t)
         t = fixPercentHeardAsTimes(t)
         return fixCasualAddressCommas(t)
@@ -103,11 +104,19 @@ object LocalCleanup {
         "theyre" to "they're", "weve" to "we've", "youve" to "you've", "theyve" to "they've",
         "thats" to "that's", "whats" to "what's", "whos" to "who's", "wheres" to "where's",
         "heres" to "here's", "theres" to "there's", "shes" to "she's", "hes" to "he's",
+        "aint" to "ain't", "hows" to "how's", "whens" to "when's", "oclock" to "o'clock",
+    )
+
+    private val ILL_NEXT = setOf(
+        "go", "be", "have", "get", "do", "see", "take", "make", "come", "send", "call", "ask", "try",
+        "start", "stop", "let", "put", "use", "need", "just", "also", "still", "probably", "maybe",
+        "check", "wait", "add", "fix",
     )
 
     private fun contractionFor(lower: String, next: String): String? = when (lower) {
         "lets" -> if (next in LETS_NEXT) "let's" else null
         "id" -> if (next in ID_NEXT) "I'd" else null
+        "ill" -> if (next in ILL_NEXT) "I'll" else null
         else -> CONTRACTIONS[lower]
     }
 
@@ -129,21 +138,25 @@ object LocalCleanup {
 
     // ---- numerals ----
 
+    // Digits stay only where numbers are labels, clock times, percents, ordinals or tech units.
     private val QUANTITY_PREV = setOf(
-        "at", "around", "about", "room", "page", "version", "v", "chapter", "item", "number", "line",
-        "port", "issue", "age", "aged", "volume", "size", "count", "plus", "minus", "versus", "vs",
-        "episode", "season", "track", "level", "floor", "apartment", "apt", "suite", "gate", "build",
-        "revision", "model", "of", "no", "than", "between", "over", "under", "from", "last", "next",
-        "first", "step", "part", "day", "days", "hour", "hours", "minute", "minutes", "week", "weeks",
-        "month", "months", "year", "years", "dollar", "dollars", "pound", "pounds", "euro", "euros",
-        "percent",
+        "at", "around", "room", "page", "version", "v", "chapter", "item", "number", "line", "port",
+        "issue", "age", "aged", "volume", "size", "count", "versus", "vs", "episode", "season",
+        "track", "level", "floor", "apartment", "apt", "suite", "gate", "build", "revision", "model",
+        "step", "part",
     )
     private val UNIT_NEXT = setOf(
-        "times", "time", "percent", "percentage", "pm", "am", "st", "nd", "rd", "th", "dollars",
-        "cents", "minutes", "hours", "seconds", "days", "weeks", "months", "years", "people", "items",
-        "plus", "minus", "bucks", "km", "miles", "meters", "kg", "lbs", "gb", "mb", "kb", "tb", "ghz",
-        "mhz", "px", "bit", "bits", "bytes",
+        "times", "time", "percent", "percentage", "pm", "am", "st", "nd", "rd", "th", "km", "kg",
+        "lbs", "gb", "mb", "kb", "tb", "ghz", "mhz", "px", "bit", "bits", "bytes", "k",
     )
+    private val RANGE_LINK = setOf("to", "and", "or", "through", "thru", "versus", "vs")
+
+    private fun isNumericToken(bare: String) = bare.isNotEmpty() && bare.all { it in '0'..'9' }
+
+    private fun isRangeKeep(prev: String, prev2: String, next: String, next2: String): Boolean {
+        if (isNumericToken(prev) || isNumericToken(next)) return true
+        return (next in RANGE_LINK && isNumericToken(next2)) || (prev in RANGE_LINK && isNumericToken(prev2))
+    }
     private val FOR_NEXT = setOf(
         "the", "a", "an", "you", "me", "us", "them", "him", "her", "it", "this", "that", "those",
         "these", "my", "your", "our", "their", "his", "now", "later", "today", "tomorrow", "tonight",
@@ -170,10 +183,14 @@ object LocalCleanup {
         "listen", "look", "watch", "play", "help", "show", "pick", "choose", "decide", "finish",
         "complete",
     )
-    private val DIGIT_WORD = mapOf(
-        "0" to "zero", "1" to "one", "2" to "two", "3" to "three", "4" to "four",
-        "5" to "five", "6" to "six", "7" to "seven", "8" to "eight", "9" to "nine",
+    /** Spoken 0–20 → words. 21+ and decimals stay numeric. */
+    private val PROSE_NUMBER = mapOf(
+        "0" to "zero", "1" to "one", "2" to "two", "3" to "three", "4" to "four", "5" to "five",
+        "6" to "six", "7" to "seven", "8" to "eight", "9" to "nine", "10" to "ten", "11" to "eleven",
+        "12" to "twelve", "13" to "thirteen", "14" to "fourteen", "15" to "fifteen", "16" to "sixteen",
+        "17" to "seventeen", "18" to "eighteen", "19" to "nineteen", "20" to "twenty",
     )
+    private val SPELLED_SMALL = PROSE_NUMBER.values.toSet()
 
     private fun isUnitOrQuantityNext(next: String): Boolean =
         (next.isNotEmpty() && next.all { it in '0'..'9' }) || next in UNIT_NEXT
@@ -193,12 +210,12 @@ object LocalCleanup {
         for ((i, w) in words.withIndex()) {
             val (lead, bare, trail) = splitWordPunct(w)
             val next = nextBareLower(words, i)
+            val next2 = words.getOrNull(i + 2)?.let { splitWordPunct(it).bare.lowercase() }.orEmpty()
             val prev = prevBareLower(out)
-            // "user id is 7" / "the code was 4": identifier values stay digits.
-            val prev2 = out.getOrNull(out.size - 2)?.let { splitWordPunct(it).bare.lowercase() }.orEmpty()
-            val identValue = prev2 in setOf("id", "code", "pin", "number", "zip", "extension") &&
-                prev in setOf("is", "was", "equals")
-            val keepDigit = prev in QUANTITY_PREV || isUnitOrQuantityNext(next) || identValue
+            // Mirrors Rust: out.get(len.saturating_sub(2)).
+            val prev2 = out.getOrNull(maxOf(out.size - 2, 0))?.let { splitWordPunct(it).bare.lowercase() }.orEmpty()
+            val keepDigit = prev in QUANTITY_PREV || isUnitOrQuantityNext(next) ||
+                isRangeKeep(prev, prev2, next, next2)
             val mapped = when {
                 prev == "no" && bare == "1" -> "one"
                 keepDigit -> null
@@ -206,7 +223,7 @@ object LocalCleanup {
                 bare == "2" && next in TOO_NEXT -> "too"
                 bare == "2" && next in TO_NEXT -> "to"
                 bare == "1" && next == "of" -> "one"
-                else -> DIGIT_WORD[bare]
+                else -> PROSE_NUMBER[bare]
             }
             if (mapped != null) {
                 out.add("$lead${capitalizeIfNeeded(out.lastOrNull(), mapped)}$trail")
@@ -220,12 +237,22 @@ object LocalCleanup {
     // ---- homophones ----
 
     private val ITS_NEXT = setOf(
-        "a", "an", "the", "not", "been", "going", "gonna", "ok", "okay", "just", "really", "already",
-        "always", "never", "still", "also", "only", "actually", "currently", "probably",
+        "a", "an", "the", "not", "been", "going", "gonna", "ok", "okay", "k", "kay", "just", "really",
+        "already", "always", "never", "still", "also", "only", "actually", "currently", "probably",
+        "fine", "ready", "done", "time", "working", "broken",
     )
     private val YOURE_NEXT = setOf(
         "going", "gonna", "not", "welcome", "being", "doing", "getting", "looking", "trying",
-        "having", "making", "coming",
+        "having", "making", "coming", "k", "ok", "okay", "kay", "right", "sure", "fine", "ready",
+    )
+    private val WHOSE_NEXT = setOf("going", "gonna", "not", "been", "doing", "coming", "got", "here", "there", "that", "this")
+    private val FUSED = mapOf(
+        "alot" to "a lot", "aswell" to "as well", "atleast" to "at least", "incase" to "in case",
+        "eachother" to "each other", "nevermind" to "never mind", "noone" to "no one",
+        "everytime" to "every time", "infront" to "in front", "woulda" to "would've",
+        "coulda" to "could've", "shoulda" to "should've", "cuz" to "because", "tho" to "though",
+        "dunno" to "don't know", "lemme" to "let me", "gimme" to "give me", "outta" to "out of",
+        "supposably" to "supposedly", "expresso" to "espresso", "yea" to "yeah",
     )
     private val THEYRE_NEXT = setOf(
         "going", "gonna", "not", "being", "doing", "getting", "looking", "trying", "here", "there",
@@ -244,7 +271,7 @@ object LocalCleanup {
             val next = nextBareLower(words, i)
             val prev = prevBareLower(out)
 
-            if (prev in setOf("could", "would", "should", "must") && lower == "of" &&
+            if (prev in setOf("could", "would", "should", "must", "might") && lower == "of" &&
                 next.isNotEmpty() && next !in OF_BLOCK
             ) {
                 val modal = out.removeAt(out.lastIndex)
@@ -253,6 +280,7 @@ object LocalCleanup {
                     "could" -> "could've"
                     "would" -> "would've"
                     "should" -> "should've"
+                    "might" -> "might've"
                     else -> "must've"
                 }
                 out.add("${m.lead}${copyCasing(m.bare, repl)}${m.trail}")
@@ -264,11 +292,57 @@ object LocalCleanup {
                 lower == "its" && next in ITS_NEXT -> "it's"
                 lower == "your" && next in YOURE_NEXT -> "you're"
                 (lower == "their" || lower == "there") && next in THEYRE_NEXT -> "they're"
-                else -> null
+                lower == "whose" && next in WHOSE_NEXT -> "who's"
+                else -> FUSED[lower]
             }
             out.add(if (repl != null) "$lead${copyCasing(bare, repl)}$trail" else w)
         }
         return out.joinToString(" ")
+    }
+
+    // ---- spoken "k" / "ok" / "kay" → "okay" ----
+
+    private val OKAY_BLOCK_PREV = setOf(
+        "vitamin", "letter", "grade", "key", "press", "hit", "type", "factor", "model", "alt", "ctrl",
+        "control", "shift",
+    )
+    private val KAY_NAME_PREV = setOf("hi", "hey", "dear", "ask", "tell", "call", "from", "with", "thanks", "thank", "meet")
+    private val OKAY_NEXT = setOf(
+        "thanks", "thank", "cool", "sounds", "got", "great", "sure", "yeah", "yes", "no", "i", "we",
+        "you", "lets", "good", "perfect", "fine", "bet",
+    )
+    private val OKAY_PREV = setOf("thats", "that's", "its", "it's", "im", "i'm", "yeah", "so", "but", "alright", "yes", "no", "ok", "okay")
+
+    private fun fixSpokenOkay(text: String): String {
+        val words = words(text)
+        if (words.isEmpty()) return text
+        val only = words.size == 1
+        val out = ArrayList<String>(words.size)
+        for ((i, w) in words.withIndex()) {
+            val (lead, bare, trail) = splitWordPunct(w)
+            val lower = bare.lowercase()
+            val next = nextBareLower(words, i)
+            val prev = prevBareLower(out)
+            if (shouldExpandOkay(lower, prev, next, only)) {
+                val alpha = bare.filter { it.isLetter() }
+                val cased = if (alpha.isNotEmpty() && alpha.all { it.isLowerCase() }) "okay"
+                else capitalizeIfNeeded(out.lastOrNull(), "okay")
+                out.add("$lead$cased$trail")
+            } else {
+                out.add(w)
+            }
+        }
+        return out.joinToString(" ")
+    }
+
+    private fun shouldExpandOkay(lower: String, prev: String, next: String, onlyWord: Boolean): Boolean {
+        if (lower != "k" && lower != "ok" && lower != "kay") return false
+        if (isNumericToken(prev) || isNumericToken(next) || prev in SPELLED_SMALL) return false
+        if (prev in OKAY_BLOCK_PREV) return false
+        if (lower == "ok" || lower == "k") return true
+        if (prev in KAY_NAME_PREV) return false
+        if (onlyWord) return true
+        return next in OKAY_NEXT || prev in OKAY_PREV
     }
 
     // ---- percents ----

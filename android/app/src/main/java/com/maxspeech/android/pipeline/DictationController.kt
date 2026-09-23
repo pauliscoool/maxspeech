@@ -366,7 +366,11 @@ class DictationController(
         if (corrected.trim() != expanded.trim()) learnFrom(expanded, corrected)
         val tone = resolveTone(sessionApp, snap.toneOverride)
         var out = corrected
-        if (snap.aiEnhance) {
+        // Desktop parity: short holds get local cleanup only; multilingual sessions skip the LLM.
+        val heldSecs = heldMs / 1000.0
+        val runEnhance = snap.aiEnhance && sessionLang != "multi" &&
+            heldSecs >= EnhancePolicy.quickSkipSecs(snap.enhanceSpeed)
+        if (runEnhance) {
             val key = snap.llmKey.trim()
             if (key.isNotBlank()) {
                 runCatching {

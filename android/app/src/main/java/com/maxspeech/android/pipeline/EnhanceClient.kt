@@ -27,24 +27,34 @@ class EnhanceClient(private val assets: AssetManager) {
         multilingual: Boolean,
         dictTerms: List<String> = emptyList(),
     ): String = withContext(Dispatchers.IO) {
-        val model = if (speed == EnhanceSpeed.Ultra) "gpt-4o" else "gpt-4o-mini"
-        val temp = when (speed) {
-            EnhanceSpeed.Fast -> 0.0
-            EnhanceSpeed.Thinking -> 0.1
-            EnhanceSpeed.Ultra -> 0.22
-        }
-        val timeoutMs = when (speed) {
-            EnhanceSpeed.Fast -> 12_000L
-            EnhanceSpeed.Thinking -> 15_000L
-            EnhanceSpeed.Ultra -> 20_000L
+        val long = PlanCalculator.wordCount(text) >= EnhancePolicy.longWordThreshold(speed)
+        val (prompt, baseTokens) = when {
+            long -> (systemPromptForSpeed(tone, multilingual, speed) + "\n\n" + toneSection(
+                when (speed) {
+                    EnhanceSpeed.Fast -> "long_fast"
+                    EnhanceSpeed.Thinking -> "long_thinking"
+                    EnhanceSpeed.Ultra -> "long_ultra"
+                },
+            )) to 4096
+            tone == "default" -> cleanupPrompt(multilingual, speed) to 2048
+            else -> systemPromptForSpeed(tone, multilingual, speed) to 1024
         }
         complete(
-            system = systemPrompt(text, tone, multilingual, speed) + dictionaryBlock(dictTerms),
+            system = prompt + dictionaryBlock(dictTerms),
             user = text,
             apiKey = apiKey,
-            model = model,
-            temp = temp,
-            timeoutMs = timeoutMs,
+            model = if (speed == EnhanceSpeed.Ultra) "gpt-4o" else "gpt-4o-mini",
+            temp = when (speed) {
+                EnhanceSpeed.Fast -> 0.0
+                EnhanceSpeed.Thinking -> 0.1
+                EnhanceSpeed.Ultra -> 0.22
+            },
+            timeoutMs = when (speed) {
+                EnhanceSpeed.Fast -> 12_000L
+                EnhanceSpeed.Thinking -> 15_000L
+                EnhanceSpeed.Ultra -> 20_000L
+            },
+            maxTokens = EnhancePolicy.tokenBudget(speed, baseTokens),
         )
     }
 
@@ -53,7 +63,7 @@ class EnhanceClient(private val assets: AssetManager) {
         withContext(Dispatchers.IO) {
             val head = "You are a Grammarly-like dictation assistant. Rewrite the text per the instruction. " +
                 "Instruction: $instruction. Only return the rewritten text, nothing else."
-            complete(rulesBlock(head, false), text, apiKey, "gpt-4o-mini", 0.1, 15_000L)
+            complete(rulesBlock(head, false), text, apiKey, "gpt-4o-mini", 0.1, 15_000L, 1024)
         }
 
     private fun complete(
@@ -63,12 +73,13 @@ class EnhanceClient(private val assets: AssetManager) {
         model: String,
         temp: Double,
         timeoutMs: Long,
+        maxTokens: Int,
     ): String {
         val text = user
         val body = JSONObject()
             .put("model", model)
             .put("temperature", temp)
-            .put("max_tokens", 1024)
+            .put("max_tokens", maxTokens)
             .put(
                 "messages",
                 JSONArray()
@@ -101,24 +112,31 @@ class EnhanceClient(private val assets: AssetManager) {
         }
     }
 
-    /** Mirrors desktop tone.rs prompt selection (long → cleanup for default → tone). */
-    private fun systemPrompt(text: String, tone: String, multilingual: Boolean, speed: EnhanceSpeed): String {
-        val long = PlanCalculator.wordCount(text) >= 40
-        val core = when {
-            long -> rulesBlock(toneSection(tone).ifBlank { toneSection("default") }, multilingual) +
-                "\n\n" + toneSection("long")
-            tone == "default" -> rulesBlock(toneSection("cleanup"), multilingual) +
-                "\n\nOnly return the cleaned text, nothing else."
-            else -> rulesBlock(toneSection(tone).ifBlank { toneSection("default") }, multilingual)
+    private fun toneHead(tone: String): String = toneSection(tone).ifBlank { toneSection("default") }
+
+    /** Desktop `system_prompt_for_speed`. */
+    private fun systemPromptForSpeed(tone: String, multilingual: Boolean, speed: EnhanceSpeed): String = when (speed) {
+        EnhanceSpeed.Fast -> {
+            val flavor = toneSection("flavor_$tone").ifBlank { toneSection("flavor_default") }
+            val multi = if (multilingual) " ${asset("multilingual_rules")}" else ""
+            "${toneSection("fast_rules")} $flavor$multi"
         }
-        val extra = when (speed) {
-            EnhanceSpeed.Fast -> "\n\nKeep edits light, but still fix awkward phrasing and stray commas."
-            EnhanceSpeed.Ultra -> "\n\nThorough pass: restore sentence boundaries, fix run-ons, do not invent facts."
-            EnhanceSpeed.Thinking -> ""
-        }
-        return core + extra
+        EnhanceSpeed.Thinking -> rulesBlock(toneHead(tone), multilingual)
+        EnhanceSpeed.Ultra -> rulesBlock(toneHead(tone), multilingual) + "\n\n" + toneSection("ultra_rules")
     }
 
+    /** Desktop `cleanup_self_corrections_ex` (default tone, short dictation). */
+    private fun cleanupPrompt(multilingual: Boolean, speed: EnhanceSpeed): String = when (speed) {
+        EnhanceSpeed.Fast -> {
+            val multi = if (multilingual) " ${asset("multilingual_rules")}" else ""
+            "${toneSection("cleanup_fast")} ${toneSection("fast_rules")}$multi"
+        }
+        EnhanceSpeed.Thinking ->
+            rulesBlock(toneSection("cleanup"), multilingual) + "\n\nOnly return the cleaned text, nothing else."
+        EnhanceSpeed.Ultra ->
+            rulesBlock(toneSection("cleanup"), multilingual) + "\n\n" + toneSection("ultra_rules") +
+                "\n\nOnly return the cleaned text, nothing else."
+    }
     /** Desktop `dictionary_prompt_block`. */
     private fun dictionaryBlock(terms: List<String>): String {
         val cleaned = terms.map { it.trim() }.filter { it.isNotEmpty() }.take(60)

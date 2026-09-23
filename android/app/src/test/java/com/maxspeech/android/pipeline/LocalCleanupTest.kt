@@ -30,8 +30,11 @@ class LocalCleanupTest {
         assertEquals("let's go", localAsrCleanup("lets go"))
         assertEquals("lets the user in", localAsrCleanup("lets the user in"))
         assertEquals("I'd like coffee", localAsrCleanup("id like coffee"))
-        assertEquals("user id is 7", localAsrCleanup("user id is 7"))
+        assertEquals("user id is seven", localAsrCleanup("user id is 7"))
         assertEquals("Doesn't work", localAsrCleanup("Doesnt work"))
+        assertEquals("I'll go later", localAsrCleanup("ill go later"))
+        assertEquals("feel ill today", localAsrCleanup("feel ill today"))
+        assertEquals("ain't ready", localAsrCleanup("aint ready"))
     }
 
     @Test fun reversesNumeralHomophones() {
@@ -50,6 +53,11 @@ class LocalCleanupTest {
         assertEquals("issue 1042", localAsrCleanup("issue 1042"))
         assertEquals("call me at 5551212", localAsrCleanup("call me at 5551212"))
         assertEquals("built in 2024", localAsrCleanup("built in 2024"))
+        assertEquals("I have ten apples", localAsrCleanup("I have 10 apples"))
+        assertEquals("wait fifteen minutes", localAsrCleanup("wait 15 minutes"))
+        assertEquals("I counted 21 people", localAsrCleanup("I counted 21 people"))
+        assertEquals("from 2 to 5", localAsrCleanup("from 2 to 5"))
+        assertEquals("needs 16 gb", localAsrCleanup("needs 16 gb"))
     }
 
     @Test fun fixesCommonEnglishHomophones() {
@@ -63,8 +71,32 @@ class LocalCleanupTest {
         assertEquals("could of course", localAsrCleanup("could of course"))
         assertEquals("they're going home", localAsrCleanup("their going home"))
         assertEquals("and then we left", localAsrCleanup("and then we left"))
+        assertEquals("might've been worse", localAsrCleanup("might of been worse"))
+        assertEquals("I should've known", localAsrCleanup("I shoulda known"))
+        assertEquals("who's going later", localAsrCleanup("whose going later"))
+        assertEquals("whose car is that", localAsrCleanup("whose car is that"))
+        assertEquals("I have a lot to do", localAsrCleanup("I have alot to do"))
+        assertEquals("at least try", localAsrCleanup("atleast try"))
+        assertEquals("because I said so", localAsrCleanup("cuz I said so"))
+        assertEquals("oh yeah", localAsrCleanup("oh yea"))
     }
 
+    @Test fun expandsSpokenKToOkay() {
+        assertEquals("okay", localAsrCleanup("k"))
+        assertEquals("Okay", localAsrCleanup("K"))
+        assertEquals("okay thanks", localAsrCleanup("k thanks"))
+        assertEquals("okay", localAsrCleanup("ok"))
+        assertEquals("Okay", localAsrCleanup("OK"))
+        assertEquals("okay", localAsrCleanup("kay"))
+        assertEquals("that's okay", localAsrCleanup("that's k"))
+        assertEquals("it's okay", localAsrCleanup("its k"))
+        assertEquals("you're okay", localAsrCleanup("your k"))
+        assertEquals("Okay thanks", localAsrCleanup("Kay thanks"))
+        assertEquals("vitamin k", localAsrCleanup("vitamin k"))
+        assertEquals("press k", localAsrCleanup("press k"))
+        assertEquals("Hi Kay", localAsrCleanup("Hi Kay"))
+        assertEquals("costs 10 k", localAsrCleanup("costs 10 k"))
+    }
     @Test fun dropsCommasAroundCasualAddressWords() {
         assertEquals("bro that's crazy", localAsrCleanup("bro, that's crazy"))
         assertEquals("what's up bro", localAsrCleanup("what's up, bro"))
