@@ -85,7 +85,7 @@ class EnhanceClient {
                 "You are a Grammarly-like dictation assistant. Clean up grammar, punctuation, and clarity while keeping the original meaning and style."
         }
         val extra = when (speed) {
-            EnhanceSpeed.Fast -> " Light, fast cleanup only."
+            EnhanceSpeed.Fast -> " Keep edits light, but still fix awkward phrasing and stray commas."
             EnhanceSpeed.Ultra -> " Thorough pass: restore sentence boundaries, fix run-ons, do not invent facts."
             EnhanceSpeed.Thinking -> ""
         }
@@ -100,7 +100,18 @@ class EnhanceClient {
                 " Keep digits when convenient — versions, decimals, codes, times, rooms, pages, quantities" +
                 " with units ('Opus 5.5', 'version 2', 'meet at 4pm', 'room 2', 'page 3', '10%', '101', '2024')." +
                 " Fix digit homophones in prose ('thanks 4 the'→'thanks for the', 'need 2 go'→'need to go')."
-        return "$base$extra$multi$numberRules Fix spoken self-corrections (I meant X). Return ONLY the cleaned text."
+        val naturalRules =
+            " The input is raw speech-to-text, so it may contain mishearings, filler, and odd punctuation." +
+                " Work out what the speaker actually meant and write it the way they would naturally type it." +
+                " Rephrase anything awkward, clunky, or robotic so it sounds smooth and human, but keep their" +
+                " voice, slang, and meaning — never make it stiffer or add ideas they didn't say." +
+                " Drop filler (um, uh, like, you know, I mean) unless it carries meaning." +
+                " Fix obvious mishearings from context (e.g. 'oh so cute' said warmly → 'aww so cute')." +
+                " Casual words like bro, dude, man, bruh, fam, lol, bestie are part of the sentence — do NOT" +
+                " put a comma after or around them ('bro that's crazy', 'what's up bro', not 'bro, that's crazy')." +
+                " Only use commas where a natural pause would be typed; never add commas the speaker wouldn't." +
+                " Never swap clean words for profanity ('what the flip' stays 'what the flip')."
+        return "$base$extra$multi$numberRules$naturalRules Fix spoken self-corrections (I meant X). Return ONLY the cleaned text."
     }
 
     companion object {

@@ -1,14 +1,17 @@
 package com.maxspeech.android.ui.overlay
 
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.EnterExitState
+import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.keyframes
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -39,6 +42,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
@@ -116,27 +120,35 @@ fun OverlayCapsule(
         },
         contentAlignment = Alignment.CenterEnd,
     ) {
-        val fromRight = TransformOrigin(1f, 0.5f)
         AnimatedContent(
             targetState = expanded,
             transitionSpec = {
-                // Soft appear / disappear between idle mic and listening controls.
-                val enter = fadeIn(tween(320, easing = FastOutSlowInEasing)) +
-                    scaleIn(
-                        animationSpec = tween(340, easing = FastOutSlowInEasing),
-                        initialScale = 0.92f,
-                        transformOrigin = fromRight,
-                    )
-                val exit = fadeOut(tween(280, easing = FastOutSlowInEasing)) +
-                    scaleOut(
-                        animationSpec = tween(300, easing = FastOutSlowInEasing),
-                        targetScale = 0.92f,
-                        transformOrigin = fromRight,
-                    )
-                enter togetherWith exit
+                // Fade + blur only — no scale/slide, so the right edge never moves.
+                val enter = fadeIn(tween(300, easing = FastOutSlowInEasing))
+                val exit = fadeOut(tween(260, easing = FastOutSlowInEasing))
+                val opening = targetState
+                // Grow instantly (new content fades in at its final spot); on collapse
+                // keep the wide size until the fade-out ends, then snap to the mic.
+                enter togetherWith exit using SizeTransform(clip = false) { initial, target ->
+                    if (opening) {
+                        snap()
+                    } else {
+                        keyframes {
+                            durationMillis = 300
+                            initial at 0
+                            initial at 299
+                            target at 300
+                        }
+                    }
+                }
             },
             label = "overlayExpand",
         ) { showControls ->
+            val blurP by transition.animateFloat(
+                transitionSpec = { tween(280, easing = FastOutSlowInEasing) },
+                label = "overlayBlur",
+            ) { s -> if (s == EnterExitState.Visible) 0f else 1f }
+            Box(Modifier.blur(14.dp * blurP)) {
             if (showControls) {
                 ListeningControls(
                     levels = ui.levels,
@@ -197,6 +209,7 @@ fun OverlayCapsule(
                     )
                 }
             }
+            }
         }
     }
 }
@@ -244,8 +257,7 @@ private fun ListeningControls(
             Modifier
                 .size(btn)
                 .clip(CircleShape)
-                .background(c.glassFill.copy(alpha = 0.35f.coerceAtMost(surfaceAlpha)), CircleShape)
-                .border(1.dp, Color.White.copy(alpha = 0.12f), CircleShape)
+                .background(Orange, CircleShape)
                 .clickable(onClick = onCancel)
                 .semantics { contentDescription = "Cancel dictation" },
             contentAlignment = Alignment.Center,
@@ -253,7 +265,7 @@ private fun ListeningControls(
             Icon(
                 Icons.Filled.Close,
                 contentDescription = null,
-                tint = Color.White.copy(alpha = 0.92f),
+                tint = Color.White,
                 modifier = Modifier.size(btn * 0.45f),
             )
         }

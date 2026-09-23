@@ -183,7 +183,9 @@ class FloatingMicController(private val app: MaxSpeechApp) :
                 WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
             PixelFormat.TRANSLUCENT,
         )
-        params.gravity = Gravity.TOP or Gravity.START
+        // Anchor by the right edge: the mic/pill can change width without the
+        // right side (where the mic lives) ever shifting.
+        params.gravity = Gravity.TOP or Gravity.END
         clampAndApply(params)
         if (Build.VERSION.SDK_INT >= 28) {
             params.layoutInDisplayCutoutMode =
@@ -251,14 +253,14 @@ class FloatingMicController(private val app: MaxSpeechApp) :
             val snoozeUntil by snoozedUntilFlow.collectAsState()
             val now = System.currentTimeMillis()
             val snoozed = now < snoozeUntil || now < settings.overlaySnoozeUntil
-            val imeUp = focus.imeTop > 80 || lastGoodImeTop > 80
-            // Cloud login only; show over a focused editable (or mid-session).
-            // When the keyboard is up, keep showing so the selected style stays visible.
+            val imeUp = focus.imeTop > 80
+            // Idle: only while the keyboard is actually open over a focused field
+            // (apps like Instagram keep the composer focused after the keyboard closes).
             val showBubble = signedIn &&
                 !overOwnApp &&
                 !focus.password &&
                 !snoozed &&
-                (sessionActive || focus.typing || (imeUp && focus.editable))
+                (sessionActive || (imeUp && focus.typing))
             if (showBubble) {
                 Log.d(TAG, "show bubble phase=${ui.phase} editable=${focus.editable} ime=${focus.imeTop} pkg=$focusPkg")
             }
@@ -370,19 +372,16 @@ class FloatingMicController(private val app: MaxSpeechApp) :
         contentH = h
         // Never fight the finger mid-drag.
         if (dragging) return
-        // Debounce — AnimatedContent emits many intermediate sizes; only settle once.
+        // Sizes now snap (no intermediate steps), so re-anchor to the right edge
+        // immediately — a delay here is what made the pill visibly slide sideways.
         sizeSettleJob?.cancel()
-        sizeSettleJob = scope.launch {
-            kotlinx.coroutines.delay(90)
-            if (dragging) return@launch
-            if (contentW == lastAppliedW && contentH == lastAppliedH) return@launch
-            lastAppliedW = contentW
-            lastAppliedH = contentH
-            if (keyboardDock && !allowDockDrag) {
-                placeAboveIme(lastImeTop)
-            } else {
-                applyLayout()
-            }
+        if (contentW == lastAppliedW && contentH == lastAppliedH) return
+        lastAppliedW = contentW
+        lastAppliedH = contentH
+        if (keyboardDock && !allowDockDrag) {
+            placeAboveIme(lastImeTop)
+        } else {
+            applyLayout()
         }
     }
 
@@ -485,7 +484,8 @@ class FloatingMicController(private val app: MaxSpeechApp) :
         dragging = true
         pendingDockDismiss = false
         if (fromDock) allowDockDrag = true
-        dragGrabX = rawX - params.x
+        val screenW = app.resources.displayMetrics.widthPixels
+        dragGrabX = rawX - (screenW - params.x - contentW)
         dragGrabY = rawY - params.y
         fingerX = rawX
         fingerY = rawY
@@ -520,7 +520,7 @@ class FloatingMicController(private val app: MaxSpeechApp) :
         top = top.coerceIn(pad, maxTop)
         _dismissHot.value = dismissArmed && overDismissTarget(rawX, rawY)
         if (left == lastLayoutX && top == lastLayoutY) return
-        params.x = left
+        params.x = dm.widthPixels - (left + w)
         params.y = top
         lastLayoutX = left
         lastLayoutY = top
@@ -692,7 +692,7 @@ class FloatingMicController(private val app: MaxSpeechApp) :
         val maxY = (dm.heightPixels - h - pad).coerceAtLeast(pad)
         top = top.coerceIn(pad, maxY)
         left = left.coerceIn(pad, (dm.widthPixels - w - pad).coerceAtLeast(pad))
-        params.x = left
+        params.x = dm.widthPixels - (left + w)
         params.y = top
         lastLayoutX = left
         lastLayoutY = top

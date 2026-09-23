@@ -239,11 +239,10 @@ class DictationController(
         val preview = TranscriptMerge.display(finals, lastInterim)
             .ifBlank { _ui.value.liveText }
             .trim()
-        // Nothing on screen — bail immediately instead of a thinking-wave wait.
-        if (preview.isBlank()) {
-            resetToIdle()
-            return
-        }
+        // Don't bail just because nothing has arrived yet — short dictations often
+        // haven't gotten an interim/final back from Deepgram by the time the user
+        // taps the checkmark. Always flush and let finishInternal decide (it already
+        // bails on a still-blank transcript once the Finalize round-trip completes).
         // Kick thinking animation NOW — flush / enhance run underneath.
         _ui.value = _ui.value.copy(
             phase = DictationPhase.Processing,
@@ -293,11 +292,14 @@ class DictationController(
 
         val snap = cachedSnap
         val heldMs = (System.currentTimeMillis() - listenStartedAtMs).coerceAtLeast(0L)
-        val trailMs = if (heldMs < 5_000L) 60L else 120L
+        // Keep recording briefly so the tail of a short word isn't clipped.
+        val trailMs = if (heldMs < 5_000L) 200L else 120L
         delay(trailMs)
         audio.stop()
         pcmJob?.cancel()
-        stt.finishAndFlush(waitMs = 380)
+        stt.finishAndFlush()
+        // Let the chunk collector apply the last final before we merge.
+        delay(80)
         val merged = TranscriptMerge.mergeTrailing(finals.toString(), lastInterim.toString())
         val live = _ui.value.liveText.trim()
         val raw = listOf(merged, live, _ui.value.originalText)
@@ -331,6 +333,8 @@ class DictationController(
         }
         // Always polish numerals locally (enhance may be off / keyless).
         out = NumeralPolish.polish(out)
+        // Deepgram punctuates casual address words like names ("bro, that's…"); nobody types that.
+        out = out.replace(CASUAL_COMMA_AFTER, "$1 ").replace(CASUAL_COMMA_BEFORE, " $1")
 
         if (snap.trailingSpace && !out.endsWith(" ")) out = "$out "
         val enhanced = out.trim() != raw.trim()
@@ -468,6 +472,11 @@ class DictationController(
     private enum class HapticKind { Start, Stop, Cancel, Confirm }
 
     companion object {
+        private val CASUAL_COMMA_AFTER =
+            Regex("""\b(bro|bruh|dude|fam|man|bestie)\b,\s+""", RegexOption.IGNORE_CASE)
+        private val CASUAL_COMMA_BEFORE =
+            Regex(""",\s+(bro|bruh|dude|fam|bestie)\b""", RegexOption.IGNORE_CASE)
+
         fun friendlyApp(pkg: String): String = when {
             pkg.contains("gm") -> "Gmail"
             pkg.contains("whatsapp") -> "WhatsApp"

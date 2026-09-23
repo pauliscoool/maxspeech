@@ -114,6 +114,12 @@ class InjectAccessibilityService : AccessibilityService() {
         val focused = findBestEditable() ?: return false
         lastPackage = focused.packageName?.toString() ?: lastPackage
         focused.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+        Log.d(
+            TAG,
+            "insert: pkg=${focused.packageName} class=${focused.className} " +
+                "showingHint=${runCatching { focused.isShowingHintText }.getOrDefault(false)} " +
+                "rawTextLen=${focused.text?.length ?: -1} realTextLen=${realText(focused).length}",
+        )
 
         // 1) Direct set/splice — no clipboard.
         if (insertViaSetText(focused, text)) return true
@@ -122,7 +128,7 @@ class InjectAccessibilityService : AccessibilityService() {
         val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         val previous = runCatching { cm.primaryClip }.getOrNull()
         cm.setPrimaryClip(ClipData.newPlainText("MaxSpeech", text))
-        val before = focused.text?.toString().orEmpty()
+        val before = realText(focused)
         val pasted = pasteInto(focused)
         val verified = likelyInserted(focused, text, before)
         if (pasted || verified) {
@@ -136,9 +142,20 @@ class InjectAccessibilityService : AccessibilityService() {
         false
     }.getOrDefault(false)
 
+    /**
+     * Many custom composers (Instagram's DM box included) report the placeholder
+     * through getText() instead of a real hint, so treat text as empty whenever
+     * the node says it's only showing hint text — otherwise dictation gets
+     * spliced in right after the placeholder instead of replacing it.
+     */
+    private fun realText(node: AccessibilityNodeInfo): String {
+        val showingHint = runCatching { node.isShowingHintText }.getOrDefault(false)
+        return if (showingHint) "" else node.text?.toString().orEmpty()
+    }
+
     /** Splice [text] at the caret (or append) via ACTION_SET_TEXT. */
     private fun insertViaSetText(node: AccessibilityNodeInfo, text: String): Boolean {
-        val existing = node.text?.toString().orEmpty()
+        val existing = realText(node)
         val selStartRaw = node.textSelectionStart
         val selEndRaw = node.textSelectionEnd
         val start = when {
@@ -175,7 +192,7 @@ class InjectAccessibilityService : AccessibilityService() {
     }
 
     private fun pasteInto(node: AccessibilityNodeInfo): Boolean {
-        val len = node.text?.length ?: 0
+        val len = realText(node).length
         if (len > 0) {
             val sel = Bundle().apply {
                 putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, len)

@@ -35,6 +35,7 @@ class DeepgramClient {
     private val open = AtomicBoolean(false)
     /** Bumps every connect so stale onClosed from a prior socket can't poison awaitOpen. */
     private val generation = AtomicInteger(0)
+    private val finalCount = AtomicInteger(0)
     private val pendingLock = Any()
     private val pending = ArrayDeque<okio.ByteString>(MAX_PENDING)
 
@@ -111,13 +112,25 @@ class DeepgramClient {
      * Finalize → wait for last finals → CloseStream.
      * Marks this generation done so late onClosed cannot break the next start.
      */
-    suspend fun finishAndFlush(waitMs: Long = 550) {
+    suspend fun finishAndFlush(waitMs: Long = 1_500) {
         val ws = socket ?: return
         val gen = generation.get()
+        // A one-word dictation can end before the handshake finishes; wait for onOpen
+        // to flush the buffered audio instead of discarding it.
+        var waited = 0L
+        while (!open.get() && !closed.get() && waited < OPEN_WAIT_MS) {
+            delay(25)
+            waited += 25
+        }
+        val finalsBefore = finalCount.get()
         open.set(false)
         synchronized(pendingLock) { pending.clear() }
         runCatching { ws.send("""{"type":"Finalize"}""") }
-        delay(waitMs.coerceIn(350, 900))
+        var t = 0L
+        while (finalCount.get() == finalsBefore && !closed.get() && t < waitMs) {
+            delay(25)
+            t += 25
+        }
         runCatching { ws.send("""{"type":"CloseStream"}""") }
         delay(120)
         // Invalidate before close so onClosed is ignored.
@@ -163,6 +176,7 @@ class DeepgramClient {
             val transcript = alts.getJSONObject(0).optString("transcript")
             if (transcript.isBlank()) return
             val isFinal = json.optBoolean("is_final", false) || json.optBoolean("speech_final", false)
+            if (isFinal) finalCount.incrementAndGet()
             _chunks.tryEmit(TranscriptChunk(transcript, isFinal))
         }
     }
@@ -184,11 +198,15 @@ class DeepgramClient {
     companion object {
         /** ~2s of 50ms frames while the WebSocket handshake completes. */
         private const val MAX_PENDING = 40
+        private const val OPEN_WAIT_MS = 3_000L
 
         val BUILTIN_KEYTERMS = listOf(
             "MaxSpeech", "Maximus Dev", "Maximus", "Supabase", "GitHub", "Vercel",
             "TypeScript", "JavaScript", "OpenAI", "ChatGPT", "Claude", "Cursor",
             "Slack", "Discord", "Notion", "Android", "WhatsApp", "Gmail", "Outlook", "Teams",
+            // Clean-language and interjection bias so "flip"/"aww" aren't heard as cuss words or "oh".
+            "what the flip", "flip", "freaking", "heck", "dang", "shoot",
+            "aww", "awww", "so cute", "aw so cute",
         )
     }
 }

@@ -247,8 +247,7 @@ private fun ActiveKeyboardStrip(
             Modifier
                 .size(btn)
                 .clip(CircleShape)
-                .background(c.glassFill.copy(alpha = 0.35f), CircleShape)
-                .border(1.dp, Color.White.copy(alpha = 0.12f), CircleShape)
+                .background(Orange, CircleShape)
                 .clickable(onClick = onCancel)
                 .semantics { contentDescription = "Cancel dictation" },
             contentAlignment = Alignment.Center,
@@ -256,7 +255,7 @@ private fun ActiveKeyboardStrip(
             Icon(
                 Icons.Filled.Close,
                 contentDescription = null,
-                tint = Color.White.copy(alpha = 0.92f),
+                tint = Color.White,
                 modifier = Modifier.size(btn * 0.42f),
             )
         }
