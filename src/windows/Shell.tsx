@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -388,16 +388,17 @@ export default function Shell({ authUser }: { authUser: AuthUser | null }) {
         </div>
 
         <nav className="flex-1 px-2 space-y-0.5 overflow-y-auto pb-[76px]">
-          {NAV.map((item) => {
+          {NAV.map((item, i) => {
             const active = page === item.id;
             return (
               <button
                 key={item.id}
                 onClick={() => goToPage(item.id)}
-                className={`nav-item w-full flex items-center gap-2.5 px-2.5 py-2 rounded-full text-[13px] transition-all duration-200 ${
+                style={{ "--nav-i": i } as CSSProperties}
+                className={`nav-item w-full flex items-center gap-2.5 px-2.5 py-2 rounded-full text-[13px] ${
                   active
                     ? "nav-active"
-                    : "text-[var(--ms-text-dim)] hover:text-[var(--ms-hover-fg)] hover:bg-[var(--ms-surface)]"
+                    : "text-[var(--ms-text-dim)] hover:text-[var(--ms-hover-fg)]"
                 }`}
               >
                 <span className={`nav-icon shrink-0 ${active ? "nav-icon-active" : ""}`}>
@@ -622,10 +623,10 @@ function ProfileNavButton({
       type="button"
       onClick={onOpen}
       aria-current={active ? "page" : undefined}
-      className={`nav-item w-full flex items-center gap-2 px-1.5 py-1.5 rounded-2xl text-left transition-all duration-200 ${
+      className={`nav-item nav-item--account w-full flex items-center gap-2 px-1.5 py-1.5 rounded-2xl text-left ${
         active
           ? "nav-active"
-          : "hover:bg-[var(--ms-surface)]"
+          : ""
       }`}
       aria-expanded={expanded}
       aria-haspopup="menu"
