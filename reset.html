@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#07090c" />
+    <title>Account — MaxSpeech</title>
+    <meta
+      name="description"
+      content="Confirm your MaxSpeech email or set a new password."
+    />
+    <link rel="icon" href="/logo.png" type="image/png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600&family=Syne:wght@600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/get.css" />
+  </head>
+  <body class="get-page">
+    <div class="atmosphere" aria-hidden="true">
+      <div class="orb orb-a"></div>
+      <div class="orb orb-b"></div>
+      <div class="grain"></div>
+    </div>
+
+    <main class="get-shell">
+      <a class="brand get-brand" href="/">
+        <img class="brand-mark" src="/logo.png" width="36" height="36" alt="" />
+        <span>MaxSpeech</span>
+      </a>
+
+      <h1 id="title">Account</h1>
+      <p class="get-lede" id="lede">Checking your link…</p>
+
+      <form class="auth-form" id="form" hidden>
+        <label>
+          New password
+          <input id="pw" type="password" autocomplete="new-password" minlength="6" required />
+        </label>
+        <label>
+          Confirm password
+          <input id="pw2" type="password" autocomplete="new-password" minlength="6" required />
+        </label>
+        <button class="btn-primary" id="save" type="submit">Save password</button>
+      </form>
+
+      <p class="auth-msg" id="msg" hidden></p>
+      <p class="get-alt">
+        Then open MaxSpeech on your phone or computer and sign in.
+        <br />
+        <a href="/android">Android app</a> · <a href="/windows">Windows</a>
+      </p>
+    </main>
+
+    <script>
+      (function () {
+        var URL = "https://eqvmjmejcwkrylqyglfm.supabase.co";
+        var ANON =
+          "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVxdm1qbWVqY3drcnlscXlnbGZtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU1MTA1ODMsImV4cCI6MjEwMTA4NjU4M30.9VauCDSWaAEpSuIkKnPsg9Ap7MLWtXqQSQ8I4xC7_fY";
+        var title = document.getElementById("title");
+        var lede = document.getElementById("lede");
+        var form = document.getElementById("form");
+        var msg = document.getElementById("msg");
+        var token = "";
+
+        function showMsg(text, ok) {
+          msg.hidden = false;
+          msg.textContent = text;
+          msg.className = "auth-msg " + (ok ? "is-ok" : "is-error");
+        }
+
+        function params() {
+          var hash = new URLSearchParams((location.hash || "").replace(/^#/, ""));
+          var query = new URLSearchParams(location.search || "");
+          function get(k) {
+            return hash.get(k) || query.get(k) || "";
+          }
+          return {
+            type: get("type"),
+            access: get("access_token"),
+            tokenHash: get("token_hash"),
+            otp: get("token"),
+            error: get("error_description") || get("error"),
+          };
+        }
+
+        function headers(extra) {
+          var h = {
+            apikey: ANON,
+            Authorization: "Bearer " + (extra || ANON),
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          };
+          return h;
+        }
+
+        function verify(body) {
+          return fetch(URL + "/auth/v1/verify", {
+            method: "POST",
+            headers: headers(),
+            body: JSON.stringify(body),
+          }).then(function (r) {
+            return r.text().then(function (t) {
+              var json = {};
+              try {
+                json = t ? JSON.parse(t) : {};
+              } catch (e) {}
+              if (!r.ok) {
+                throw new Error(json.msg || json.error_description || json.message || "This link expired. Request a new one in the app.");
+              }
+              return json;
+            });
+          });
+        }
+
+        var p = params();
+        if (p.error) {
+          title.textContent = "Link didn’t work";
+          lede.textContent = decodeURIComponent(p.error.replace(/\+/g, " "));
+          return;
+        }
+
+        var ready = Promise.resolve();
+        if (p.access) {
+          token = p.access;
+          ready = Promise.resolve();
+        } else if (p.tokenHash || p.otp) {
+          var type = p.type || "recovery";
+          var body = { type: type };
+          if (p.tokenHash) body.token_hash = p.tokenHash;
+          else body.token = p.otp;
+          ready = verify(body).then(function (json) {
+            token = json.access_token || "";
+            if (json.type) p.type = json.type;
+          });
+        }
+
+        ready
+          .then(function () {
+            var kind = (p.type || "").toLowerCase();
+            if (kind === "recovery" && token) {
+              title.textContent = "Set a new password";
+              lede.textContent = "This page is on the MaxSpeech website. After you save, sign in on the app.";
+              form.hidden = false;
+              return;
+            }
+            if (token && (kind === "signup" || kind === "email" || kind === "magiclink" || kind === "invite")) {
+              title.textContent = "You’re confirmed";
+              lede.textContent = "Email verified. Open MaxSpeech and sign in with this account.";
+              showMsg("You can close this tab.", true);
+              return;
+            }
+            if (token) {
+              title.textContent = "You’re signed in";
+              lede.textContent = "Open MaxSpeech and continue. You can close this tab.";
+              showMsg("Account link worked.", true);
+              return;
+            }
+            title.textContent = "Open the email link";
+            lede.textContent =
+              "Use Forgot password or Sign up in MaxSpeech. The email opens this page — not localhost.";
+          })
+          .catch(function (err) {
+            title.textContent = "Link didn’t work";
+            lede.textContent = err.message || "Request a new reset email from the app.";
+          });
+
+        form.addEventListener("submit", function (e) {
+          e.preventDefault();
+          var a = document.getElementById("pw").value;
+          var b = document.getElementById("pw2").value;
+          if (a.length < 6) {
+            showMsg("Password must be at least 6 characters.", false);
+            return;
+          }
+          if (a !== b) {
+            showMsg("Passwords don’t match.", false);
+            return;
+          }
+          var btn = document.getElementById("save");
+          btn.disabled = true;
+          fetch(URL + "/auth/v1/user", {
+            method: "PUT",
+            headers: headers(token),
+            body: JSON.stringify({ password: a }),
+          })
+            .then(function (r) {
+              return r.text().then(function (t) {
+                var json = {};
+                try {
+                  json = t ? JSON.parse(t) : {};
+                } catch (err) {}
+                if (!r.ok) throw new Error(json.msg || json.message || "Could not save password.");
+              });
+            })
+            .then(function () {
+              form.hidden = true;
+              title.textContent = "Password updated";
+              lede.textContent = "Open MaxSpeech and sign in with your new password.";
+              showMsg("Saved. You can close this tab.", true);
+            })
+            .catch(function (err) {
+              btn.disabled = false;
+              showMsg(err.message || "Could not save password.", false);
+            });
+        });
+      })();
+    </script>
+  </body>
+</html>
