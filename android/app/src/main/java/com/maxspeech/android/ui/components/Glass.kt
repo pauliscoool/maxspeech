@@ -13,56 +13,33 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
-import androidx.compose.ui.graphics.drawOutline
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.maxspeech.android.ui.theme.LocalBlurStrength
 import com.maxspeech.android.ui.theme.LocalGlassAlpha
 import com.maxspeech.android.ui.theme.LocalMsColors
 import com.maxspeech.android.ui.theme.TitleSmall
 
-fun Modifier.liquidGlass(
+/** Plain solid fill — no frost / liquid sheen. */
+fun Modifier.plainSurface(
     shape: Shape,
     fill: Color,
     hairline: Color,
-    blur: Float = 0.7f,
-): Modifier {
-    val lift = (10.dp * blur.coerceIn(0.2f, 1f))
-    return this
-        .shadow(lift, shape, ambientColor = Color.Black.copy(alpha = 0.35f), spotColor = Color.White.copy(alpha = 0.08f))
-        .clip(shape)
-        .drawBehind {
-            val outline = shape.createOutline(this.size, layoutDirection, this)
-            drawOutline(outline, fill)
-            drawOutline(
-                outline,
-                Brush.verticalGradient(
-                    0f to Color.White.copy(alpha = 0.22f),
-                    0.35f to Color.White.copy(alpha = 0.06f),
-                    1f to Color.Transparent,
-                ),
-            )
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(Color.White.copy(alpha = 0.28f), Color.Transparent),
-                    center = Offset(size.width * 0.18f, size.height * 0.08f),
-                    radius = size.minDimension * 0.85f,
-                ),
-                radius = size.minDimension * 0.85f,
-                center = Offset(size.width * 0.18f, size.height * 0.08f),
-            )
-            drawOutline(outline, hairline.copy(alpha = 0.55f), style = Stroke(width = Dp.Hairline.toPx().coerceAtLeast(1f)))
-        }
-        .border(Dp.Hairline, hairline, shape)
-}
+    elevation: Dp = 6.dp,
+): Modifier = this
+    .shadow(
+        elevation = elevation,
+        shape = shape,
+        ambientColor = Color.Black.copy(alpha = 0.40f),
+        spotColor = Color.Black.copy(alpha = 0.22f),
+    )
+    .clip(shape)
+    .background(fill, shape)
+    .border(Dp.Hairline, hairline, shape)
 
 @Composable
 fun GlassSurface(
@@ -72,9 +49,24 @@ fun GlassSurface(
     content: @Composable BoxScope.() -> Unit,
 ) {
     val c = LocalMsColors.current
-    val blur = LocalBlurStrength.current
     Box(
-        modifier = modifier.liquidGlass(shape, c.glassFill, c.hairline, blur),
+        modifier = modifier.plainSurface(shape, c.surface, c.hairline),
+        contentAlignment = contentAlignment,
+        content = content,
+    )
+}
+
+/** Desktop `.surface-card` — solid surface, soft shadow. */
+@Composable
+fun SurfaceCard(
+    modifier: Modifier = Modifier,
+    shape: Shape = RoundedCornerShape(18.dp),
+    contentAlignment: Alignment = Alignment.TopStart,
+    content: @Composable BoxScope.() -> Unit,
+) {
+    val c = LocalMsColors.current
+    Box(
+        modifier = modifier.plainSurface(shape, c.surface, c.hairline, elevation = 8.dp),
         contentAlignment = contentAlignment,
         content = content,
     )
@@ -87,17 +79,21 @@ fun GlassChip(
     onClick: () -> Unit,
 ) {
     val c = LocalMsColors.current
-    val blur = LocalBlurStrength.current
     val shape = RoundedCornerShape(50)
-    val fill = if (selected) c.turquoise.copy(alpha = 0.22f) else c.glassFill
-    val line = if (selected) c.turquoise.copy(alpha = 0.45f) else c.hairline
+    val fill = if (selected) c.turquoise.copy(alpha = 0.18f) else c.surface2
+    val line = if (selected) c.turquoise.copy(alpha = 0.55f) else c.hairline
     Box(
         modifier = Modifier
-            .liquidGlass(shape, fill, line, blur)
+            .plainSurface(shape, fill, line, elevation = 2.dp)
             .clickable(onClick = onClick)
             .padding(horizontal = 14.dp, vertical = 8.dp),
     ) {
-        Text(label, style = TitleSmall, color = c.text, fontSize = 14.sp)
+        Text(
+            label,
+            style = TitleSmall,
+            color = if (selected) c.turquoise else c.text,
+            fontSize = 14.sp,
+        )
     }
 }
 
@@ -108,10 +104,9 @@ fun GlassIconButton(
     content: @Composable BoxScope.() -> Unit,
 ) {
     val c = LocalMsColors.current
-    val blur = LocalBlurStrength.current
     Box(
         modifier = modifier
-            .liquidGlass(CircleShape, c.glassFill, c.hairline, blur)
+            .plainSurface(CircleShape, c.surface2, c.hairline, elevation = 2.dp)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
         content = content,
@@ -131,4 +126,37 @@ fun GlassScrim(modifier: Modifier = Modifier) {
             ),
         ),
     )
+}
+
+/** Bottom tab bar — solid pill, no liquid frost. */
+@Composable
+fun FloatingGlassBar(
+    modifier: Modifier = Modifier,
+    shape: Shape = RoundedCornerShape(50),
+    contentAlignment: Alignment = Alignment.Center,
+    content: @Composable BoxScope.() -> Unit,
+) {
+    val c = LocalMsColors.current
+    val fill = if (c.bg.luminance() > 0.5f) {
+        Color.White
+    } else {
+        Color(0xFF1C1C1E)
+    }
+    val rim = if (c.bg.luminance() > 0.5f) {
+        Color.Black.copy(alpha = 0.08f)
+    } else {
+        Color.White.copy(alpha = 0.10f)
+    }
+    Box(
+        modifier = modifier.plainSurface(shape, fill, rim, elevation = 16.dp),
+        contentAlignment = contentAlignment,
+        content = content,
+    )
+}
+
+private fun Color.luminance(): Float {
+    val r = red
+    val g = green
+    val b = blue
+    return 0.2126f * r + 0.7152f * g + 0.0722f * b
 }

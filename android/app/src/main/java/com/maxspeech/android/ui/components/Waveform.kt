@@ -13,7 +13,21 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.maxspeech.android.pipeline.AudioCapture
 import com.maxspeech.android.ui.theme.Orange
+
+/** Overlay compact pill uses 6 bands; keyboard dock uses a wider 12-bar ribbon. */
+const val KeyboardBarCount = 12
+val KeyboardBarWidth = 5.dp
+val KeyboardBarGap = 4.dp
+val KeyboardBarMaxH = 26.dp
+
+/** Overlay bar count — compact six-bar pill. */
+const val DesktopBarCount = AudioCapture.BAR_COUNT
+val DesktopBarWidth = 4.dp
+val DesktopBarGap = 3.dp
+/** Taller track so levels can actually jump. */
+val DesktopBarMaxH = 22.dp
 
 /** In-app ribbon (full width). */
 @Composable
@@ -23,23 +37,22 @@ fun RibbonWaveform(
 ) {
     WindowsWaveform(
         levels = levels,
-        barCount = 20,
+        barCount = DesktopBarCount,
         maxBarHeight = 28.dp,
         modifier = modifier.height(28.dp).fillMaxWidth(),
     )
 }
 
 /**
- * Windows-style calm teal bars — shared ribbon wash.
- * Overlay listening strip uses 5 bars (short + centered).
+ * Calm teal bars — shared ribbon wash, left-aligned inside exact wave width.
  */
 @Composable
 fun WindowsWaveform(
     levels: List<Float>,
-    barCount: Int = 5,
-    maxBarHeight: Dp = 14.dp,
-    barWidth: Dp = 3.dp,
-    barGap: Dp = 3.dp,
+    barCount: Int = DesktopBarCount,
+    maxBarHeight: Dp = DesktopBarMaxH,
+    barWidth: Dp = DesktopBarWidth,
+    barGap: Dp = DesktopBarGap,
     modifier: Modifier = Modifier,
 ) {
     val n = barCount.coerceAtLeast(1)
@@ -52,8 +65,6 @@ fun WindowsWaveform(
         if (levels.isEmpty()) return@Canvas
         val gap = barGap.toPx()
         val barW = barWidth.toPx()
-        // Left-align inside the exact wave width so bars aren't pushed off-center.
-        val startX = 0f
         val brush = Brush.horizontalGradient(
             listOf(
                 Color(0xFF2DD4BF),
@@ -62,6 +73,8 @@ fun WindowsWaveform(
                 Color(0xFFFDBA74),
                 Orange,
             ),
+            startX = 0f,
+            endX = size.width,
         )
         val denom = ((n - 1) / 2f).coerceAtLeast(1f)
         for (i in 0 until n) {
@@ -73,8 +86,9 @@ fun WindowsWaveform(
                 levels[idx]
             }
             val mid = 1f - (kotlin.math.abs(i - (n - 1) / 2f) / denom) * 0.18f
-            val h = (src.coerceIn(0.12f, 1f) * mid * size.height).coerceAtLeast(3f)
-            val x = startX + i * (barW + gap)
+            // Use full canvas height so loud levels nearly fill the pill.
+            val h = (src.coerceIn(0.08f, 1f) * mid * size.height).coerceAtLeast(3f)
+            val x = i * (barW + gap)
             val y = (size.height - h) / 2f
             drawRoundRect(
                 brush = brush,

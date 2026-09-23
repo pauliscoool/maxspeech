@@ -94,7 +94,13 @@ class EnhanceClient {
         } else {
             ""
         }
-        return "$base$extra$multi Fix spoken self-corrections (I meant X). Return ONLY the cleaned text."
+        val numberRules =
+            " Numbers: ASR turns spoken numbers into digits. Spell out single-digit amounts in" +
+                " normal prose ('I have 2 apples'→'I have two apples', 'Covenant Core 1'→'Covenant Core one')." +
+                " Keep digits when convenient — versions, decimals, codes, times, rooms, pages, quantities" +
+                " with units ('Opus 5.5', 'version 2', 'meet at 4pm', 'room 2', 'page 3', '10%', '101', '2024')." +
+                " Fix digit homophones in prose ('thanks 4 the'→'thanks for the', 'need 2 go'→'need to go')."
+        return "$base$extra$multi$numberRules Fix spoken self-corrections (I meant X). Return ONLY the cleaned text."
     }
 
     companion object {

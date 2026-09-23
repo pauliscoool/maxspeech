@@ -13,10 +13,12 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleService
+import androidx.lifecycle.lifecycleScope
 import com.maxspeech.android.MainActivity
 import com.maxspeech.android.MaxSpeechApp
 import com.maxspeech.android.R
 import com.maxspeech.android.a11y.TextInjector
+import kotlinx.coroutines.launch
 
 /**
  * Keep-alive foreground service so the floating mic window is not killed in the background.
@@ -32,7 +34,7 @@ class OverlayService : LifecycleService() {
             stopSelf()
             return
         }
-        MaxSpeechApp.instance.floatingMic.ensureShown(this)
+        ensureMicIfSignedIn()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -61,8 +63,21 @@ class OverlayService : LifecycleService() {
                 }
             }
         }
-        MaxSpeechApp.instance.floatingMic.ensureShown(this)
+        ensureMicIfSignedIn()
         return START_STICKY
+    }
+
+    private fun ensureMicIfSignedIn() {
+        lifecycleScope.launch {
+            val user = runCatching { MaxSpeechApp.instance.auth.current() }.getOrNull()
+            val signedIn = user != null && !user.local
+            if (!signedIn) {
+                Log.i(TAG, "ensureMic: skipped — not signed in")
+                MaxSpeechApp.instance.floatingMic.hide()
+                return@launch
+            }
+            MaxSpeechApp.instance.floatingMic.ensureShown(this@OverlayService)
+        }
     }
 
     override fun onDestroy() {
@@ -150,7 +165,17 @@ class OverlayService : LifecycleService() {
         }
 
         fun stop(context: Context) {
-            context.stopService(Intent(context, OverlayService::class.java).setAction(ACTION_STOP))
+            runCatching {
+                MaxSpeechApp.instance.floatingMic.hide()
+            }
+            runCatching {
+                context.startService(
+                    Intent(context, OverlayService::class.java).setAction(ACTION_STOP),
+                )
+            }
+            runCatching {
+                context.stopService(Intent(context, OverlayService::class.java))
+            }
         }
 
         fun notifyRecording(context: Context, on: Boolean) {

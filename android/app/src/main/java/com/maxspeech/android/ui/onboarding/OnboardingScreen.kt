@@ -1,7 +1,16 @@
+@file:OptIn(ExperimentalComposeUiApi::class)
+
 package com.maxspeech.android.ui.onboarding
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -22,14 +31,20 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -37,25 +52,41 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.autofill.AutofillNode
+import androidx.compose.ui.autofill.AutofillType
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalAutofill
+import androidx.compose.ui.platform.LocalAutofillTree
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.view.autofill.AutofillManager
 import com.maxspeech.android.R
 import com.maxspeech.android.ui.components.MsSpinner
 import com.maxspeech.android.ui.components.PageEnterSpec
+import com.maxspeech.android.ui.style.StyleGroupsSetupPane
 import com.maxspeech.android.ui.theme.DisplayLarge
 import com.maxspeech.android.ui.theme.LocalMsColors
 import com.maxspeech.android.ui.theme.Orange
 import com.maxspeech.android.ui.theme.Turquoise
+import kotlinx.coroutines.delay
 
 private enum class AuthMode { SignIn, SignUp, Forgot }
+
+private const val PasswordRevealSeconds = 20
 
 @Composable
 fun OnboardingScreen(
@@ -71,15 +102,31 @@ fun OnboardingScreen(
     onOverlay: () -> Unit,
     onAppInfo: () -> Unit,
     onA11y: () -> Unit,
+    onStyleGroups: (String, String, String, String) -> Unit,
     onDone: () -> Unit,
     micGranted: Boolean,
     overlayGranted: Boolean,
     a11yGranted: Boolean,
+    styleMessaging: String = "casual",
+    styleEmail: String = "formal",
+    styleWork: String = "default",
+    styleSocial: String = "casual",
 ) {
     val c = LocalMsColors.current
+    val context = LocalContext.current
     var step by remember { mutableIntStateOf(if (authed) 2 else 1) }
+    var messaging by remember { mutableStateOf(styleMessaging) }
+    var emailTone by remember { mutableStateOf(styleEmail) }
+    var work by remember { mutableStateOf(styleWork) }
+    var social by remember { mutableStateOf(styleSocial) }
     LaunchedEffect(authed) {
-        if (authed && step < 2) step = 2
+        if (authed && step < 2) {
+            runCatching {
+                context.getSystemService(AutofillManager::class.java)
+                    ?.commit()
+            }
+            step = 2
+        }
         if (!authed && step >= 2) step = 1
     }
     var mode by remember { mutableStateOf(AuthMode.SignIn) }
@@ -128,15 +175,17 @@ fun OnboardingScreen(
                 label = "onboard",
             ) { (current, authMode) ->
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Image(
-                        painter = painterResource(R.drawable.ms_logo),
-                        contentDescription = "MaxSpeech",
-                        contentScale = ContentScale.Fit,
-                        modifier = Modifier
-                            .padding(bottom = 16.dp)
-                            .size(72.dp)
-                            .clip(RoundedCornerShape(18.dp)),
-                    )
+                    if (current != 3) {
+                        Image(
+                            painter = painterResource(R.drawable.ms_logo),
+                            contentDescription = "MaxSpeech",
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier
+                                .padding(bottom = 16.dp)
+                                .size(72.dp)
+                                .clip(RoundedCornerShape(18.dp)),
+                        )
+                    }
                     when (current) {
                         1 -> AuthStep(
                             mode = authMode,
@@ -162,15 +211,34 @@ fun OnboardingScreen(
                             body = "The only permission MaxSpeech needs to dictate inside the app. Audio is never stored.",
                             granted = micGranted,
                             onContinue = onMic,
-                            onProceed = onDone,
+                            onProceed = { step = 3 },
                         )
-                        else -> PermStep(
-                            title = "Microphone",
-                            body = "The only permission MaxSpeech needs to dictate inside the app. Audio is never stored.",
-                            granted = micGranted,
-                            onContinue = onMic,
-                            onProceed = onDone,
-                        )
+                        else -> {
+                            StyleGroupsSetupPane(
+                                messaging = messaging,
+                                email = emailTone,
+                                work = work,
+                                social = social,
+                                onChange = { m, e, w, s ->
+                                    messaging = m
+                                    emailTone = e
+                                    work = w
+                                    social = s
+                                },
+                            )
+                            Spacer(Modifier.height(20.dp))
+                            Button(
+                                onClick = {
+                                    onStyleGroups(messaging, emailTone, work, social)
+                                    onDone()
+                                },
+                                modifier = Modifier.fillMaxWidth().height(52.dp),
+                                shape = RoundedCornerShape(28.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = Turquoise),
+                            ) {
+                                Text("Continue", color = Color.White, fontSize = 16.sp)
+                            }
+                        }
                     }
                 }
             }
@@ -214,13 +282,30 @@ private fun AuthStep(
         modifier = Modifier.padding(top = 8.dp, bottom = 20.dp),
     )
     if (mode == AuthMode.SignUp) {
-        Field("Username", username) { onUsername(it) }
+        Field(
+            label = "Username",
+            value = username,
+            autofillTypes = listOf(AutofillType.NewUsername, AutofillType.Username),
+            imeAction = ImeAction.Next,
+            onChange = onUsername,
+        )
         Spacer(Modifier.height(8.dp))
     }
-    Field("Email", email, KeyboardType.Email) { onEmail(it) }
+    Field(
+        label = "Email",
+        value = email,
+        type = KeyboardType.Email,
+        autofillTypes = listOf(AutofillType.EmailAddress, AutofillType.Username),
+        imeAction = if (mode == AuthMode.Forgot) ImeAction.Done else ImeAction.Next,
+        onChange = onEmail,
+    )
     if (mode != AuthMode.Forgot) {
         Spacer(Modifier.height(8.dp))
-        Field("Password", password, KeyboardType.Password, password = true) { onPassword(it) }
+        PasswordField(
+            password = password,
+            onPassword = onPassword,
+            newPassword = mode == AuthMode.SignUp,
+        )
     }
     AnimatedVisibility(error != null) {
         Text(error.orEmpty(), color = c.error, fontSize = 13.sp, modifier = Modifier.padding(top = 10.dp))
@@ -284,11 +369,113 @@ private fun AuthStep(
 }
 
 @Composable
+private fun PasswordField(
+    password: String,
+    onPassword: (String) -> Unit,
+    newPassword: Boolean = false,
+) {
+    val c = LocalMsColors.current
+    var visible by remember { mutableStateOf(false) }
+    var secondsLeft by remember { mutableIntStateOf(0) }
+
+    LaunchedEffect(visible) {
+        if (!visible) {
+            secondsLeft = 0
+            return@LaunchedEffect
+        }
+        secondsLeft = PasswordRevealSeconds
+        while (secondsLeft > 0) {
+            delay(1_000)
+            secondsLeft -= 1
+        }
+        visible = false
+    }
+
+    Column(Modifier.fillMaxWidth()) {
+        OutlinedTextField(
+            value = password,
+            onValueChange = onPassword,
+            label = { Text("Password") },
+            singleLine = true,
+            visualTransformation = if (visible) {
+                VisualTransformation.None
+            } else {
+                PasswordVisualTransformation()
+            },
+            keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.Password,
+                imeAction = ImeAction.Done,
+                autoCorrectEnabled = false,
+            ),
+            trailingIcon = {
+                IconButton(onClick = { visible = !visible }) {
+                    AnimatedContent(
+                        targetState = visible,
+                        transitionSpec = {
+                            (
+                                fadeIn(tween(140)) +
+                                    scaleIn(spring(dampingRatio = 0.65f), initialScale = 0.72f)
+                                ) togetherWith (
+                                fadeOut(tween(100)) + scaleOut(tween(100), targetScale = 0.72f)
+                                )
+                        },
+                        label = "passwordEye",
+                    ) { show ->
+                        Icon(
+                            imageVector = if (show) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                            contentDescription = if (show) "Hide password" else "Show password",
+                            tint = Color.White,
+                            modifier = Modifier.size(22.dp),
+                        )
+                    }
+                }
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .autofill(
+                    autofillTypes = listOf(
+                        if (newPassword) AutofillType.NewPassword else AutofillType.Password,
+                    ),
+                    onFill = onPassword,
+                ),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = Turquoise,
+                focusedLabelColor = Turquoise,
+                unfocusedBorderColor = c.hairline,
+                cursorColor = Turquoise,
+                focusedTextColor = c.text,
+                unfocusedTextColor = c.text,
+            ),
+            shape = RoundedCornerShape(16.dp),
+        )
+        AnimatedVisibility(
+            visible = visible && secondsLeft > 0,
+            enter = fadeIn(tween(160)),
+            exit = fadeOut(tween(180)),
+        ) {
+            Text(
+                text = if (secondsLeft == 1) {
+                    "Your password will be hidden in 1 second."
+                } else {
+                    "Your password will be hidden in $secondsLeft seconds."
+                },
+                color = c.textDim,
+                fontSize = 12.sp,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 6.dp, start = 4.dp),
+            )
+        }
+    }
+}
+
+@Composable
 private fun Field(
     label: String,
     value: String,
     type: KeyboardType = KeyboardType.Text,
-    password: Boolean = false,
+    autofillTypes: List<AutofillType> = emptyList(),
+    imeAction: ImeAction = ImeAction.Next,
     onChange: (String) -> Unit,
 ) {
     val c = LocalMsColors.current
@@ -297,17 +484,58 @@ private fun Field(
         onValueChange = onChange,
         label = { Text(label) },
         singleLine = true,
-        visualTransformation = if (password) PasswordVisualTransformation() else androidx.compose.ui.text.input.VisualTransformation.None,
-        keyboardOptions = KeyboardOptions(keyboardType = type),
-        modifier = Modifier.fillMaxWidth(),
+        keyboardOptions = KeyboardOptions(
+            keyboardType = type,
+            imeAction = imeAction,
+            autoCorrectEnabled = type != KeyboardType.Email && type != KeyboardType.Password,
+        ),
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(
+                if (autofillTypes.isNotEmpty()) {
+                    Modifier.autofill(autofillTypes = autofillTypes, onFill = onChange)
+                } else {
+                    Modifier
+                },
+            ),
         colors = OutlinedTextFieldDefaults.colors(
             focusedBorderColor = Turquoise,
             focusedLabelColor = Turquoise,
             unfocusedBorderColor = c.hairline,
             cursorColor = Turquoise,
+            focusedTextColor = c.text,
+            unfocusedTextColor = c.text,
         ),
         shape = RoundedCornerShape(16.dp),
     )
+}
+
+/** Marks a field for Samsung Pass / Google Autofill password managers. */
+@Composable
+private fun Modifier.autofill(
+    autofillTypes: List<AutofillType>,
+    onFill: (String) -> Unit,
+): Modifier {
+    val autofill = LocalAutofill.current
+    val autofillTree = LocalAutofillTree.current
+    val node = remember(autofillTypes) {
+        AutofillNode(autofillTypes = autofillTypes, onFill = onFill)
+    }
+    DisposableEffect(node) {
+        autofillTree += node
+        onDispose { autofillTree.children.remove(node.id) }
+    }
+    return this
+        .onGloballyPositioned { node.boundingBox = it.boundsInWindow() }
+        .onFocusChanged { focusState ->
+            autofill?.run {
+                if (focusState.isFocused) {
+                    requestAutofillForNode(node)
+                } else {
+                    cancelAutofillForNode(node)
+                }
+            }
+        }
 }
 
 @Composable

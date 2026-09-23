@@ -1,17 +1,19 @@
-<#
+﻿<#
 .SYNOPSIS
-  Build → install → launch MaxSpeech Android, then scan device logs for failures.
-  Exits non-zero if a crash / overlay attach failure appears so agents can fix + rebuild.
+  Build and update the existing MaxSpeech install on the phone (same package).
+  Uses adb install -r only. Does not uninstall. Does not create a second app.
 
 .EXAMPLE
   .\scripts\android-ship.ps1
-  .\scripts\android-ship.ps1 -Debug
+  .\scripts\android-ship.ps1 -Launch
   .\scripts\android-ship.ps1 -SkipBuild
 #>
 param(
     [switch]$Debug,
     [switch]$SkipBuild,
-    [int]$WatchSeconds = 8
+    # Only reopen when you explicitly want a cold start.
+    [switch]$Launch,
+    [int]$WatchSeconds = 6
 )
 
 $ErrorActionPreference = "Stop"
@@ -38,6 +40,7 @@ if (-not $devices) {
 $sdkEscaped = $sdk -replace '\\', '\\'
 Set-Content -Path (Join-Path $androidDir "local.properties") -Value "sdk.dir=$sdkEscaped" -Encoding ASCII
 
+# Always one package - debug/release share applicationId (no .debug suffix).
 $variant = if ($Debug) { "Debug" } else { "Release" }
 $task = ":app:assemble$variant"
 $apkRel = if ($Debug) {
@@ -46,9 +49,16 @@ $apkRel = if ($Debug) {
     "app\build\outputs\apk\release\app-release.apk"
 }
 $apk = Join-Path $androidDir $apkRel
-$pkg = if ($Debug) { "com.maxspeech.android.debug" } else { "com.maxspeech.android" }
+$pkg = "com.maxspeech.android"
 
 function Write-Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
+
+# Drop the old dual-install leftover if present (one-time cleanup).
+$legacy = (& $adb shell pm path com.maxspeech.android.debug 2>$null | Out-String).Trim()
+if ($legacy) {
+    Write-Step "Removing leftover com.maxspeech.android.debug"
+    & $adb uninstall com.maxspeech.android.debug | Out-Null
+}
 
 if (-not $SkipBuild) {
     Write-Step "Building $variant"
@@ -63,17 +73,20 @@ if (-not $SkipBuild) {
     Write-Host "APK: $apk ($( [math]::Round((Get-Item $apk).Length / 1MB, 1) ) MB)"
 }
 
-Write-Step "Installing $pkg"
+Write-Step "Updating $pkg in place (install -r)"
 & $adb install -r $apk
 if ($LASTEXITCODE -ne 0) { throw "adb install failed" }
 
-Write-Step "Clearing logcat + launching"
-& $adb logcat -c | Out-Null
-& $adb shell am force-stop $pkg 2>$null
-& $adb shell am start -n "$pkg/com.maxspeech.android.MainActivity"
-if ($LASTEXITCODE -ne 0) { throw "launch failed" }
+$pidNow = (& $adb shell pidof $pkg 2>$null | Out-String).Trim()
+if ($Launch -or -not $pidNow) {
+    Write-Step "Launching $pkg"
+    & $adb shell am start -n "$pkg/com.maxspeech.android.MainActivity" | Out-Null
+} else {
+    Write-Step "App already running (pid=$pidNow) - left open; no force-stop"
+}
 
 Write-Step "Watching logs for ${WatchSeconds}s"
+& $adb logcat -c | Out-Null
 Start-Sleep -Seconds $WatchSeconds
 
 $dump = & $adb logcat -d -t 400
@@ -85,8 +98,7 @@ $crashPatterns = @(
     "Uncaught crash",
     "ViewTreeLifecycleOwner not found",
     "FloatingMic: ensureShown: attach failed",
-    "promoteForeground failed",
-    "Floating mic: overlay permission missing"
+    "promoteForeground failed"
 )
 $goodPatterns = @(
     "attach: window added",
@@ -94,8 +106,7 @@ $goodPatterns = @(
     "ensureShown: already attached",
     "Floating mic: showing",
     "promoteForeground: ok",
-    "OverlayService: start requested",
-    "start requested"
+    "OverlayService: start requested"
 )
 
 $hits = @()
@@ -112,7 +123,7 @@ foreach ($p in $goodPatterns) {
 
 Write-Host "`n--- healthy signals ---" -ForegroundColor Green
 if ($goods.Count -eq 0) {
-    Write-Host "(none - overlay may not have started)" -ForegroundColor Yellow
+    Write-Host "(none this window - app may already have been running)" -ForegroundColor Yellow
 } else {
     $goods | Select-Object -Last 15 | ForEach-Object { Write-Host $_.Line }
 }
@@ -130,14 +141,15 @@ $fg = ($svc -match "OverlayService") -and ($svc -match "isForeground=true")
 
 Write-Host "`n--- status ---"
 if ($pidNow) { Write-Host "pid=$pidNow" } else { Write-Host "pid=DEAD" }
+Write-Host "package=$pkg"
 Write-Host "overlayServiceFg=$fg"
 Write-Host "Full dump: android-last-logcat.txt"
 
-$failed = ($hits.Count -gt 0) -or (-not $pidNow) -or (-not $fg)
+$failed = ($hits.Count -gt 0) -or (-not $pidNow)
 if ($failed) {
     Write-Host "`nSHIP FAILED - fix from logs above, then re-run." -ForegroundColor Red
     exit 1
 }
 
-Write-Host "`nSHIP OK" -ForegroundColor Green
+Write-Host "`nSHIP OK (in-place update of $pkg)" -ForegroundColor Green
 exit 0

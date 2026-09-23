@@ -1,9 +1,12 @@
 package com.maxspeech.android
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
 import androidx.activity.ComponentActivity
@@ -30,10 +33,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
+import androidx.lifecycle.lifecycleScope
 import com.maxspeech.android.overlay.OverlayService
 import com.maxspeech.android.ui.AppViewModel
 import com.maxspeech.android.ui.MaxSpeechRoot
 import java.io.File
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private val vm: AppViewModel by viewModels()
@@ -137,12 +142,43 @@ class MainActivity : ComponentActivity() {
             Log.w(TAG, "Floating mic: overlay permission missing")
             return
         }
-        Log.i(TAG, "Floating mic: showing + starting keep-alive service")
+        lifecycleScope.launch {
+            val user = runCatching { MaxSpeechApp.instance.auth.current() }.getOrNull()
+            if (user == null || user.local) {
+                Log.i(TAG, "Floating mic: skipped — not signed in")
+                MaxSpeechApp.instance.floatingMic.hide()
+                OverlayService.stop(this@MainActivity)
+                return@launch
+            }
+            Log.i(TAG, "Floating mic: showing + starting keep-alive service")
+            runCatching {
+                MaxSpeechApp.instance.floatingMic.ensureShown(this@MainActivity)
+                OverlayService.start(this@MainActivity)
+                maybeRequestBatteryExemption()
+                clearCrash()
+            }.onFailure { Log.e(TAG, "Floating mic start failed", it) }
+        }
+    }
+
+    /** One-time prompt so OEMs don't kill the idle keep-alive. */
+    private fun maybeRequestBatteryExemption() {
+        if (Build.VERSION.SDK_INT < 23) return
+        val prefs = getSharedPreferences("maxspeech_runtime", MODE_PRIVATE)
+        if (prefs.getBoolean("battery_prompted", false)) return
+        val pm = getSystemService(PowerManager::class.java) ?: return
+        if (pm.isIgnoringBatteryOptimizations(packageName)) {
+            prefs.edit().putBoolean("battery_prompted", true).apply()
+            return
+        }
+        prefs.edit().putBoolean("battery_prompted", true).apply()
         runCatching {
-            MaxSpeechApp.instance.floatingMic.ensureShown(this)
-            OverlayService.start(this)
-            clearCrash()
-        }.onFailure { Log.e(TAG, "Floating mic start failed", it) }
+            startActivity(
+                Intent(
+                    Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                    Uri.parse("package:$packageName"),
+                ),
+            )
+        }.onFailure { Log.w(TAG, "Battery exemption prompt failed", it) }
     }
 
     private fun crashFile(): File = File(filesDir, "last-crash.txt")
@@ -153,7 +189,9 @@ class MainActivity : ComponentActivity() {
 
     private fun isStaleFixedCrash(text: String?): Boolean {
         if (text.isNullOrBlank()) return false
-        return text.contains("ViewTreeLifecycleOwner not found")
+        return text.contains("ViewTreeLifecycleOwner not found") ||
+            text.contains("Room cannot verify the data integrity") ||
+            text.contains("Expected identity hash")
     }
 
     companion object {

@@ -13,8 +13,8 @@ android {
         applicationId = "com.maxspeech.android"
         minSdk = 26
         targetSdk = 35
-        versionCode = 14
-        versionName = "0.1.13"
+        versionCode = 53
+        versionName = "0.3-beta"
         vectorDrawables.useSupportLibrary = true
     }
 
@@ -31,8 +31,7 @@ android {
             signingConfig = signingConfigs.getByName("debug")
         }
         debug {
-            applicationIdSuffix = ".debug"
-            versionNameSuffix = "-debug"
+            // Same applicationId as release so sideload updates one app on the phone.
         }
     }
 
@@ -43,6 +42,9 @@ android {
 
     kotlinOptions {
         jvmTarget = "17"
+        freeCompilerArgs += listOf(
+            "-opt-in=androidx.compose.ui.ExperimentalComposeUiApi",
+        )
     }
 
     buildFeatures {
@@ -79,6 +81,8 @@ dependencies {
     implementation("androidx.room:room-ktx:2.6.1")
     ksp("androidx.room:room-compiler:2.6.1")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("io.coil-kt:coil-compose:2.7.0")
+    implementation("io.coil-kt:coil-svg:2.7.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")

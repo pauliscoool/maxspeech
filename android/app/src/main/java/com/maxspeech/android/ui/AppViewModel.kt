@@ -9,13 +9,18 @@ import com.maxspeech.android.data.AppProfileEntity
 import com.maxspeech.android.data.AppSettings
 import com.maxspeech.android.data.AuthUser
 import com.maxspeech.android.data.DictionaryEntity
+import com.maxspeech.android.data.EnhanceSpeed
 import com.maxspeech.android.data.HistoryEntity
+import com.maxspeech.android.data.OverlayStyle
 import com.maxspeech.android.data.PlanCalculator
 import com.maxspeech.android.data.PlanStatus
 import com.maxspeech.android.data.PlanTier
 import com.maxspeech.android.data.SnippetEntity
+import com.maxspeech.android.data.StyleGroupId
+import com.maxspeech.android.data.StyleGroups
 import com.maxspeech.android.data.SttLanguages
 import com.maxspeech.android.data.UiTheme
+import com.maxspeech.android.overlay.OverlayService
 import com.maxspeech.android.pipeline.DictationUi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -141,12 +146,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun cancelDictation() = ms.dictation.cancel()
 
+    fun retryDictation() = ms.dictation.retry()
+
     fun confirmDictation() {
-        viewModelScope.launch {
-            val text = ms.dictation.ui.value.finalText
-            if (text.isNotBlank()) TextInjector.insert(getApplication(), text)
-            ms.dictation.confirmPaste()
-        }
+        ms.dictation.confirmPaste()
     }
 
     fun setChip(tone: String) = viewModelScope.launch { ms.settings.setToneOverride(tone.lowercase()) }
@@ -156,6 +159,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun setTheme(t: UiTheme) = viewModelScope.launch { ms.settings.setTheme(t) }
     fun setOverlaySize(v: Float) = viewModelScope.launch { ms.settings.setOverlaySize(v) }
     fun setOverlayAlpha(v: Float) = viewModelScope.launch { ms.settings.setOverlayAlpha(v) }
+    fun setOverlayWaveScale(v: Float) = viewModelScope.launch { ms.settings.setOverlayWaveScale(v) }
+    fun setOverlayMicColor(argb: Long) = viewModelScope.launch { ms.settings.setOverlayMicColor(argb) }
+    fun setOverlayStyle(style: OverlayStyle) = viewModelScope.launch { ms.settings.setOverlayStyle(style) }
+    fun setEnhanceSpeed(s: EnhanceSpeed) = viewModelScope.launch { ms.settings.setEnhanceSpeed(s) }
+    fun setDeepgramKey(v: String) = viewModelScope.launch { ms.settings.setDeepgramKey(v) }
+    fun setLlmKey(v: String) = viewModelScope.launch { ms.settings.setLlmKey(v) }
+    fun resetOverlayPosition() = viewModelScope.launch {
+        ms.settings.setOverlayCenter(0.82f, 0.48f)
+        ms.floatingMic.resetToDefault()
+    }
 
     fun toggle(key: String, on: Boolean) = viewModelScope.launch {
         when (key) {
@@ -201,8 +214,61 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         ms.db.historyDao().delete(id)
     }
 
+    /** Paste a past transcript into the focused field again. */
+    fun retranscribe(id: Long) = viewModelScope.launch {
+        val row = ms.db.historyDao().latest(200).firstOrNull { it.id == id } ?: return@launch
+        if (row.text.isBlank() || row.failed) return@launch
+        TextInjector.insert(getApplication(), row.text.trim())
+        toast.value = "Pasted again"
+    }
+
+    /** Retry a failed dictation session (starts a fresh listen). */
+    fun retryFailedHistory(id: Long) = viewModelScope.launch {
+        runCatching { ms.db.historyDao().delete(id) }
+        OverlayService.notifyRecording(getApplication(), true)
+        ms.dictation.start(paste = true)
+    }
+
     fun toggleProfile(p: AppProfileEntity) = viewModelScope.launch {
         ms.db.profileDao().update(p.copy(enabled = !p.enabled))
+    }
+
+    fun setProfileTone(p: AppProfileEntity, tone: String) = viewModelScope.launch {
+        ms.db.profileDao().update(p.copy(tone = tone.lowercase()))
+    }
+
+    fun setHomeStyleGroup(id: StyleGroupId) = viewModelScope.launch {
+        ms.settings.setHomeStyleGroup(id)
+    }
+
+    fun saveStyleGroups(messaging: String, email: String, work: String, social: String) =
+        viewModelScope.launch {
+            ms.settings.setStyleGroupTones(messaging, email, work, social)
+            applyGroupTonesToProfiles(messaging, email, work, social)
+        }
+
+    private suspend fun applyGroupTonesToProfiles(
+        messaging: String,
+        email: String,
+        work: String,
+        social: String,
+    ) {
+        val toneByPkg = buildMap {
+            StyleGroups.def(StyleGroupId.Messaging).brands.forEach { put(it.packageName, messaging) }
+            StyleGroups.def(StyleGroupId.Email).brands.forEach { put(it.packageName, email) }
+            StyleGroups.def(StyleGroupId.Work).brands.forEach { put(it.packageName, work) }
+            StyleGroups.def(StyleGroupId.Social).brands.forEach { put(it.packageName, social) }
+        }
+        val dao = ms.db.profileDao()
+        val existing = dao.all()
+        for ((pkg, tone) in toneByPkg) {
+            val hit = existing.firstOrNull { it.packagePattern.equals(pkg, ignoreCase = true) }
+            if (hit != null) {
+                dao.update(hit.copy(tone = tone.lowercase()))
+            } else {
+                dao.insert(AppProfileEntity(packagePattern = pkg, tone = tone.lowercase()))
+            }
+        }
     }
 
     fun signIn(email: String, password: String) = viewModelScope.launch {

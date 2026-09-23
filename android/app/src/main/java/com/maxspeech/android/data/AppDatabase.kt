@@ -19,6 +19,9 @@ data class HistoryEntity(
     val createdAt: Long = System.currentTimeMillis(),
     val enhanced: Boolean = false,
     val edited: Boolean = false,
+    /** True when dictation failed — shown with Retry in the feed. */
+    val failed: Boolean = false,
+    val errorMessage: String = "",
 )
 
 @Entity(tableName = "dictionary")
@@ -149,7 +152,7 @@ interface UsageDao {
         AppProfileEntity::class,
         UsageEntity::class,
     ],
-    version = 1,
+    version = 3,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
