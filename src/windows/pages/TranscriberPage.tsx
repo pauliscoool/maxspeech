@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import AppleSpinner from "../../components/AppleSpinner";
 
 interface TranscriptionResult {
@@ -13,16 +14,16 @@ export default function TranscriberPage() {
   const [result, setResult] = useState<TranscriptionResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [dragOver, setDragOver] = useState(false);
+  // Tauri's HTML5 drag events never carry a real filesystem path (that's a
+  // browser-only File API detail Tauri doesn't fill in) — the webview's own
+  // drag-drop event is the only source of an absolute path to hand Rust.
+  const loadingRef = useRef(loading);
+  loadingRef.current = loading;
+  const resultRef = useRef(result);
+  resultRef.current = result;
 
-  async function handleDrop(e: React.DragEvent) {
-    e.preventDefault();
-    const files = e.dataTransfer.files;
-    if (files.length === 0) return;
-    const path = (files[0] as unknown as { path?: string }).path;
-    if (!path) {
-      setError("Could not read file path.");
-      return;
-    }
+  async function transcribe(path: string) {
     setFile(path);
     setLoading(true);
     setError("");
@@ -35,6 +36,36 @@ export default function TranscriberPage() {
       setLoading(false);
     }
   }
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void getCurrentWebview()
+      .onDragDropEvent((event) => {
+        const payload = event.payload;
+        if (payload.type === "enter" || payload.type === "over") {
+          if (!loadingRef.current && !resultRef.current) setDragOver(true);
+          return;
+        }
+        if (payload.type === "leave") {
+          setDragOver(false);
+          return;
+        }
+        if (payload.type === "drop") {
+          setDragOver(false);
+          if (loadingRef.current || resultRef.current) return;
+          const path = payload.paths[0];
+          if (!path) {
+            setError("Could not read file path.");
+            return;
+          }
+          void transcribe(path);
+        }
+      })
+      .then((fn) => {
+        unlisten = fn;
+      });
+    return () => unlisten?.();
+  }, []);
 
   async function exportAs(format: "txt" | "srt" | "md") {
     if (!result) return;
@@ -52,10 +83,12 @@ export default function TranscriberPage() {
 
       {!result && !loading && (
         <div
-          onDrop={handleDrop}
-          onDragOver={(e) => e.preventDefault()}
-          className="flex flex-col items-center justify-center h-44 sm:h-52 rounded-2xl border border-dashed hover:border-[var(--ms-turquoise)] transition-colors bg-[var(--ms-surface)]"
-          style={{ borderColor: "color-mix(in srgb, var(--ms-text-dim) 35%, transparent)" }}
+          className="flex flex-col items-center justify-center h-44 sm:h-52 rounded-2xl border border-dashed transition-colors bg-[var(--ms-surface)]"
+          style={{
+            borderColor: dragOver
+              ? "var(--ms-turquoise)"
+              : "color-mix(in srgb, var(--ms-text-dim) 35%, transparent)",
+          }}
         >
           <p className="text-sm text-[var(--ms-text-dim)] px-4 text-center truncate max-w-full">
             {file || "Drop audio or video here"}

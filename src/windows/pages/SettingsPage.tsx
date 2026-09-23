@@ -69,6 +69,10 @@ export default function SettingsPage({
   const [enhanceSpeed, setEnhanceSpeed] = useState<"fast" | "thinking" | "ultra">(
     "thinking",
   );
+  const [hasLlmKey, setHasLlmKey] = useState(false);
+  const [llmKeyInput, setLlmKeyInput] = useState("");
+  const [llmKeyBusy, setLlmKeyBusy] = useState(false);
+  const [llmKeyMsg, setLlmKeyMsg] = useState("");
   const [soundCue, setSoundCue] = useState(false);
   const [soundCueVolume, setSoundCueVolume] = useState<"soft" | "medium" | "loud">(
     "medium",
@@ -100,6 +104,9 @@ export default function SettingsPage({
     // Mic list must not depend on the rest of settings loading — a failed
     // get_setting earlier used to skip microphones entirely.
     void loadMicrophones();
+    invoke<boolean>("has_secret", { key: "llm_api_key" })
+      .then(setHasLlmKey)
+      .catch(() => {});
     isEnabled().then(setAutostart).catch(() => {});
     getAppVersion().then(setAppVersion).catch(() => setAppVersion("0.1.0"));
     const onPlan = () => {
@@ -373,6 +380,37 @@ export default function SettingsPage({
     setter(next);
     await invoke("set_setting", { key, value: next ? "true" : "false" });
     scheduleCloudSettingsPush();
+  }
+
+  async function saveLlmKey() {
+    const key = llmKeyInput.trim();
+    if (!key) return;
+    setLlmKeyBusy(true);
+    setLlmKeyMsg("");
+    try {
+      await invoke("save_secret", { key: "llm_api_key", value: key });
+      setHasLlmKey(true);
+      setLlmKeyInput("");
+      setLlmKeyMsg("Saved — AI enhance can now reach OpenAI.");
+    } catch (e) {
+      setLlmKeyMsg(`Could not save key: ${e}`);
+    } finally {
+      setLlmKeyBusy(false);
+    }
+  }
+
+  async function clearLlmKey() {
+    setLlmKeyBusy(true);
+    setLlmKeyMsg("");
+    try {
+      await invoke("clear_secret", { key: "llm_api_key" });
+      setHasLlmKey(false);
+      setLlmKeyMsg("Removed.");
+    } catch (e) {
+      setLlmKeyMsg(`Could not remove key: ${e}`);
+    } finally {
+      setLlmKeyBusy(false);
+    }
   }
 
   async function toggleMultilingual() {
@@ -743,6 +781,55 @@ export default function SettingsPage({
               />
             </div>
           </div>
+          {aiEnhance && (
+            <div className="settings-row">
+              <div className="settings-row-text">
+                <div className="settings-row-title">OpenAI API key</div>
+                <div className="settings-row-desc">
+                  {hasLlmKey
+                    ? "AI enhance is active. Your key stays on this device."
+                    : "AI enhance is on but has no key yet, so it only does local grammar cleanup — add your own OpenAI key to enable full rewrites."}
+                  {llmKeyMsg && (
+                    <span className="block mt-1 text-[var(--ms-turquoise)]">
+                      {llmKeyMsg}
+                    </span>
+                  )}
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                {hasLlmKey ? (
+                  <button
+                    type="button"
+                    disabled={llmKeyBusy}
+                    onClick={() => void clearLlmKey()}
+                    className="px-3 py-1.5 text-xs rounded-full text-[var(--ms-error)] hover:brightness-110 transition-colors disabled:opacity-50"
+                    style={{ background: "var(--ms-fill-muted)" }}
+                  >
+                    Remove
+                  </button>
+                ) : (
+                  <>
+                    <input
+                      type="password"
+                      value={llmKeyInput}
+                      onChange={(e) => setLlmKeyInput(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && void saveLlmKey()}
+                      placeholder="sk-…"
+                      className="input-field w-44 px-3 py-1.5 text-xs"
+                    />
+                    <button
+                      type="button"
+                      disabled={llmKeyBusy || !llmKeyInput.trim()}
+                      onClick={() => void saveLlmKey()}
+                      className="btn-primary px-3 py-1.5 text-xs disabled:opacity-50"
+                    >
+                      Save
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
           <SettingsToggle
             title="Trailing space"
             desc="Add a space after each insertion so you can keep typing"

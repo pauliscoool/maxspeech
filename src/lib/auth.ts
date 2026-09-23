@@ -296,6 +296,13 @@ export async function lockDictation(): Promise<void> {
     const { invoke } = await import("@tauri-apps/api/core");
     await invoke("set_setting", { key: "dictation_unlocked", value: "false" });
     await invoke("set_setting", { key: "account_email", value: "" });
+    // Also clear plan data here, not just on explicit "Log out" — a session
+    // that simply expires (or a fresh boot with nobody signed in) hits this
+    // same path, and a stale paid plan_tier left in local SQLite could
+    // otherwise carry into whichever account signs in next on this PC.
+    for (const key of ["plan_tier", "plan_updated_at", "usage_bonus", "usage_bonus_week"]) {
+      await invoke("set_setting", { key, value: "" });
+    }
   } catch {
     /* ignore */
   }

@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { supabase } from "./supabase";
-import { scheduleCloudSettingsPush } from "./cloudSync";
+import { pushProfileAvatar, scheduleCloudSettingsPush } from "./cloudSync";
 
 export const PROFILE_CHANGED_EVENT = "maxspeech-profile-changed";
 export const PROFILE_AVATAR_SAVED_EVENT = "maxspeech-profile-avatar-saved";
@@ -235,7 +235,7 @@ async function persistPendingAvatar(generation: number): Promise<void> {
   if (!dataUrl) return;
   try {
     await invoke("set_setting", { key: SETTING_AVATAR, value: dataUrl });
-    scheduleCloudSettingsPush();
+    void pushProfileAvatar(dataUrl);
     if (generation !== avatarSaveGeneration) return;
     if (pendingAvatarDataUrl === dataUrl) pendingAvatarDataUrl = null;
     notifyProfileChanged();

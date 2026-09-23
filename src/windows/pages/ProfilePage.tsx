@@ -301,7 +301,7 @@ export default function ProfilePage({
             <div>
               <div className="text-sm font-medium text-[var(--ms-text)]">Log out</div>
               <p className="text-[11px] text-[var(--ms-text-dim)] mt-1 leading-relaxed">
-                Clears saved keys, history, and local session — returns you to onboarding.
+                Clears saved keys, history, dictionary, and app tones on this PC — returns you to onboarding.
               </p>
             </div>
             <button
@@ -318,7 +318,7 @@ export default function ProfilePage({
       <ConfirmModal
         open={logoutOpen}
         title="Would you like to confirm to log out?"
-        description="Signs you out of MaxSpeech cloud and clears local history and session preferences on this PC."
+        description="Signs you out of MaxSpeech cloud and clears local history, dictionary, and app tones on this PC."
         confirmLabel="Log out"
         destructive
         busy={loggingOut}

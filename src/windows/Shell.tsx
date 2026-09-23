@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -255,13 +255,17 @@ export default function Shell({ authUser }: { authUser: AuthUser | null }) {
     };
   }, []);
 
-  async function refresh() {
+  // Stable reference — passed to HomePage as a prop it depends on in an
+  // effect; a fresh function identity every render was re-running that
+  // effect (re-fetching history, re-binding focus listeners) on every
+  // unrelated Shell re-render.
+  const refresh = useCallback(async () => {
     try {
       setPlan(await invoke<PlanStatus>("get_plan_status"));
     } catch {
       setPlan(null);
     }
-  }
+  }, []);
 
   async function applyUpdate() {
     if (updating) return;
