@@ -64,70 +64,24 @@ fn expand_template_vars(expansion: &str) -> String {
 /// Persist name-like corrections so future ASR prefers the fixed spelling.
 /// Learns tokens that look like proper names / jargon when the user (or
 /// self-correction) changes one word into another.
+///
+/// Reuses `learn_substitutions`'s diff engine to find what actually changed,
+/// rather than a bespoke alignment here — a from-the-end word-match walk
+/// used to stop at the *first* mismatch scanning backward and then take
+/// everything from that index onward, which for the common "swap the last
+/// word" case (e.g. "Daniel" → "Samuel") pointed at the already-matched,
+/// unchanged trailing word instead of the actual correction.
 pub fn learn_name_corrections(before: &str, after: &str, store: &Store) {
-    let before_t = before.trim();
-    let after_t = after.trim();
-    if before_t.is_empty() || after_t.is_empty() || before_t == after_t {
-        return;
-    }
-
-    let strip = |s: &str| -> Vec<String> {
-        s.split_whitespace()
-            .map(|w| {
-                w.trim_matches(|c: char| matches!(c, ',' | '.' | '!' | '?' | ';' | ':' | '"' | '\''))
-                    .to_string()
-            })
-            .filter(|w| !w.is_empty())
-            .collect()
-    };
-
-    let a = strip(before_t);
-    let b = strip(after_t);
-    if a.is_empty() || b.is_empty() {
-        return;
-    }
-
-    // Align from the end: self-corrections usually replace the last N words.
-    let mut i = a.len();
-    let mut j = b.len();
-    while i > 0 && j > 0 {
-        if a[i - 1].eq_ignore_ascii_case(&b[j - 1]) {
-            i -= 1;
-            j -= 1;
-        } else {
-            break;
+    for sub in super::learn_substitutions::substitutions_from_redictate(before, after) {
+        let to = sub.to.trim();
+        if to.is_empty() {
+            continue;
         }
-    }
-    // Tokens that differ at the end of `after` are the corrections.
-    let n_changed = b.len().saturating_sub(j);
-    let changed: Vec<&str> = b[j..]
-        .iter()
-        .map(|s| s.as_str())
-        .filter(|w| {
-            // Single-token swaps (classic name fix) are always candidates;
-            // multi-word corrections only keep name-like tokens.
-            if n_changed == 1 {
-                looks_like_learnable_term(w)
-            } else {
-                looks_like_name_term(w)
-            }
-        })
-        .collect();
-
-    // Also pick up mid-sentence single-token diffs of equal length.
-    if changed.is_empty() && a.len() == b.len() {
-        for (wa, wb) in a.iter().zip(b.iter()) {
-            if !wa.eq_ignore_ascii_case(wb) && looks_like_name_term(wb) {
-                let _ = store.add_dict_word(wb, 1.0);
-                log::info!("Learned name correction from edit: {wa} → {wb}");
-            }
-        }
-        return;
-    }
-
-    for w in changed {
-        if store.add_dict_word(w, 1.0).is_ok() {
-            log::info!("Learned name correction: {w}");
+        // The diff can return a short trailing phrase ("last night" style);
+        // only the final token is the name-like candidate worth boosting.
+        let candidate = to.rsplit(' ').next().unwrap_or(to);
+        if looks_like_name_term(candidate) && store.add_dict_word(candidate, 1.0).is_ok() {
+            log::info!("Learned name correction: {} → {candidate}", sub.from);
         }
     }
 }

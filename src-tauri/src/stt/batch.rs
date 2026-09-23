@@ -58,7 +58,7 @@ pub async fn transcribe_with_language_and_keyterms(
     let mut url = format!(
         "https://api.deepgram.com/v1/listen?model=nova-3&language={lang}&punctuate=true&diarize=true&smart_format=true&numerals=true"
     );
-    for term in keyterms.iter().take(80) {
+    for term in keyterms.iter().take(crate::stt::deepgram::MAX_KEYTERMS) {
         let t = term.trim();
         if t.is_empty() {
             continue;
@@ -159,11 +159,13 @@ pub async fn transcribe_with_language_and_keyterms(
 }
 
 pub fn export(format: &str, text: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let desktop = if let Some(d) = std::env::var_os("USERPROFILE") {
-        std::path::Path::new(&d).join("Desktop")
-    } else {
-        std::path::PathBuf::from(".")
-    };
+    // dirs::desktop_dir() resolves the real Known Folder path — unlike joining
+    // %USERPROFILE%\Desktop by hand, this follows OneDrive's Desktop redirect
+    // when the user's Desktop has been moved there (common on Windows 11).
+    let desktop = dirs::desktop_dir()
+        .or_else(|| std::env::var_os("USERPROFILE").map(|d| std::path::Path::new(&d).join("Desktop")))
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    std::fs::create_dir_all(&desktop)?;
 
     let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
     let filename = match format {

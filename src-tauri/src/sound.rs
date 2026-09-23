@@ -98,8 +98,10 @@ fn play_cue_blocking(kind: CueKind, volume: f32) -> Result<(), String> {
     };
 
     stream.play().map_err(|e| e.to_string())?;
-    // Wait until buffer drained (+ tiny pad).
-    while !done.load(Ordering::SeqCst) {
+    // Wait until buffer drained (+ tiny pad). Bounded so a stalled/disconnected
+    // output device can't leave this thread blocked forever.
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while !done.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
         thread::sleep(Duration::from_millis(8));
     }
     thread::sleep(Duration::from_millis(40));

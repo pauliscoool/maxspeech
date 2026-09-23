@@ -515,6 +515,31 @@ impl Store {
         rows.collect()
     }
 
+    /// Same as `get_substitutions`, newest-first, for a Settings UI list.
+    pub fn get_substitutions_listed(&self) -> Result<Vec<(String, String)>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT from_phrase, to_phrase FROM learned_substitutions ORDER BY updated_at DESC",
+        )?;
+        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        rows.collect()
+    }
+
+    pub fn delete_substitution(&self, from_phrase: &str) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM learned_substitutions WHERE from_phrase = ?1",
+            params![from_phrase],
+        )?;
+        Ok(())
+    }
+
+    pub fn clear_substitutions(&self) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM learned_substitutions", [])?;
+        Ok(())
+    }
+
     pub fn upsert_substitution(
         &self,
         from_phrase: &str,
@@ -647,13 +672,23 @@ impl Store {
                 |row| row.get(0),
             )
             .unwrap_or(0);
+        // Real recorded wall-clock seconds (record_duration), not a guessed
+        // per-entry average — duration_secs=0 rows (e.g. usage-ledger
+        // adjustments) contribute words with no time, so only count seconds
+        // actually logged.
+        let total_seconds: i64 = conn
+            .query_row(
+                "SELECT COALESCE(SUM(duration_secs), 0) FROM usage_events WHERE duration_secs > 0",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
         Ok(Stats {
             total_words,
             total_entries,
             days_active,
-            avg_wpm: if total_entries > 0 {
-                // rough estimate assuming ~3s per dictation average
-                ((total_words as f64) / (total_entries as f64 * 0.05)).round() as i64
+            avg_wpm: if total_seconds > 0 {
+                ((total_words as f64) / (total_seconds as f64 / 60.0)).round() as i64
             } else {
                 0
             },
@@ -761,6 +796,21 @@ impl Store {
         ] {
             let _ = conn.execute("DELETE FROM meta WHERE key = ?1", params![key]);
         }
+        Ok(())
+    }
+
+    /// Clear per-account learned data on logout (shared-PC hygiene). History,
+    /// session meta, and plan settings are cleared separately by the caller —
+    /// this covers the dictionary/macros/tones/learned corrections that
+    /// `clear_session_meta` does not, so the next account on this PC doesn't
+    /// inherit the previous person's vocabulary or app-tone customizations.
+    pub fn clear_account_data(&self) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM dictionary", [])?;
+        conn.execute("DELETE FROM macros", [])?;
+        conn.execute("DELETE FROM learned_substitutions", [])?;
+        conn.execute("DELETE FROM app_profiles", [])?;
+        conn.execute("DELETE FROM meta WHERE key = 'profiles_seed_rev'", [])?;
         Ok(())
     }
 

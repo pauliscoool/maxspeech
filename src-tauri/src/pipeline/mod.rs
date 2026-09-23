@@ -10,6 +10,7 @@ use crate::recording::{self, MAX_REMAKE_RECORDINGS, WAV_SAMPLE_RATE};
 use crate::secrets;
 use crate::store::Store;
 use crate::stt::deepgram::{self, DeepgramConfig, TranscriptChunk};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
@@ -17,10 +18,17 @@ use tokio::sync::mpsc;
 
 /// Hard cap for a single push-to-talk session.
 const MAX_RECORDING: Duration = Duration::from_secs(120);
+/// Only run "scratch that" / rewrite voice commands within this long of the
+/// paste they target, and only while the same app is still focused — an old
+/// insertion (or one in a different window) must not be a standing target.
+const COMMAND_TARGET_WINDOW: Duration = Duration::from_secs(30);
 
 pub struct PipelineState {
     pub active: Mutex<bool>,
     pub last_insertion: Mutex<Option<LastInsertion>>,
+    /// Foreground app the last insertion was pasted into (commands like
+    /// "scratch that" must not act across an app switch).
+    pub last_insertion_app: Mutex<Option<String>>,
     /// Previous paste text if the new recording started within the learn window.
     pending_learn_from: Mutex<Option<String>>,
     stop_tx: Mutex<Option<mpsc::Sender<()>>>,
@@ -29,12 +37,20 @@ pub struct PipelineState {
     started_at: Mutex<Option<Instant>>,
     /// Duration of the session that just stopped (for trail / enhance decisions).
     last_session_secs: Mutex<f64>,
+    /// Per-session recorded duration, keyed by that session's paste_epoch, so a
+    /// session that finishes processing after a newer one has already started
+    /// (and overwritten `last_session_secs`) still bills its own real length.
+    session_durations: Mutex<HashMap<u64, f64>>,
     /// Bumped on each start/stop so orphaned max-length timers cannot kill a newer session.
     session_gen: Mutex<u64>,
     /// Bumped only when a *new* recording starts. A finishing enhance/inject from an
     /// older recording skips paste if this no longer matches (prevents half+half).
     /// Re-checked inside inject after the modifier wait so mid-wait starts cancel.
     paste_epoch: Mutex<u64>,
+    /// Set to the paste_epoch of a session that already emitted a fatal
+    /// dictation-error — its own empty-transcript idle emission must not
+    /// clobber that error back to idle a moment later.
+    error_epoch: Mutex<Option<u64>>,
     /// 16 kHz mono PCM for the active session (Remake cache).
     session_pcm: Mutex<Option<Arc<Mutex<Vec<i16>>>>>,
     /// Foreground app captured at hotkey-down (tone + history must use this, not
@@ -47,13 +63,16 @@ impl Default for PipelineState {
         Self {
             active: Mutex::new(false),
             last_insertion: Mutex::new(None),
+            last_insertion_app: Mutex::new(None),
             pending_learn_from: Mutex::new(None),
             stop_tx: Mutex::new(None),
             audio_capture: Mutex::new(AudioCapture::new()),
             started_at: Mutex::new(None),
             last_session_secs: Mutex::new(0.0),
+            session_durations: Mutex::new(HashMap::new()),
             session_gen: Mutex::new(0),
             paste_epoch: Mutex::new(0),
+            error_epoch: Mutex::new(None),
             session_pcm: Mutex::new(None),
             session_fg: Mutex::new(None),
         }
@@ -207,6 +226,8 @@ fn spawn_mic_start(
                         return;
                     }
                     log::error!("Failed to start audio capture: {e}");
+                    let failed_token = *state.paste_epoch.lock().unwrap();
+                    *state.error_epoch.lock().unwrap() = Some(failed_token);
                     let _ = app_mic.emit("dictation-error", format!("Mic error: {e}"));
                     let _ = app_mic.emit("dictation-state", "error");
                     *state.session_pcm.lock().unwrap() = None;
@@ -286,6 +307,9 @@ pub fn start_dictation(app: &tauri::AppHandle) {
         *epoch
     };
     *state.started_at.lock().unwrap() = Some(Instant::now());
+    // A fatal error from an older session must not linger and suppress this
+    // new session's own idle transitions.
+    *state.error_epoch.lock().unwrap() = None;
     // Snapshot focus now — enhance/history must not use a later app switch.
     *state.session_fg.lock().unwrap() = context::get_foreground_app();
     {
@@ -417,6 +441,10 @@ pub fn start_dictation(app: &tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         if let Err(e) = deepgram::stream_audio(config, audio_rx, transcript_tx, stop_rx).await {
             log::error!("Deepgram stream error: {e}");
+            let current = app_for_stt.state::<PipelineState>();
+            if *current.paste_epoch.lock().unwrap() == paste_token {
+                *current.error_epoch.lock().unwrap() = Some(paste_token);
+            }
             let _ = app_for_stt.emit("dictation-error", format!("STT error: {e}"));
             let _ = app_for_stt.emit("dictation-state", "error");
         }
@@ -494,12 +522,18 @@ pub fn start_dictation(app: &tauri::AppHandle) {
         }
 
         // Bill wall-clock recording time even if this session produced no text.
+        // Prefer this session's own recorded duration (keyed by its paste_token)
+        // over the shared `last_session_secs` — a newer session that started
+        // while this one was still enhancing would otherwise overwrite that
+        // shared value and this session would bill the *newer* one's length.
         let duration_secs = {
-            let secs = *app_handle
-                .state::<PipelineState>()
-                .last_session_secs
+            let state = app_handle.state::<PipelineState>();
+            let own = state
+                .session_durations
                 .lock()
-                .unwrap();
+                .unwrap()
+                .remove(&paste_token);
+            let secs = own.unwrap_or_else(|| *state.last_session_secs.lock().unwrap());
             if secs <= 0.0 {
                 0
             } else {
@@ -515,8 +549,16 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                 let state = app_handle.state::<PipelineState>();
                 *state.session_pcm.lock().unwrap() = None;
             }
-            hide_overlay_if_current(&app_handle, paste_token);
-            emit_state_if_current(&app_handle, paste_token, "idle");
+            // A fatal dictation-error for this same session already told the
+            // user what happened (e.g. Deepgram unreachable) — don't let this
+            // empty-transcript idle transition flash it back to idle a moment
+            // later, which made the error message vanish almost instantly.
+            let had_error = *app_handle.state::<PipelineState>().error_epoch.lock().unwrap()
+                == Some(paste_token);
+            if !had_error {
+                hide_overlay_if_current(&app_handle, paste_token);
+                emit_state_if_current(&app_handle, paste_token, "idle");
+            }
             return;
         }
 
@@ -546,14 +588,47 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                 return;
             }
             let epoch_alive = || paste_still_current(&app_handle, paste_token);
+            let target_valid = command_target_valid(&pipeline_state, &fg);
             match cmd_result {
                 commands::CommandResult::ScratchThat => {
-                    let last = pipeline_state.last_insertion.lock().unwrap();
-                    if let Some(ins) = last.as_ref() {
-                        let _ = inject::undo_insertion(ins);
+                    if !target_valid {
+                        log::info!(
+                            "Ignoring \"scratch that\" — no recent paste in this app (paste={paste_token})"
+                        );
+                    } else {
+                        let ins = pipeline_state.last_insertion.lock().unwrap().take();
+                        if let Some(ins) = ins {
+                            let _ = inject::undo_insertion(&ins);
+                        }
+                        // Consumed — a second "scratch that" must not re-delete
+                        // characters that are already gone.
+                        *pipeline_state.last_insertion_app.lock().unwrap() = None;
                     }
                 }
                 commands::CommandResult::Rewrite(instruction) => {
+                    if !target_valid {
+                        // No fresh, same-app paste to rewrite — this almost
+                        // certainly wasn't meant as a "make it formal"-style
+                        // command at all (e.g. "Make it to the meeting by 5").
+                        // Fall back to typing what was actually said instead
+                        // of silently discarding it.
+                        log::info!(
+                            "No recent paste to rewrite — pasting utterance as plain text (paste={paste_token})"
+                        );
+                        match inject::inject_text_if(&text, epoch_alive) {
+                            Ok(ins) => {
+                                *pipeline_state.last_insertion.lock().unwrap() = Some(ins);
+                                *pipeline_state.last_insertion_app.lock().unwrap() =
+                                    fg.as_ref().map(|a| a.exe.clone());
+                            }
+                            Err(e) if e.to_string().contains("cancelled") => {
+                                log::info!(
+                                    "Fallback inject cancelled (stale paste={paste_token})"
+                                );
+                            }
+                            Err(e) => log::warn!("Fallback inject failed: {e}"),
+                        }
+                    } else {
                     let old_text = {
                         let last = pipeline_state.last_insertion.lock().unwrap();
                         last.as_ref().map(|ins| (ins.text.clone(), ins.char_count))
@@ -578,6 +653,8 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                                     Ok(new_ins) => {
                                         *pipeline_state.last_insertion.lock().unwrap() =
                                             Some(new_ins);
+                                        *pipeline_state.last_insertion_app.lock().unwrap() =
+                                            fg.as_ref().map(|a| a.exe.clone());
                                     }
                                     Err(e) if e.to_string().contains("cancelled") => {
                                         log::info!(
@@ -602,11 +679,14 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                             }
                         }
                     }
+                    }
                 }
                 commands::CommandResult::InsertText(t) => {
                     match inject::inject_text_if(&t, epoch_alive) {
                         Ok(ins) => {
                             *pipeline_state.last_insertion.lock().unwrap() = Some(ins);
+                            *pipeline_state.last_insertion_app.lock().unwrap() =
+                                fg.as_ref().map(|a| a.exe.clone());
                         }
                         Err(e) if e.to_string().contains("cancelled") => {
                             log::info!(
@@ -771,6 +851,8 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                         );
                     }
                     *pipeline_state.last_insertion.lock().unwrap() = Some(ins);
+                    *pipeline_state.last_insertion_app.lock().unwrap() =
+                        fg.as_ref().map(|a| a.exe.clone());
                 }
                 Err(e) if e.to_string().contains("cancelled") => {
                     log::info!(
@@ -848,6 +930,26 @@ fn paste_still_current(app: &tauri::AppHandle, paste_token: u64) -> bool {
     *epoch == paste_token
 }
 
+/// "Scratch that" / rewrite commands must only ever act on a paste that is
+/// still fresh and in the same app it landed in — otherwise a stray "never
+/// mind" minutes later, or in a different window, deletes or rewrites text
+/// the speaker never meant to touch.
+fn command_target_valid(state: &PipelineState, fg: &Option<context::ForegroundApp>) -> bool {
+    let recent_enough = {
+        let last = state.last_insertion.lock().unwrap();
+        match last.as_ref() {
+            Some(ins) => ins.pasted_at.elapsed() <= COMMAND_TARGET_WINDOW,
+            None => false,
+        }
+    };
+    if !recent_enough {
+        return false;
+    }
+    let last_app = state.last_insertion_app.lock().unwrap().clone();
+    let current_app = fg.as_ref().map(|a| a.exe.clone());
+    matches!((last_app, current_app), (Some(a), Some(b)) if a == b)
+}
+
 /// Only the current paste epoch may drive overlay state — prevents a finishing
 /// session from flipping a newer listening UI to idle (hotkey "stuck" feel).
 fn emit_state_if_current(app: &tauri::AppHandle, paste_token: u64, state: &str) {
@@ -901,6 +1003,15 @@ pub fn stop_dictation(app: &tauri::AppHandle) {
         .unwrap_or(0.0);
     *state.started_at.lock().unwrap() = None;
     *state.last_session_secs.lock().unwrap() = elapsed_secs;
+    // Key this session's own duration by its paste_token so a newer session
+    // starting (and overwriting last_session_secs) before this one finishes
+    // processing still bills its own real length, not the newer session's.
+    let stop_paste_token = *state.paste_epoch.lock().unwrap();
+    state
+        .session_durations
+        .lock()
+        .unwrap()
+        .insert(stop_paste_token, elapsed_secs);
     let stop_gen = {
         let mut gen = state.session_gen.lock().unwrap();
         *gen = gen.wrapping_add(1);

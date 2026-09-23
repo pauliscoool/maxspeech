@@ -91,16 +91,23 @@ pub struct DeepgramConfig {
     pub keywords: Vec<String>,
 }
 
+/// Cap on keyterms sent to Deepgram (deduped, capped for URL size). Was 80,
+/// which — with ~60 built-in terms always reserved — left room for only
+/// ~17 of a user's own dictionary words (alphabetically, so most of a
+/// larger dictionary never reached Deepgram at all). Raised with headroom
+/// to spare: at ~20-25 bytes/term URL-encoded, 150 terms is still well
+/// under typical request-line limits.
+pub const MAX_KEYTERMS: usize = 150;
+
 /// Merge user dictionary terms with built-in keyterms (deduped, capped for URL size).
 /// User terms come first so personal names win; builtins always get reserved slots
 /// so a large dictionary cannot drop Git / TypeScript / CurseForge / etc.
 pub fn merge_keyterms(user: Vec<String>) -> Vec<String> {
-    const MAX: usize = 80;
     let mut out: Vec<String> = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
-    let builtin_n = BUILTIN_KEYTERMS.len().min(MAX);
-    let user_cap = MAX.saturating_sub(builtin_n);
+    let builtin_n = BUILTIN_KEYTERMS.len().min(MAX_KEYTERMS);
+    let user_cap = MAX_KEYTERMS.saturating_sub(builtin_n);
 
     for term in user {
         if out.len() >= user_cap {
@@ -116,7 +123,7 @@ pub fn merge_keyterms(user: Vec<String>) -> Vec<String> {
     }
 
     for term in BUILTIN_KEYTERMS {
-        if out.len() >= MAX {
+        if out.len() >= MAX_KEYTERMS {
             break;
         }
         let t = term.trim();
@@ -305,7 +312,7 @@ fn build_url(config: &DeepgramConfig) -> String {
     );
     // Nova-3 rejects legacy `keywords` (HTTP 400). Use `keyterm` instead.
     // Cap to keep the handshake URL reasonable (Nova-3 allows many; URL length is the limit).
-    for kw in config.keywords.iter().take(80) {
+    for kw in config.keywords.iter().take(MAX_KEYTERMS) {
         let term = kw.trim();
         if !term.is_empty() {
             url.push_str(&format!("&keyterm={}", urlenc(term)));
@@ -316,7 +323,7 @@ fn build_url(config: &DeepgramConfig) -> String {
         config.model,
         config.language,
         endpointing,
-        config.keywords.len().min(80)
+        config.keywords.len().min(MAX_KEYTERMS)
     );
     url
 }
@@ -620,13 +627,28 @@ mod tests {
 
     #[test]
     fn merge_keyterms_large_dictionary_still_keeps_builtins() {
-        let user: Vec<String> = (0..100).map(|i| format!("Name{i}")).collect();
+        let user: Vec<String> = (0..200).map(|i| format!("Name{i}")).collect();
         let merged = merge_keyterms(user);
-        assert!(merged.len() <= 80);
+        assert!(merged.len() <= MAX_KEYTERMS);
         let lower: Vec<String> = merged.iter().map(|s| s.to_lowercase()).collect();
         assert!(lower.iter().any(|s| s == "git"));
         assert!(lower.iter().any(|s| s == "curseforge"));
         assert!(lower.iter().any(|s| s == "name0"));
+    }
+
+    #[test]
+    fn merge_keyterms_raised_cap_keeps_far_more_user_words() {
+        // The old 80-term cap reserved ~60 for builtins, leaving room for
+        // only ~17 user dictionary words (alphabetically) — most of a
+        // real-sized dictionary never reached Deepgram at all.
+        let user: Vec<String> = (0..50).map(|i| format!("Name{i}")).collect();
+        let merged = merge_keyterms(user.clone());
+        for name in &user {
+            assert!(
+                merged.iter().any(|m| m.eq_ignore_ascii_case(name)),
+                "expected {name} to survive merge_keyterms, got {merged:?}"
+            );
+        }
     }
 
     #[test]

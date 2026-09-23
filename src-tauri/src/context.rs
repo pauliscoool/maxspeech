@@ -9,6 +9,7 @@ pub fn get_foreground_app() -> Option<ForegroundApp> {
     use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
     use windows::Win32::UI::WindowsAndMessaging::GetWindowTextW;
     use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
+    use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ};
     use windows::Win32::System::ProcessStatus::GetModuleFileNameExW;
 
@@ -28,6 +29,7 @@ pub fn get_foreground_app() -> Option<ForegroundApp> {
             if let Ok(process) = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, pid) {
                 let mut exe_buf = [0u16; 512];
                 let len = GetModuleFileNameExW(Some(process), None, &mut exe_buf);
+                let _ = CloseHandle(process);
                 let full_path = String::from_utf16_lossy(&exe_buf[..len as usize]);
                 full_path
                     .rsplit('\\')
