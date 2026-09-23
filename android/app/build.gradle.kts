@@ -13,7 +13,7 @@ android {
         applicationId = "com.maxspeech.android"
         minSdk = 26
         targetSdk = 35
-        versionCode = 62
+        versionCode = 64
         versionName = "0.3-beta"
         vectorDrawables.useSupportLibrary = true
     }
@@ -52,6 +52,13 @@ android {
         buildConfig = true
     }
 
+    // Dictation prompt text shared with the desktop app (repo-root shared/).
+    sourceSets {
+        getByName("main") {
+            assets.srcDir("../../shared")
+        }
+    }
+
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
@@ -84,6 +91,7 @@ dependencies {
     implementation("io.coil-kt:coil-compose:2.7.0")
     implementation("io.coil-kt:coil-svg:2.7.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    testImplementation("junit:junit:4.13.2")
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

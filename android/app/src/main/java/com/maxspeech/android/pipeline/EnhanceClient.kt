@@ -1,6 +1,8 @@
 package com.maxspeech.android.pipeline
 
+import android.content.res.AssetManager
 import com.maxspeech.android.data.EnhanceSpeed
+import com.maxspeech.android.data.PlanCalculator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -11,7 +13,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
-class EnhanceClient {
+class EnhanceClient(private val assets: AssetManager) {
     private val http = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(25, TimeUnit.SECONDS)
@@ -23,6 +25,7 @@ class EnhanceClient {
         apiKey: String,
         speed: EnhanceSpeed,
         multilingual: Boolean,
+        dictTerms: List<String> = emptyList(),
     ): String = withContext(Dispatchers.IO) {
         val model = if (speed == EnhanceSpeed.Ultra) "gpt-4o" else "gpt-4o-mini"
         val temp = when (speed) {
@@ -35,6 +38,33 @@ class EnhanceClient {
             EnhanceSpeed.Thinking -> 15_000L
             EnhanceSpeed.Ultra -> 20_000L
         }
+        complete(
+            system = systemPrompt(text, tone, multilingual, speed) + dictionaryBlock(dictTerms),
+            user = text,
+            apiKey = apiKey,
+            model = model,
+            temp = temp,
+            timeoutMs = timeoutMs,
+        )
+    }
+
+    /** Desktop `rewrite_with_llm`: apply a spoken instruction ("formal", "shorter") to [text]. */
+    suspend fun rewrite(text: String, instruction: String, apiKey: String): String =
+        withContext(Dispatchers.IO) {
+            val head = "You are a Grammarly-like dictation assistant. Rewrite the text per the instruction. " +
+                "Instruction: $instruction. Only return the rewritten text, nothing else."
+            complete(rulesBlock(head, false), text, apiKey, "gpt-4o-mini", 0.1, 15_000L)
+        }
+
+    private fun complete(
+        system: String,
+        user: String,
+        apiKey: String,
+        model: String,
+        temp: Double,
+        timeoutMs: Long,
+    ): String {
+        val text = user
         val body = JSONObject()
             .put("model", model)
             .put("temperature", temp)
@@ -42,8 +72,8 @@ class EnhanceClient {
             .put(
                 "messages",
                 JSONArray()
-                    .put(JSONObject().put("role", "system").put("content", systemPrompt(tone, multilingual, speed)))
-                    .put(JSONObject().put("role", "user").put("content", text)),
+                    .put(JSONObject().put("role", "system").put("content", system))
+                    .put(JSONObject().put("role", "user").put("content", user)),
             )
             .toString()
         val client = http.newBuilder().readTimeout(timeoutMs, TimeUnit.MILLISECONDS).build()
@@ -52,7 +82,7 @@ class EnhanceClient {
             .header("Authorization", "Bearer $apiKey")
             .post(body.toRequestBody(JSON))
             .build()
-        client.newCall(req).execute().use { resp ->
+        return client.newCall(req).execute().use { resp ->
             val raw = resp.body?.string().orEmpty()
             if (!resp.isSuccessful) {
                 val err = runCatching {
@@ -71,48 +101,58 @@ class EnhanceClient {
         }
     }
 
-    private fun systemPrompt(tone: String, multilingual: Boolean, speed: EnhanceSpeed): String {
-        val base = when (tone) {
-            "casual" ->
-                "You are a Grammarly-like dictation assistant. Rewrite in a casual, terse chat style. Prefer lowercase; skip a trailing period. Keep it brief. Still fix grammar so it reads cleanly as a message."
-            "formal" ->
-                "You are a Grammarly-like dictation assistant. Rewrite in a professional, formal style suitable for email: proper capitalization, punctuation, and complete sentences."
-            "code" ->
-                "You are a Grammarly-like dictation assistant for a programmer. Clean up grammar and use precise technical terms."
-            "prose" ->
-                "You are a Grammarly-like dictation assistant. Rewrite as clean prose with proper paragraphs, punctuation, and grammar."
-            else ->
-                "You are a Grammarly-like dictation assistant. Clean up grammar, punctuation, and clarity while keeping the original meaning and style."
+    /** Mirrors desktop tone.rs prompt selection (long → cleanup for default → tone). */
+    private fun systemPrompt(text: String, tone: String, multilingual: Boolean, speed: EnhanceSpeed): String {
+        val long = PlanCalculator.wordCount(text) >= 40
+        val core = when {
+            long -> rulesBlock(toneSection(tone).ifBlank { toneSection("default") }, multilingual) +
+                "\n\n" + toneSection("long")
+            tone == "default" -> rulesBlock(toneSection("cleanup"), multilingual) +
+                "\n\nOnly return the cleaned text, nothing else."
+            else -> rulesBlock(toneSection(tone).ifBlank { toneSection("default") }, multilingual)
         }
         val extra = when (speed) {
-            EnhanceSpeed.Fast -> " Keep edits light, but still fix awkward phrasing and stray commas."
-            EnhanceSpeed.Ultra -> " Thorough pass: restore sentence boundaries, fix run-ons, do not invent facts."
+            EnhanceSpeed.Fast -> "\n\nKeep edits light, but still fix awkward phrasing and stray commas."
+            EnhanceSpeed.Ultra -> "\n\nThorough pass: restore sentence boundaries, fix run-ons, do not invent facts."
             EnhanceSpeed.Thinking -> ""
         }
-        val multi = if (multilingual) {
-            " Preserve every language and script. Do not translate or transliterate."
-        } else {
-            ""
-        }
-        val numberRules =
-            " Numbers: ASR turns spoken numbers into digits. Spell out single-digit amounts in" +
-                " normal prose ('I have 2 apples'→'I have two apples', 'Covenant Core 1'→'Covenant Core one')." +
-                " Keep digits when convenient — versions, decimals, codes, times, rooms, pages, quantities" +
-                " with units ('Opus 5.5', 'version 2', 'meet at 4pm', 'room 2', 'page 3', '10%', '101', '2024')." +
-                " Fix digit homophones in prose ('thanks 4 the'→'thanks for the', 'need 2 go'→'need to go')."
-        val naturalRules =
-            " The input is raw speech-to-text, so it may contain mishearings, filler, and odd punctuation." +
-                " Work out what the speaker actually meant and write it the way they would naturally type it." +
-                " Rephrase anything awkward, clunky, or robotic so it sounds smooth and human, but keep their" +
-                " voice, slang, and meaning — never make it stiffer or add ideas they didn't say." +
-                " Drop filler (um, uh, like, you know, I mean) unless it carries meaning." +
-                " Fix obvious mishearings from context (e.g. 'oh so cute' said warmly → 'aww so cute')." +
-                " Casual words like bro, dude, man, bruh, fam, lol, bestie are part of the sentence — do NOT" +
-                " put a comma after or around them ('bro that's crazy', 'what's up bro', not 'bro, that's crazy')." +
-                " Only use commas where a natural pause would be typed; never add commas the speaker wouldn't." +
-                " Never swap clean words for profanity ('what the flip' stays 'what the flip')."
-        return "$base$extra$multi$numberRules$naturalRules Fix spoken self-corrections (I meant X). Return ONLY the cleaned text."
+        return core + extra
     }
+
+    /** Desktop `dictionary_prompt_block`. */
+    private fun dictionaryBlock(terms: List<String>): String {
+        val cleaned = terms.map { it.trim() }.filter { it.isNotEmpty() }.take(60)
+        if (cleaned.isEmpty()) return ""
+        return "\n\nPreferred vocabulary (spell and capitalize exactly when the user says these; " +
+            "restore Name's possessives): ${cleaned.joinToString(", ")}."
+    }
+
+    private fun rulesBlock(head: String, multilingual: Boolean): String {
+        val s = "$head\n\n${asset("grammar_rules")}\n\n${asset("natural_rules")}\n\n" +
+            "${asset("asr_correction_rules")}\n\n${asset("self_correction_rules")}"
+        return if (multilingual) "$s\n\n${asset("multilingual_rules")}" else s
+    }
+
+    private fun toneSection(name: String): String {
+        val header = "[$name]"
+        var inside = false
+        val out = StringBuilder()
+        for (line in asset("tones").lines()) {
+            val t = line.trim()
+            if (t.startsWith("[") && t.endsWith("]")) {
+                inside = t == header
+                continue
+            }
+            if (inside) out.appendLine(line)
+        }
+        return out.toString().trim()
+    }
+
+    private fun asset(name: String): String = cache.getOrPut(name) {
+        assets.open("dictation/$name.txt").bufferedReader().use { it.readText() }
+    }
+
+    private val cache = HashMap<String, String>()
 
     companion object {
         private val JSON = "application/json; charset=utf-8".toMediaType()

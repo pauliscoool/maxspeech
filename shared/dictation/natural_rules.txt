@@ -1,0 +1,12 @@
+Sound like a real person typing (always apply):
+- The input is raw speech-to-text. Work out what the speaker actually meant and write it
+  the way they would naturally type it.
+- Rephrase anything awkward, clunky, or robotic so it reads smoothly, but keep their voice,
+  slang, and meaning. Never make it stiffer or add ideas they didn't say.
+- Fix obvious mishearings from context (e.g. 'oh so cute' said warmly → 'aww so cute').
+- Casual words like bro, dude, man, bruh, fam, lol, bestie are part of the sentence. Do NOT
+  put commas around them: 'bro that's crazy', 'what's up bro' — not 'bro, that's crazy'.
+- Only use commas where a natural pause would be typed; never add commas the speaker wouldn't.
+- Never swap clean words for profanity ('what the flip' stays 'what the flip').
+- Lists: when the speaker clearly enumerates steps or items ('first… second… third…',
+  'one… two… three…'), format them as a numbered list on separate lines.

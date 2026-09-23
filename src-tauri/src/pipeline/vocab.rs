@@ -191,72 +191,28 @@ fn apply_learned_possessives(text: &str, names: &[String]) -> String {
     result
 }
 
+/// Shared with Android via shared/dictation/asr_phrase_fixes.txt.
+const PHRASE_FIXES_TXT: &str = include_str!("../../../shared/dictation/asr_phrase_fixes.txt");
+
+fn phrase_fixes() -> Vec<(&'static str, &'static str)> {
+    PHRASE_FIXES_TXT
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter_map(|l| l.split_once("=>"))
+        .map(|(from, to)| (from.trim(), to.trim()))
+        .collect()
+}
+
 /// Deterministic fixes for frequent English ASR near-homophones (esp. Git ↔ get).
 fn fix_common_asr(text: &str) -> String {
     let mut result = text.to_string();
-
-    // Phrase-level first (longest matches).
-    for (from, to) in [
-        ("get hub", "GitHub"),
-        ("git hub", "GitHub"),
-        ("place it to get", "place it to Git"),
-        ("placed it to get", "placed it to Git"),
-        ("push it to get", "push it to Git"),
-        ("pushed it to get", "pushed it to Git"),
-        ("push to get", "push to Git"),
-        ("pushed to get", "pushed to Git"),
-        ("pull from get", "pull from Git"),
-        ("pulled from get", "pulled from Git"),
-        ("commit to get", "commit to Git"),
-        ("committed to get", "committed to Git"),
-        ("clone from get", "clone from Git"),
-        ("cloned from get", "cloned from Git"),
-        ("merge into get", "merge into Git"),
-        ("merged into get", "merged into Git"),
-        ("branch on get", "branch on Git"),
-        ("repo on get", "repo on Git"),
-        ("repository on get", "repository on Git"),
-        ("type script", "TypeScript"),
-        ("java script", "JavaScript"),
-        ("node js", "Node.js"),
-        ("next js", "Next.js"),
-        ("postgres ql", "PostgreSQL"),
-        ("post grass", "Postgres"),
-        ("verse cell", "Vercel"),
-        ("super base", "Supabase"),
-        ("cloud flare", "Cloudflare"),
-        ("clout flare", "Cloudflare"),
-        ("clout storage", "cloud storage"),
-        ("on the clout", "on the cloud"),
-        ("deep grammar", "Deepgram"),
-        ("deep gram", "Deepgram"),
-        ("chat gpt", "ChatGPT"),
-        ("chat gbt", "ChatGPT"),
-        ("open ai", "OpenAI"),
-        ("git lab", "GitLab"),
-        ("vs code", "VS Code"),
-        ("curse forge", "CurseForge"),
-        ("covenant court", "Covenant Core"),
-        ("covenant corner", "Covenant Core"),
-        ("covenant core", "Covenant Core"),
-        ("covenantcore", "Covenant Core"),
-        ("tale scale", "Tailscale"),
-        ("tale-scale", "Tailscale"),
-        ("tail scale", "Tailscale"),
-        ("tail-scale", "Tailscale"),
-        ("tailscale", "Tailscale"),
-        ("graph ql", "GraphQL"),
-        ("mongo db", "MongoDB"),
-        ("a ws", "AWS"),
-    ] {
+    for (from, to) in phrase_fixes() {
         result = replace_phrase_ci(&result, from, to);
     }
-
     // Contextual bare "get" → "Git" after VC verbs / prepositions.
-    result = fix_get_as_git(&result);
-    result
+    fix_get_as_git(&result)
 }
-
 fn fix_get_as_git(text: &str) -> String {
     // Match "... (to|into|from|on|with) get ..." when the preceding clause
     // looks like version-control speech (place/push/pull/commit/…).

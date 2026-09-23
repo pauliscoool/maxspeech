@@ -1,0 +1,54 @@
+CRITICAL — speech-to-text errors (high priority):
+The input is an ASR transcript and often contains wrong near-homophones.
+Using surrounding context, fix obvious mishears to the word the speaker clearly meant.
+Prefer the reading that makes the sentence sensible. Examples:
+- Git / version control (VERY common): 'get'→'Git' when talking about repos,
+  push/pull/commit/clone/merge/place/branch.
+  'Did you place it to get?' → 'Did you place it to Git?'
+  'push it to get' → 'push it to Git'; 'get hub' → 'GitHub'
+- tech/cloud: 'clout'→'cloud', 'a WS'→'AWS', 'verse cell'→'Vercel',
+  'type script'→'TypeScript', 'post grass'→'Postgres'
+- product names: Deepgram, Claude, ChatGPT, Notion, Slack, CurseForge, Covenant Core, Tailscale
+  (do NOT rewrite 'curse forge' / 'CurseForge' to 'Cursor' — different product)
+  Cursor only when clearly the editor/IDE, not gaming/modding context
+  (do NOT assume the speaker means the MaxSpeech app itself unless truly unambiguous —
+  names like 'Maximus Dev' or similar-sounding phrases are NOT the app name)
+  'Covenant court' / 'Covenant Court' → 'Covenant Core';
+  'Covenant corner' / 'Covenant Corner' → 'Covenant Core'
+  (do NOT rewrite to 'Covenant Corner' — the product is Covenant Core)
+  'tail scale' / 'tailscale' / 'tale scale' → 'Tailscale'
+  (do NOT rewrite unrelated 'tail' or 'scale')
+- common: 'there'/'their'/'they're', 'to'/'too'/'two', 'its'/'it's' by grammar
+- numbers: ASR (numerals=true) turns spoken words into digits.
+  Spell out single-digit amounts in prose/names ('Covenant Core 1'→'Covenant Core one',
+  'I have 2 apples'→'I have two apples'). Keep multi-digit numbers as digits
+  (101, 2024, phone/ID strings). Keep digits for clear codes/times/quantities
+  ('meet at 4pm', 'room 2', 'version 2', 'page 3').
+  Also fix digit homophones ('for'→'4', 'to'→'2', 'won'→'1') when context is not numeric.
+- percents (VERY common): '10 times' / 'ten times' → '10%' when the speaker meant
+  a percentage (at/by/of/about/only/discount/rate/tax/tip), NOT repetition
+  ('do it 10 times') or comparison ('10 times faster').
+  'ten percent' / '10 percent' → '10%'.
+- contractions: ASR drops apostrophes — dont→don't, doesnt→doesn't, im→I'm,
+  ive→I've, thats→that's, youre→you're, theyre→they're, wont→won't, cant→can't.
+  'lets go/see/try' → 'let's …'. 'id like' → 'I'd like' (not user id).
+- numeral homophones (numerals=true): 'thanks 4 the'→'thanks for the',
+  'need 2 go'→'need to go', '2 much'→'too much', '1 of'→'one of', 'no 1'→'no one'.
+  Single digits in titles/names/prose → words ('Covenant Core 1'→'Covenant Core one').
+  Keep real codes/times and ALL multi-digit numbers as digits
+  ('room 2', 'meet at 4pm', 'version 2', 'call 555-1212', 'issue 1042').
+- split product names: 'type script'→TypeScript, 'java script'→JavaScript,
+  'super base'→Supabase, 'verse cell'→Vercel, 'cloud flare'→Cloudflare,
+  'chat gpt'→ChatGPT, 'open ai'→OpenAI, 'vs code'→VS Code,
+  'curse forge'→CurseForge (not Cursor), 'post grass'→Postgres,
+  'covenant court'/'covenant corner'/'covenant core'→Covenant Core,
+  'tail scale'/'tale scale'/'tailscale'→Tailscale.
+- 'could of'/'would of'/'should of' → could've/would've/should've
+  (unless 'of the/a/course').
+- comparatives: 'better then' / 'more then' / 'rather then' → than.
+- 'to much' / 'to many' / 'to late' → too.
+- 'its a' / 'its not' / 'its been' → it's; 'your going' / 'your welcome' → you're.
+- possessives: if a known name appears as Names, restore Name's.
+Do NOT invent new content. Only swap clearly wrong ASR tokens.
+Do NOT change ordinary English 'get' ('I want to get coffee').
+If both readings are plausible, keep the transcript as-is.

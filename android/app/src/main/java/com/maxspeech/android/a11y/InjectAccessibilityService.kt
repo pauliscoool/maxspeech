@@ -143,6 +143,24 @@ class InjectAccessibilityService : AccessibilityService() {
     }.getOrDefault(false)
 
     /**
+     * Replace the last occurrence of [old] (a previous paste) with [new] in the focused
+     * field. Used by "scratch that" / "make it formal". Never touches the clipboard.
+     */
+    fun replaceLast(old: String, new: String): Boolean = runCatching {
+        val focused = findBestEditable() ?: return false
+        val existing = realText(focused)
+        val needle = old.trim()
+        if (needle.isEmpty()) return false
+        val at = existing.lastIndexOf(needle)
+        if (at < 0) return false
+        var end = at + needle.length
+        // Swallow the trailing space we added after the paste so undo leaves no gap.
+        if (new.isEmpty() && end < existing.length && existing[end] == ' ') end++
+        val next = existing.substring(0, at) + new + existing.substring(end)
+        setText(focused, next)
+    }.getOrDefault(false)
+
+    /**
      * Many custom composers (Instagram's DM box included) report the placeholder
      * through getText() instead of a real hint, so treat text as empty whenever
      * the node says it's only showing hint text — otherwise dictation gets
@@ -374,6 +392,9 @@ object TextInjector {
     }
 
     fun foregroundPackage(): String? = InjectAccessibilityService.lastPackage
+
+    fun replaceLast(old: String, new: String): Boolean =
+        InjectAccessibilityService.instance?.replaceLast(old, new) ?: false
 
     fun insert(context: Context, text: String): Boolean {
         val svc = InjectAccessibilityService.instance

@@ -72,9 +72,43 @@ class AuthRepository(
             token,
         )
         persist(profile.copy(accessToken = token, local = false))
+        saveRefreshToken(json.optString("refresh_token"))
         settings.setLocalMode(false)
         profile.copy(accessToken = token)
     }
+
+    /**
+     * A valid access token for Supabase REST calls. Access tokens last ~1 hour, so refresh
+     * shortly before expiry. Null for local mode or accounts signed in before refresh tokens
+     * were stored (they need to sign in once more).
+     */
+    suspend fun freshToken(): String? = withContext(Dispatchers.IO) {
+        val cur = current() ?: return@withContext null
+        if (cur.local) return@withContext null
+        val token = cur.accessToken
+        if (!token.isNullOrBlank() && !expiresSoon(token)) return@withContext token
+        val refresh = context.authStore.data.first()[Keys.refresh]
+        if (refresh.isNullOrBlank()) return@withContext null
+        runCatching {
+            val body = JSONObject().put("refresh_token", refresh).toString()
+            val json = execute(authRequest("auth/v1/token?grant_type=refresh_token", body))
+            val next = json.optString("access_token").ifBlank { null } ?: return@runCatching null
+            persist(cur.copy(accessToken = next))
+            saveRefreshToken(json.optString("refresh_token"))
+            next
+        }.getOrNull()
+    }
+
+    private suspend fun saveRefreshToken(token: String) {
+        if (token.isBlank()) return
+        context.authStore.edit { it[Keys.refresh] = token }
+    }
+
+    private fun expiresSoon(jwt: String): Boolean = runCatching {
+        val payload = jwt.split('.')[1]
+        val json = JSONObject(String(android.util.Base64.decode(payload, android.util.Base64.URL_SAFE), Charsets.UTF_8))
+        json.getLong("exp") * 1000 < System.currentTimeMillis() + 60_000
+    }.getOrDefault(true)
 
     suspend fun signUp(email: String, password: String, username: String): Pair<AuthUser, Boolean> =
         withContext(Dispatchers.IO) {
@@ -100,6 +134,7 @@ class AuthRepository(
                     token,
                 )
                 persist(profile.copy(accessToken = token, local = false))
+                saveRefreshToken(json.optString("refresh_token"))
                 settings.setLocalMode(false)
                 profile.copy(accessToken = token)
             } else {
@@ -128,9 +163,10 @@ class AuthRepository(
     suspend fun refreshProfile() {
         val cur = current() ?: return
         if (cur.local || cur.accessToken.isNullOrBlank()) return
+        val token = freshToken() ?: cur.accessToken
         runCatching {
-            val profile = ensureProfile(cur.id, cur.email, cur.username, cur.accessToken)
-            persist(profile.copy(accessToken = cur.accessToken, local = false))
+            val profile = withContext(Dispatchers.IO) { ensureProfile(cur.id, cur.email, cur.username, token) }
+            persist(profile.copy(accessToken = token, local = false))
         }
     }
 
@@ -249,6 +285,7 @@ class AuthRepository(
         val tier = stringPreferencesKey("tier")
         val local = stringPreferencesKey("local")
         val token = stringPreferencesKey("token")
+        val refresh = stringPreferencesKey("refresh_token")
     }
 
     companion object {

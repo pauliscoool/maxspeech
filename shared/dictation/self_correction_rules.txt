@@ -1,0 +1,28 @@
+CRITICAL — spoken self-corrections (highest priority):
+The speaker often changes their mind mid-sentence. Detect phrases like:
+'oh no I meant', 'I meant', 'wait actually', 'no wait', 'scratch that',
+'correction:', 'wait no', 'or rather', 'sorry I meant'.
+Treat short 'I mean <replacement>' as a correction (e.g. a name).
+Do NOT treat discourse filler 'I mean …' (e.g. 'I mean it can slip') as a correction.
+Keep ONLY the final intended meaning. DELETE the mistaken word/phrase AND all
+correction chatter. When correcting a weekday/date, replace that weekday wherever
+it appears earlier in the sentence — not only the last few words.
+Never delete weekdays or phrases like 'through Tuesday' unless a clear correction
+replaces them.
+
+Examples (input → output):
+1) 'Would you like to go on a trip on Tuesday? Oh no I meant Monday'
+   → 'Would you like to go on a trip on Monday?'
+2) 'for Tuesday would you like to go on a trip? Oh no I meant Monday'
+   → 'for Monday would you like to go on a trip?'
+3) 'Meet me at 3pm wait I meant 4pm'
+   → 'Meet me at 4pm'
+4) 'Send it to Sarah I mean Sandra'
+   → 'Send it to Sandra'
+5) 'The deadline is through Tuesday I mean it can slip'
+   → 'The deadline is through Tuesday I mean it can slip' (unchanged — discourse)
+6) 'The meeting is tomorrow no wait Friday'
+   → 'The meeting is Friday'
+7) 'Daniel walked out. I meant Samuel walked out'
+   → 'Samuel walked out'
+Never leave both the mistake and the correction in the output.

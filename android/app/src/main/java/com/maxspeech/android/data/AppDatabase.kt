@@ -9,6 +9,8 @@ import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.RoomDatabase
 import androidx.room.Update
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 
 @Entity(tableName = "history")
@@ -33,6 +35,13 @@ data class DictionaryEntity(
 data class SnippetEntity(
     @PrimaryKey val trigger: String,
     val expansion: String,
+)
+
+/** Learned "heard → meant" pairs (desktop `substitutions` table). */
+@Entity(tableName = "substitutions")
+data class SubstitutionEntity(
+    @PrimaryKey val fromText: String,
+    val toText: String,
 )
 
 @Entity(tableName = "app_profiles")
@@ -115,6 +124,15 @@ interface SnippetDao {
 }
 
 @Dao
+interface SubstitutionDao {
+    @Query("SELECT * FROM substitutions")
+    fun observe(): Flow<List<SubstitutionEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(row: SubstitutionEntity)
+}
+
+@Dao
 interface ProfileDao {
     @Query("SELECT * FROM app_profiles ORDER BY id")
     fun observe(): Flow<List<AppProfileEntity>>
@@ -151,8 +169,9 @@ interface UsageDao {
         SnippetEntity::class,
         AppProfileEntity::class,
         UsageEntity::class,
+        SubstitutionEntity::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -161,4 +180,17 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun snippetDao(): SnippetDao
     abstract fun profileDao(): ProfileDao
     abstract fun usageDao(): UsageDao
+    abstract fun substitutionDao(): SubstitutionDao
+
+    companion object {
+        /** Additive only — without it the destructive fallback would wipe history/dictionary. */
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `substitutions` " +
+                        "(`fromText` TEXT NOT NULL, `toText` TEXT NOT NULL, PRIMARY KEY(`fromText`))",
+                )
+            }
+        }
+    }
 }

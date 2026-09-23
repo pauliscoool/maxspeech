@@ -6,8 +6,12 @@ import java.nio.ByteOrder
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import okhttp3.OkHttpClient
@@ -85,6 +89,37 @@ class DeepgramClient {
                 closed.set(true)
             }
         })
+    }
+
+    /** Fallback when live streaming returned nothing: transcribe the saved 16 kHz mono PCM in one request. */
+    suspend fun transcribeBatch(
+        pcm: ByteArray,
+        keys: List<String>,
+        language: String,
+        keyterms: List<String>,
+    ): String = withContext(Dispatchers.IO) {
+        val key = keys.firstOrNull().orEmpty()
+        if (key.isBlank() || pcm.isEmpty()) return@withContext ""
+        val sb = StringBuilder(
+            "https://api.deepgram.com/v1/listen?model=nova-3&language=$language&punctuate=true&smart_format=true&numerals=true&encoding=linear16&sample_rate=16000&channels=1",
+        )
+        for (term in keyterms.take(Vocab.MAX_KEYTERMS)) {
+            val t = term.trim()
+            if (t.isNotEmpty()) sb.append("&keyterm=").append(URLEncoder.encode(t, "UTF-8"))
+        }
+        val req = Request.Builder()
+            .url(sb.toString())
+            .header("Authorization", "Token $key")
+            .post(pcm.toRequestBody("application/octet-stream".toMediaType()))
+            .build()
+        http.newBuilder().readTimeout(20, TimeUnit.SECONDS).build().newCall(req).execute().use { resp ->
+            val body = resp.body?.string().orEmpty()
+            if (!resp.isSuccessful) return@use ""
+            runCatching {
+                JSONObject(body).getJSONObject("results").getJSONArray("channels").getJSONObject(0)
+                    .getJSONArray("alternatives").getJSONObject(0).optString("transcript").trim()
+            }.getOrDefault("")
+        }
     }
 
     suspend fun awaitOpen() {
@@ -182,11 +217,12 @@ class DeepgramClient {
     }
 
     private fun buildUrl(language: String, keyterms: List<String>): String {
-        val endpointing = if (language == "multi") 400 else 750
+        // Same as desktop stt/deepgram.rs build_url.
+        val endpointing = if (language == "multi") 350 else 650
         val sb = StringBuilder(
             "wss://api.deepgram.com/v1/listen?model=nova-3&language=$language&punctuate=true&interim_results=true&smart_format=true&numerals=true&endpointing=$endpointing&encoding=linear16&sample_rate=16000&channels=1",
         )
-        for (term in keyterms.take(80)) {
+        for (term in keyterms.take(Vocab.MAX_KEYTERMS)) {
             val t = term.trim()
             if (t.isNotEmpty()) {
                 sb.append("&keyterm=").append(URLEncoder.encode(t, "UTF-8"))
@@ -199,14 +235,5 @@ class DeepgramClient {
         /** ~2s of 50ms frames while the WebSocket handshake completes. */
         private const val MAX_PENDING = 40
         private const val OPEN_WAIT_MS = 3_000L
-
-        val BUILTIN_KEYTERMS = listOf(
-            "MaxSpeech", "Maximus Dev", "Maximus", "Supabase", "GitHub", "Vercel",
-            "TypeScript", "JavaScript", "OpenAI", "ChatGPT", "Claude", "Cursor",
-            "Slack", "Discord", "Notion", "Android", "WhatsApp", "Gmail", "Outlook", "Teams",
-            // Clean-language and interjection bias so "flip"/"aww" aren't heard as cuss words or "oh".
-            "what the flip", "flip", "freaking", "heck", "dang", "shoot",
-            "aww", "awww", "so cute", "aw so cute",
-        )
     }
 }

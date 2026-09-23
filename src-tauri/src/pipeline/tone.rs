@@ -36,150 +36,50 @@ pub fn get_tone_for_app(app: &ForegroundApp, store: &Store) -> Option<String> {
     best.map(|(_, tone)| tone.to_string())
 }
 
-const SELF_CORRECTION_RULES: &str = "\
-CRITICAL — spoken self-corrections (highest priority): \
-The speaker often changes their mind mid-sentence. Detect phrases like: \
-'oh no I meant', 'I meant', 'wait actually', 'no wait', 'scratch that', \
-'correction:', 'wait no', 'or rather', 'sorry I meant'. \
-Treat short 'I mean <replacement>' as a correction (e.g. a name). \
-Do NOT treat discourse filler 'I mean …' (e.g. 'I mean it can slip') as a correction. \
-Keep ONLY the final intended meaning. DELETE the mistaken word/phrase AND all \
-correction chatter. When correcting a weekday/date, replace that weekday wherever \
-it appears earlier in the sentence — not only the last few words. \
-Never delete weekdays or phrases like 'through Tuesday' unless a clear correction \
-replaces them. \
-\
-Examples (input → output): \
-1) 'Would you like to go on a trip on Tuesday? Oh no I meant Monday' \
-   → 'Would you like to go on a trip on Monday?' \
-2) 'for Tuesday would you like to go on a trip? Oh no I meant Monday' \
-   → 'for Monday would you like to go on a trip?' \
-3) 'Meet me at 3pm wait I meant 4pm' \
-   → 'Meet me at 4pm' \
-4) 'Send it to Sarah I mean Sandra' \
-   → 'Send it to Sandra' \
-5) 'The deadline is through Tuesday I mean it can slip' \
-   → 'The deadline is through Tuesday I mean it can slip' (unchanged — discourse) \
-6) 'The meeting is tomorrow no wait Friday' \
-   → 'The meeting is Friday' \
-7) 'Daniel walked out. I meant Samuel walked out' \
-   → 'Samuel walked out' \
-Never leave both the mistake and the correction in the output.";
+// Prompt text lives in shared/dictation/ so desktop and Android load identical rules.
+const SELF_CORRECTION_RULES: &str = include_str!("../../../shared/dictation/self_correction_rules.txt");
+const GRAMMAR_RULES: &str = include_str!("../../../shared/dictation/grammar_rules.txt");
+const ASR_CORRECTION_RULES: &str = include_str!("../../../shared/dictation/asr_correction_rules.txt");
+const MULTILINGUAL_RULES: &str = include_str!("../../../shared/dictation/multilingual_rules.txt");
+const NATURAL_RULES: &str = include_str!("../../../shared/dictation/natural_rules.txt");
+const TONES: &str = include_str!("../../../shared/dictation/tones.txt");
 
-const GRAMMAR_RULES: &str = "\
-Grammarly-style cleanup (always apply): \
-- Fix grammar, subject-verb agreement, articles (a/an/the), and awkward phrasing. \
-- Fix punctuation: commas, periods, question marks, apostrophes, quotes. \
-- Terminal punctuation: when the utterance is a finished statement, end with a period. \
-  Never leave a trailing comma or semicolon on a completed sentence (ASR often does that). \
-  Keep '?' for questions and '!' for exclamations. Do not force a period on fragments, \
-  lists mid-thought, or text that clearly continues (ends with ':' or an ellipsis). \
-- Capitalize sentence starts and proper nouns; fix obvious misspellings from speech. \
-- Remove filler (um, uh, like, you know) when they add no meaning. \
-- Improve clarity lightly — tighten run-ons — but KEEP the speaker's meaning, voice, \
-  and intent. Do NOT invent facts, summarize, or change names/numbers/dates. \
-- Do NOT add a greeting/sign-off the speaker did not say. \
-- Return ONLY the cleaned text, no commentary or quotes around it.";
-
-const ASR_CORRECTION_RULES: &str = "\
-CRITICAL — speech-to-text errors (high priority): \
-The input is an ASR transcript and often contains wrong near-homophones. \
-Using surrounding context, fix obvious mishears to the word the speaker clearly meant. \
-Prefer the reading that makes the sentence sensible. Examples: \
-- Git / version control (VERY common): 'get'→'Git' when talking about repos, \
-  push/pull/commit/clone/merge/place/branch. \
-  'Did you place it to get?' → 'Did you place it to Git?' \
-  'push it to get' → 'push it to Git'; 'get hub' → 'GitHub' \
-- tech/cloud: 'clout'→'cloud', 'a WS'→'AWS', 'verse cell'→'Vercel', \
-  'type script'→'TypeScript', 'post grass'→'Postgres' \
-- product names: Deepgram, Claude, ChatGPT, Notion, Slack, CurseForge, Covenant Core, Tailscale \
-  (do NOT rewrite 'curse forge' / 'CurseForge' to 'Cursor' — different product) \
-  Cursor only when clearly the editor/IDE, not gaming/modding context \
-  (do NOT assume the speaker means the MaxSpeech app itself unless truly unambiguous — \
-  names like 'Maximus Dev' or similar-sounding phrases are NOT the app name) \
-  'Covenant court' / 'Covenant Court' → 'Covenant Core'; \
-  'Covenant corner' / 'Covenant Corner' → 'Covenant Core' \
-  (do NOT rewrite to 'Covenant Corner' — the product is Covenant Core) \
-  'tail scale' / 'tailscale' / 'tale scale' → 'Tailscale' \
-  (do NOT rewrite unrelated 'tail' or 'scale') \
-- common: 'there'/'their'/'they're', 'to'/'too'/'two', 'its'/'it's' by grammar \
-- numbers: ASR (numerals=true) turns spoken words into digits. \
-  Spell out single-digit amounts in prose/names ('Covenant Core 1'→'Covenant Core one', \
-  'I have 2 apples'→'I have two apples'). Keep multi-digit numbers as digits \
-  (101, 2024, phone/ID strings). Keep digits for clear codes/times/quantities \
-  ('meet at 4pm', 'room 2', 'version 2', 'page 3'). \
-  Also fix digit homophones ('for'→'4', 'to'→'2', 'won'→'1') when context is not numeric. \
-- percents (VERY common): '10 times' / 'ten times' → '10%' when the speaker meant \
-  a percentage (at/by/of/about/only/discount/rate/tax/tip), NOT repetition \
-  ('do it 10 times') or comparison ('10 times faster'). \
-  'ten percent' / '10 percent' → '10%'. \
-- contractions: ASR drops apostrophes — dont→don't, doesnt→doesn't, im→I'm, \
-  ive→I've, thats→that's, youre→you're, theyre→they're, wont→won't, cant→can't. \
-  'lets go/see/try' → 'let's …'. 'id like' → 'I'd like' (not user id). \
-- numeral homophones (numerals=true): 'thanks 4 the'→'thanks for the', \
-  'need 2 go'→'need to go', '2 much'→'too much', '1 of'→'one of', 'no 1'→'no one'. \
-  Single digits in titles/names/prose → words ('Covenant Core 1'→'Covenant Core one'). \
-  Keep real codes/times and ALL multi-digit numbers as digits \
-  ('room 2', 'meet at 4pm', 'version 2', 'call 555-1212', 'issue 1042'). \
-- split product names: 'type script'→TypeScript, 'java script'→JavaScript, \
-  'super base'→Supabase, 'verse cell'→Vercel, 'cloud flare'→Cloudflare, \
-  'chat gpt'→ChatGPT, 'open ai'→OpenAI, 'vs code'→VS Code, \
-  'curse forge'→CurseForge (not Cursor), 'post grass'→Postgres, \
-  'covenant court'/'covenant corner'/'covenant core'→Covenant Core, \
-  'tail scale'/'tale scale'/'tailscale'→Tailscale. \
-- 'could of'/'would of'/'should of' → could've/would've/should've \
-  (unless 'of the/a/course'). \
-- comparatives: 'better then' / 'more then' / 'rather then' → than. \
-- 'to much' / 'to many' / 'to late' → too. \
-- 'its a' / 'its not' / 'its been' → it's; 'your going' / 'your welcome' → you're. \
-- possessives: if a known name appears as Names, restore Name's. \
-Do NOT invent new content. Only swap clearly wrong ASR tokens. \
-Do NOT change ordinary English 'get' ('I want to get coffee'). \
-If both readings are plausible, keep the transcript as-is.";
-
-const MULTILINGUAL_RULES: &str = "\
-CRITICAL — multilingual / code-switched dictation: \
-The transcript may mix languages in one utterance (e.g. Russian then English). \
-- Preserve EVERY language and script exactly as spoken. \
-- Do NOT translate between languages. \
-- Do NOT transliterate Cyrillic, CJK, Arabic, etc. into Latin letters. \
-- Do NOT drop words from a language you understand less well. \
-- Only lightly fix punctuation/spacing; leave mixed-language wording intact. \
-- English self-correction rules apply only to clearly English correction chatter.";
-
-fn system_prompt_for_tone(tone: &str, multilingual: bool) -> String {
-    let base = match tone {
-        "casual" => {
-            "You are a Grammarly-like dictation assistant. Rewrite in a casual, terse chat style. \
-             Prefer lowercase; skip a trailing period. Keep it brief. \
-             Still fix grammar/clarity so it reads cleanly as a message."
+/// Body of a `[name]` section in shared/dictation/tones.txt (empty if missing).
+fn tone_section(name: &str) -> String {
+    let header = format!("[{name}]");
+    let mut out = Vec::new();
+    let mut inside = false;
+    for line in TONES.lines() {
+        let t = line.trim();
+        if t.starts_with('[') && t.ends_with(']') {
+            inside = t == header;
+            continue;
         }
-        "formal" => {
-            "You are a Grammarly-like dictation assistant. Rewrite in a professional, formal style \
-             suitable for email: proper capitalization, punctuation, and complete sentences."
+        if inside {
+            out.push(line);
         }
-        "code" => {
-            "You are a Grammarly-like dictation assistant for a programmer. Clean up grammar and \
-             use precise technical terms. If it sounds like a code comment, format it as one."
-        }
-        "prose" => {
-            "You are a Grammarly-like dictation assistant. Rewrite as clean prose with proper \
-             paragraphs, punctuation, and grammar."
-        }
-        _ => {
-            "You are a Grammarly-like dictation assistant. Clean up grammar, punctuation, and \
-             clarity while keeping the original meaning and style."
-        }
-    };
-    if multilingual {
-        format!(
-            "{base}\n\n{GRAMMAR_RULES}\n\n{ASR_CORRECTION_RULES}\n\n{SELF_CORRECTION_RULES}\n\n{MULTILINGUAL_RULES}"
-        )
-    } else {
-        format!("{base}\n\n{GRAMMAR_RULES}\n\n{ASR_CORRECTION_RULES}\n\n{SELF_CORRECTION_RULES}")
     }
+    out.join("\n").trim().to_string()
 }
 
+fn system_prompt_for_tone(tone: &str, multilingual: bool) -> String {
+    let mut base = tone_section(tone);
+    if base.is_empty() {
+        base = tone_section("default");
+    }
+    rules_block(&base, multilingual)
+}
+
+fn rules_block(head: &str, multilingual: bool) -> String {
+    let mut s = format!(
+        "{head}\n\n{GRAMMAR_RULES}\n\n{NATURAL_RULES}\n\n{ASR_CORRECTION_RULES}\n\n{SELF_CORRECTION_RULES}"
+    );
+    if multilingual {
+        s.push_str("\n\n");
+        s.push_str(MULTILINGUAL_RULES);
+    }
+    s
+}
 fn dictionary_prompt_block(terms: &[String]) -> String {
     let cleaned: Vec<&str> = terms
         .iter()
@@ -358,7 +258,33 @@ pub fn local_asr_cleanup(text: &str) -> String {
     let after_numerals = fix_numeral_homophones(&after_contractions);
     let after_homophones = fix_common_homophones(&after_numerals);
     let after_percent_word = fix_spoken_percent_word(&after_homophones);
-    fix_percent_heard_as_times(&after_percent_word)
+    let after_percent = fix_percent_heard_as_times(&after_percent_word);
+    fix_casual_address_commas(&after_percent)
+}
+
+/// Deepgram punctuates casual address words like names ("bro, that's…"); nobody types that.
+pub fn fix_casual_address_commas(text: &str) -> String {
+    const AFTER: &[&str] = &["bro", "bruh", "dude", "fam", "man", "bestie"];
+    const BEFORE: &[&str] = &["bro", "bruh", "dude", "fam", "bestie"];
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let mut out: Vec<String> = Vec::with_capacity(words.len());
+    for (i, w) in words.iter().enumerate() {
+        let (lead, bare, trail) = split_word_punct(w);
+        let lower = bare.to_ascii_lowercase();
+        if BEFORE.contains(&lower.as_str()) && lead.is_empty() {
+            if let Some(prev) = out.last_mut() {
+                if prev.ends_with(',') {
+                    prev.pop();
+                }
+            }
+        }
+        if AFTER.contains(&lower.as_str()) && trail == "," && i + 1 < words.len() {
+            out.push(format!("{lead}{bare}"));
+        } else {
+            out.push((*w).to_string());
+        }
+    }
+    out.join(" ")
 }
 
 fn split_word_punct(w: &str) -> (&str, &str, &str) {
@@ -609,8 +535,16 @@ fn fix_numeral_homophones(text: &str) -> String {
             .last()
             .map(|p| split_word_punct(p).1.to_ascii_lowercase())
             .unwrap_or_default();
+        // "user id is 7" / "the code was 4": identifier values stay digits.
+        let prev2 = out
+            .len()
+            .checked_sub(2)
+            .map(|j| split_word_punct(&out[j]).1.to_ascii_lowercase())
+            .unwrap_or_default();
+        let ident_value = matches!(prev2.as_str(), "id" | "code" | "pin" | "number" | "zip" | "extension")
+            && matches!(prev.as_str(), "is" | "was" | "equals");
         let keep_digit =
-            is_quantity_prev(&prev) || is_unit_or_quantity_next(&next);
+            is_quantity_prev(&prev) || is_unit_or_quantity_next(&next) || ident_value;
 
         let mapped = if prev == "no" && bare == "1" {
             Some("one")
@@ -1235,10 +1169,12 @@ pub async fn rewrite_with_llm(
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let api_key = llm_key()?;
 
-    let system = format!(
-        "You are a Grammarly-like dictation assistant. Rewrite the text per the instruction. \
-         Instruction: {instruction}. Only return the rewritten text, nothing else.\n\n\
-         {GRAMMAR_RULES}\n\n{ASR_CORRECTION_RULES}\n\n{SELF_CORRECTION_RULES}"
+    let system = rules_block(
+        &format!(
+            "You are a Grammarly-like dictation assistant. Rewrite the text per the instruction. \
+             Instruction: {instruction}. Only return the rewritten text, nothing else."
+        ),
+        false,
     );
     call_llm(&api_key, &system, text, 1024).await
 }
@@ -1252,15 +1188,7 @@ async fn enhance_long_dictation_ex(
     let api_key = llm_key()?;
 
     let style = system_prompt_for_tone(tone, multilingual);
-    let system = with_dictionary(
-        format!(
-            "{style}\n\nThis is a longer dictation. Apply Grammarly-style grammar, punctuation, \
-             and clarity fixes throughout. Remove filler (um, uh, like). Break into clear paragraphs \
-             when natural. Apply self-correction rules carefully. Do not summarize — return the full \
-             cleaned transcript only."
-        ),
-        dict_terms,
-    );
+    let system = with_dictionary(format!("{style}\n\n{}", tone_section("long")), dict_terms);
     call_llm(&api_key, &system, text, 4096).await
 }
 
@@ -1271,16 +1199,10 @@ async fn cleanup_self_corrections_ex(
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let api_key = llm_key()?;
 
-    let multi = if multilingual {
-        format!(" {MULTILINGUAL_RULES}")
-    } else {
-        String::new()
-    };
     let system = with_dictionary(
         format!(
-            "You are a Grammarly-like cleanup pass for spoken dictation. \
-             {GRAMMAR_RULES} {ASR_CORRECTION_RULES} {SELF_CORRECTION_RULES}{multi} \
-             Only return the cleaned text, nothing else."
+            "{}\n\nOnly return the cleaned text, nothing else.",
+            rules_block(&tone_section("cleanup"), multilingual)
         ),
         dict_terms,
     );
@@ -1427,6 +1349,14 @@ mod tests {
         assert_eq!(local_asr_cleanup("could of course"), "could of course");
         assert_eq!(local_asr_cleanup("their going home"), "they're going home");
         assert_eq!(local_asr_cleanup("and then we left"), "and then we left");
+    }
+
+    #[test]
+    fn drops_commas_around_casual_address_words() {
+        assert_eq!(local_asr_cleanup("bro, that's crazy"), "bro that's crazy");
+        assert_eq!(local_asr_cleanup("what's up, bro"), "what's up bro");
+        assert_eq!(local_asr_cleanup("Dude, no way, dude."), "Dude no way dude.");
+        assert_eq!(local_asr_cleanup("apples, pears, and bananas"), "apples, pears, and bananas");
     }
 
     #[test]

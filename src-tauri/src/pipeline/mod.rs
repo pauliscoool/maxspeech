@@ -577,15 +577,6 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                 .map(|v| v != "false")
                 .unwrap_or(true);
 
-            // Short hold (<5s): paste fast with local cleanup only. Full LLM
-            // enhance is reserved for longer dictations where the lag is worth it.
-            let session_secs = *app_handle
-                .state::<PipelineState>()
-                .last_session_secs
-                .lock()
-                .unwrap();
-            let quick_session = session_secs < 5.0;
-
             let word_count = corrected.split_whitespace().count();
             let mut enhance_ran = false;
             // Multilingual / code-switch: keep Deepgram text as-is. The English
@@ -593,20 +584,13 @@ pub fn start_dictation(app: &tauri::AppHandle) {
             // ("build function" stayed "blood function" or got rewritten further).
             let will_call_llm = language_for_pipeline != "multi"
                 && has_llm_key
-                && ai_enhance
-                && !quick_session;
+                && ai_enhance;
             if will_call_llm {
                 emit_state_if_current(&app_handle, paste_token, "processing");
             }
 
             let mut final_output = if language_for_pipeline == "multi" {
                 log::info!("Skipping AI enhance for multilingual session");
-                corrected
-            } else if quick_session {
-                log::info!(
-                    "Quick session ({session_secs:.1}s) — local cleanup only, skip LLM"
-                );
-                enhance_ran = corrected.trim() != expanded.trim();
                 corrected
             } else if has_llm_key && ai_enhance {
                 let tone_name = fg
@@ -655,6 +639,7 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                     .as_ref()
                     .and_then(|a| tone::get_tone_for_app(a, &store))
                     .unwrap_or_else(|| "default".to_string());
+                final_output = tone::fix_casual_address_commas(&final_output);
                 final_output =
                     tone::normalize_terminal_punctuation(&final_output, &tone_for_punct);
             }

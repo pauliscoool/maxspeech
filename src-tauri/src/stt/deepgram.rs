@@ -9,80 +9,20 @@ use crate::secrets;
 /// Last Deepgram key that successfully connected (avoids retrying a bad user key every session).
 static LAST_GOOD_KEY: Mutex<Option<String>> = Mutex::new(None);
 
-/// High-value English terms that ASR often mangles; merged with the user dictionary as keyterms.
-/// NOTE: deliberately does NOT include "MaxSpeech" — boosting the app's own name
-/// biases ASR toward hearing it for near-homophones (e.g. "Maximus Dev" → "MaxSpeech").
-const BUILTIN_KEYTERMS: &[&str] = &[
-    "Deepgram",
-    "Supabase",
-    "Tauri",
-    "Claude",
-    "ChatGPT",
-    // Version control — ASR loves "Git" → "get"
-    "Git",
-    "GitHub",
-    "GitLab",
-    "gitignore",
-    "git push",
-    "git pull",
-    "git commit",
-    "git clone",
-    "git merge",
-    "git rebase",
-    "git status",
-    "Vercel",
-    "cloud",
-    "Cloudflare",
-    "OpenAI",
-    "API",
-    "JSON",
-    "TypeScript",
-    "JavaScript",
-    "PostgreSQL",
-    "Postgres",
-    "SQLite",
-    "GraphQL",
-    "Docker",
-    "Kubernetes",
-    "AWS",
-    "React",
-    "Next.js",
-    "Node.js",
-    "Python",
-    "Rust",
-    "VS Code",
-    "Copilot",
-    "Anthropic",
-    "OAuth",
-    "Redis",
-    "MongoDB",
-    "npm",
-    "Vite",
-    "Windows",
-    "macOS",
-    "Linux",
-    "Notion",
-    "Slack",
-    "Discord",
-    "Figma",
-    "Linear",
-    // Gaming / mods — before Cursor so "curse forge" isn't biased to "Cursor".
-    "CurseForge",
-    "Curse Forge",
-    "Forge",
-    // Percents — ASR often hears "percent" as "times".
-    "percent",
-    "percentage",
-    "%",
-    "Cursor",
-    // Product — ASR hears "Covenant Core" as Court / Corner.
-    "Covenant Core",
-    "CovenantCore",
-    // Product — ASR hears "Tailscale" as "tail scale" / "tale scale".
-    "Tailscale",
-    "Tail Scale",
-];
+/// High-value terms that ASR often mangles; merged with the user dictionary as keyterms.
+/// Shared with Android via shared/dictation/keyterms.txt.
+const KEYTERMS_TXT: &str = include_str!("../../../shared/dictation/keyterms.txt");
 
+/// Builtins use ~80 slots; the rest are reserved for the user's dictionary.
+pub const MAX_KEYTERMS: usize = 120;
+
+fn builtin_keyterms() -> Vec<&'static str> {
+    KEYTERMS_TXT
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .collect()
+}
 #[derive(Debug, Clone)]
 pub struct DeepgramConfig {
     pub api_key: String,
@@ -95,11 +35,12 @@ pub struct DeepgramConfig {
 /// User terms come first so personal names win; builtins always get reserved slots
 /// so a large dictionary cannot drop Git / TypeScript / CurseForge / etc.
 pub fn merge_keyterms(user: Vec<String>) -> Vec<String> {
-    const MAX: usize = 80;
+    const MAX: usize = MAX_KEYTERMS;
     let mut out: Vec<String> = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
-    let builtin_n = BUILTIN_KEYTERMS.len().min(MAX);
+    let builtin = builtin_keyterms();
+    let builtin_n = builtin.len().min(MAX);
     let user_cap = MAX.saturating_sub(builtin_n);
 
     for term in user {
@@ -115,7 +56,7 @@ pub fn merge_keyterms(user: Vec<String>) -> Vec<String> {
         }
     }
 
-    for term in BUILTIN_KEYTERMS {
+    for term in builtin {
         if out.len() >= MAX {
             break;
         }
@@ -306,7 +247,7 @@ fn build_url(config: &DeepgramConfig) -> String {
     );
     // Nova-3 rejects legacy `keywords` (HTTP 400). Use `keyterm` instead.
     // Cap to keep the handshake URL reasonable (Nova-3 allows many; URL length is the limit).
-    for kw in config.keywords.iter().take(80) {
+    for kw in config.keywords.iter().take(MAX_KEYTERMS) {
         let term = kw.trim();
         if !term.is_empty() {
             url.push_str(&format!("&keyterm={}", urlenc(term)));
@@ -622,7 +563,7 @@ mod tests {
     fn merge_keyterms_large_dictionary_still_keeps_builtins() {
         let user: Vec<String> = (0..100).map(|i| format!("Name{i}")).collect();
         let merged = merge_keyterms(user);
-        assert!(merged.len() <= 80);
+        assert!(merged.len() <= MAX_KEYTERMS);
         let lower: Vec<String> = merged.iter().map(|s| s.to_lowercase()).collect();
         assert!(lower.iter().any(|s| s == "git"));
         assert!(lower.iter().any(|s| s == "curseforge"));

@@ -8,6 +8,7 @@ import androidx.room.Room
 import com.maxspeech.android.data.AppDatabase
 import com.maxspeech.android.data.AppProfileEntity
 import com.maxspeech.android.data.AuthRepository
+import com.maxspeech.android.data.CloudSync
 import com.maxspeech.android.data.SettingsRepository
 import com.maxspeech.android.overlay.FloatingMicController
 import com.maxspeech.android.overlay.OverlayService
@@ -104,6 +105,7 @@ class MaxSpeechApp : Application() {
         runCatching { File(filesDir, "last-crash.txt").delete() }
 
         db = Room.databaseBuilder(this, AppDatabase::class.java, "maxspeech.db")
+            .addMigrations(AppDatabase.MIGRATION_3_4)
             .fallbackToDestructiveMigration()
             .fallbackToDestructiveMigrationOnDowngrade()
             .build()
@@ -122,6 +124,7 @@ class MaxSpeechApp : Application() {
                     runCatching { db.close() }
                     deleteDatabase("maxspeech.db")
                     db = Room.databaseBuilder(this@MaxSpeechApp, AppDatabase::class.java, "maxspeech.db")
+                        .addMigrations(AppDatabase.MIGRATION_3_4)
                         .fallbackToDestructiveMigration()
                         .fallbackToDestructiveMigrationOnDowngrade()
                         .build()
@@ -134,6 +137,8 @@ class MaxSpeechApp : Application() {
             }
             runCatching { maybeStartKeepAlive() }
                 .onFailure { Log.e(TAG, "Keep-alive start failed", it) }
+            runCatching { CloudSync(db, auth).start(appScope) }
+                .onFailure { Log.e(TAG, "Cloud sync start failed", it) }
         }
     }
 
