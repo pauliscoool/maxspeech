@@ -12,6 +12,7 @@ const DEFAULT_HOTKEY: &str = "ctrl+shift+space";
 const DEFAULT_MODE: &str = "hold"; // "hold" | "toggle"
 
 static CURRENT_HOTKEY: Mutex<Option<String>> = Mutex::new(None);
+static CURRENT_MODE: Mutex<String> = Mutex::new(String::new());
 static USING_MODIFIER_HOOK: Mutex<bool> = Mutex::new(false);
 
 pub fn register_hotkeys(app: &AppHandle) {
@@ -56,6 +57,19 @@ pub fn register_hotkeys(app: &AppHandle) {
 fn register_shortcut(app: &AppHandle, shortcut_str: &str, mode: &str) -> Result<(), String> {
     let cleaned = normalize_hotkey(shortcut_str)?;
 
+    // Cloud sync re-applies the saved hotkey/mode on every pull (including the
+    // hourly auth token refresh) even when nothing changed. Both fire closures
+    // already re-read `hotkey_mode` from the store at fire-time, so a mode-only
+    // "change" needs no reinstall either — skip the churn (and, on the LL-hook
+    // path, the thread teardown/rebuild) when combo+mode already match.
+    {
+        let same_combo = CURRENT_HOTKEY.lock().unwrap().as_deref() == Some(cleaned.as_str());
+        let same_mode = *CURRENT_MODE.lock().unwrap() == mode;
+        if same_combo && same_mode {
+            return Ok(());
+        }
+    }
+
     // Clear previous registration (plugin shortcut and/or modifier hook).
     unregister_current(app);
 
@@ -66,6 +80,7 @@ fn register_shortcut(app: &AppHandle, shortcut_str: &str, mode: &str) -> Result<
         win_mod_hook::install(app, &cleaned, mode)?;
         *USING_MODIFIER_HOOK.lock().unwrap() = true;
         *CURRENT_HOTKEY.lock().unwrap() = Some(cleaned.clone());
+        *CURRENT_MODE.lock().unwrap() = mode.to_string();
         log::info!("Hotkey registered via LL hook: {cleaned} (mode={mode})");
         return Ok(());
     }
@@ -124,11 +139,13 @@ fn register_shortcut(app: &AppHandle, shortcut_str: &str, mode: &str) -> Result<
 
     *USING_MODIFIER_HOOK.lock().unwrap() = false;
     *CURRENT_HOTKEY.lock().unwrap() = Some(cleaned.clone());
+    *CURRENT_MODE.lock().unwrap() = mode.to_string();
     log::info!("Hotkey registered: {cleaned} (mode={mode})");
     Ok(())
 }
 
 fn unregister_current(app: &AppHandle) {
+    CURRENT_MODE.lock().unwrap().clear();
     if let Some(prev) = CURRENT_HOTKEY.lock().unwrap().take() {
         if let Ok(prev_sc) = prev.parse::<Shortcut>() {
             let _ = app.global_shortcut().unregister(prev_sc);
@@ -174,17 +191,30 @@ pub fn set_hotkey(app: &AppHandle, shortcut_str: &str) -> Result<(), String> {
     }
 
     let store = app.state::<Store>();
-    store
-        .set_setting("hotkey", &cleaned)
-        .map_err(|e| e.to_string())?;
-
+    let previous = store
+        .get_setting("hotkey")
+        .ok()
+        .flatten()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_HOTKEY.to_string());
     let mode = store
         .get_setting("hotkey_mode")
         .ok()
         .flatten()
         .unwrap_or_else(|| DEFAULT_MODE.to_string());
 
-    register_shortcut(app, &cleaned, &mode)
+    // Don't persist (or leave registered) a combo that fails — e.g. another
+    // app already owns it. Restore the previous, known-working hotkey so
+    // dictation still has a working trigger instead of nothing until restart.
+    if let Err(e) = register_shortcut(app, &cleaned, &mode) {
+        log::warn!("set_hotkey: '{cleaned}' failed to register ({e}); restoring '{previous}'");
+        if previous != cleaned {
+            let _ = register_shortcut(app, &previous, &mode);
+        }
+        return Err(e);
+    }
+
+    store.set_setting("hotkey", &cleaned).map_err(|e| e.to_string())
 }
 
 pub fn set_hotkey_mode(app: &AppHandle, mode: &str) -> Result<(), String> {
@@ -193,17 +223,24 @@ pub fn set_hotkey_mode(app: &AppHandle, mode: &str) -> Result<(), String> {
         _ => "hold",
     };
     let store = app.state::<Store>();
-    store
-        .set_setting("hotkey_mode", mode)
-        .map_err(|e| e.to_string())?;
-
     let shortcut = store
         .get_setting("hotkey")
         .ok()
         .flatten()
         .unwrap_or_else(|| DEFAULT_HOTKEY.to_string());
+    let previous_mode = store
+        .get_setting("hotkey_mode")
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| DEFAULT_MODE.to_string());
 
-    register_shortcut(app, &shortcut, mode)
+    if let Err(e) = register_shortcut(app, &shortcut, mode) {
+        log::warn!("set_hotkey_mode: re-registering '{shortcut}' failed ({e}); restoring previous mode");
+        let _ = register_shortcut(app, &shortcut, &previous_mode);
+        return Err(e);
+    }
+
+    store.set_setting("hotkey_mode", mode).map_err(|e| e.to_string())
 }
 
 pub fn get_hotkey(app: &AppHandle) -> String {
@@ -804,17 +841,18 @@ mod win_mod_hook {
         } else if kind == ComboKind::CtrlWin && is_win_vk(vk) {
             if is_down {
                 WIN_DOWN.store(true, Ordering::SeqCst);
-                // Swallow Win only when Ctrl is already held (Ctrl-then-Win).
+                // Never eat Win itself — that also ate every other Ctrl+Win+X OS
+                // shortcut (Ctrl+Win+Left/Right virtual-desktop switch, Ctrl+Win+D,
+                // …) for as long as our hotkey held it. Disarm the Start-menu
+                // single-tap latch instead — same trick as Win-then-Ctrl above —
+                // so the OS still sees a real Win down/up and any chord built on
+                // top of it (like Ctrl+Win+Arrow) keeps working.
                 if CTRL_DOWN.load(Ordering::SeqCst) {
-                    ATE_WIN_DOWN.store(true, Ordering::SeqCst);
-                    eat = true;
+                    disarm_win_start_menu();
                 }
                 update_combo_state();
             } else if is_up {
                 WIN_DOWN.store(false, Ordering::SeqCst);
-                if ATE_WIN_DOWN.swap(false, Ordering::SeqCst) {
-                    eat = true;
-                }
                 update_combo_state();
             }
         } else if kind == ComboKind::CtrlShiftZ && is_shift_vk(vk) {

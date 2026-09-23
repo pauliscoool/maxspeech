@@ -134,8 +134,12 @@ where
     enigo
         .key(mod_key, Direction::Press)
         .map_err(|e| format!("{e}"))?;
+    // Key::V sends the physical VK_V scan code (layout-independent) rather than
+    // a synthesized Unicode 'v' character. Ctrl+<Unicode char> input doesn't
+    // reliably reach apps' keyboard-shortcut handling — and a Cyrillic/Greek/
+    // etc. layout has no 'v' character to synthesize into a paste at all.
     enigo
-        .key(Key::Unicode('v'), Direction::Click)
+        .key(Key::V, Direction::Click)
         .map_err(|e| format!("{e}"))?;
     // Always release even if Click failed mid-way.
     let _ = enigo.key(mod_key, Direction::Release);
