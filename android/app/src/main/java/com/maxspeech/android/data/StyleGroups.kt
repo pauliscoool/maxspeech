@@ -115,7 +115,7 @@ object StyleGroups {
                     "Docs",
                     "com.google.android.apps.docs.editors.docs",
                     0xFF4285F4,
-                    "googledocs",
+                    "_bundled",
                     R.drawable.logo_docs,
                 ),
                 BrandMark("LinkedIn", "com.linkedin.android", 0xFF0A66C2, "linkedin", R.drawable.logo_linkedin),

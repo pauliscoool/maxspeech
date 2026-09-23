@@ -58,6 +58,7 @@ class DictationController(
     private val audio = AudioCapture()
     private val stt = DeepgramClient()
     private val enhance = EnhanceClient()
+    private val soundCue = SoundCue(context)
 
     private val _ui = MutableStateFlow(DictationUi())
     val ui = _ui.asStateFlow()
@@ -105,6 +106,7 @@ class DictationController(
         _ui.value = DictationUi(phase = DictationPhase.Listening, targetApp = sessionApp)
         OverlayService.notifyRecording(context, true)
         haptic(HapticKind.Start)
+        playSoundCue()
         listenJob = scope.launch {
             try {
                 // Warm path: use cached settings so STT + mic start without waiting on disk.
@@ -212,6 +214,7 @@ class DictationController(
 
     fun cancel() {
         haptic(HapticKind.Cancel)
+        playSoundCue()
         resetToIdle()
     }
 
@@ -232,6 +235,7 @@ class DictationController(
         if (_ui.value.phase != DictationPhase.Listening) return
         if (!finishing.compareAndSet(false, true)) return
         haptic(HapticKind.Stop)
+        playSoundCue()
         val preview = TranscriptMerge.display(finals, lastInterim)
             .ifBlank { _ui.value.liveText }
             .trim()
@@ -448,6 +452,17 @@ class DictationController(
             }
             vib.vibrate(VibrationEffect.createOneShot(ms.toLong(), amp.coerceIn(1, 255)))
         }
+    }
+
+    /** Bubble-click for start / stop when Settings → Start / stop sound is on. */
+    private fun playSoundCue() {
+        if (!cachedSnap.soundCue) return
+        soundCue.play()
+    }
+
+    /** Preview from Settings when the user enables the cue. */
+    fun previewSoundCue() {
+        soundCue.play()
     }
 
     private enum class HapticKind { Start, Stop, Cancel, Confirm }

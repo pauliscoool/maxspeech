@@ -186,7 +186,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
             "space" -> ms.settings.setTrailingSpace(on)
             "haptics" -> ms.settings.setHaptics(on)
-            "sound" -> ms.settings.setSoundCue(on)
+            "sound" -> {
+                ms.settings.setSoundCue(on)
+                if (on) ms.dictation.previewSoundCue()
+            }
             "live" -> ms.settings.setLiveTranscript(on)
         }
     }

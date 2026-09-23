@@ -1,12 +1,19 @@
 package com.maxspeech.android.ui.home
 
 import android.app.Activity
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandHorizontally
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -79,6 +86,7 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.launch
 
 @Composable
 fun HomeScreen(
@@ -232,15 +240,52 @@ fun HomeScreen(
         }
 
         Spacer(Modifier.height(22.dp))
-        // Compact toolbar: search expands on the left; failed filter on the right.
+        // Compact toolbar: search expands on the left with a jump-slide; filter on the right.
+        val searchJump = remember { Animatable(0f) }
+        val searchScale = remember { Animatable(1f) }
+        LaunchedEffect(searchOpen) {
+            searchJump.snapTo(0f)
+            searchScale.snapTo(1f)
+            launch {
+                searchJump.animateTo(
+                    -10f,
+                    spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = 900f),
+                )
+                searchJump.animateTo(
+                    0f,
+                    spring(dampingRatio = 0.38f, stiffness = 480f),
+                )
+            }
+            launch {
+                searchScale.animateTo(
+                    1.08f,
+                    spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = 800f),
+                )
+                searchScale.animateTo(
+                    1f,
+                    spring(dampingRatio = 0.45f, stiffness = 520f),
+                )
+            }
+        }
         Row(
             Modifier
                 .fillMaxWidth()
-                .animateContentSize(animationSpec = tween(220, easing = FastOutSlowInEasing)),
+                .animateContentSize(
+                    animationSpec = spring(
+                        dampingRatio = Spring.DampingRatioMediumBouncy,
+                        stiffness = 380f,
+                    ),
+                ),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             SurfaceCard(
-                modifier = if (searchOpen) Modifier.weight(1f) else Modifier,
+                modifier = Modifier
+                    .then(if (searchOpen) Modifier.weight(1f) else Modifier)
+                    .graphicsLayer {
+                        translationY = searchJump.value
+                        scaleX = searchScale.value
+                        scaleY = searchScale.value
+                    },
                 shape = RoundedCornerShape(percent = 50),
             ) {
                 Row(
@@ -254,13 +299,50 @@ fun HomeScreen(
                         },
                         modifier = Modifier.size(40.dp),
                     ) {
-                        Icon(
-                            if (searchOpen) Icons.Filled.Close else Icons.Outlined.Search,
-                            contentDescription = if (searchOpen) "Close search" else "Search",
-                            tint = c.text,
-                        )
+                        AnimatedContent(
+                            targetState = searchOpen,
+                            transitionSpec = {
+                                (
+                                    fadeIn(tween(160)) +
+                                        expandHorizontally(
+                                            animationSpec = spring(
+                                                dampingRatio = Spring.DampingRatioMediumBouncy,
+                                                stiffness = 500f,
+                                            ),
+                                            expandFrom = Alignment.Start,
+                                        )
+                                    ) togetherWith (
+                                    fadeOut(tween(120)) +
+                                        shrinkHorizontally(
+                                            animationSpec = tween(160, easing = FastOutSlowInEasing),
+                                            shrinkTowards = Alignment.Start,
+                                        )
+                                    )
+                            },
+                            label = "searchIcon",
+                        ) { open ->
+                            Icon(
+                                if (open) Icons.Filled.Close else Icons.Outlined.Search,
+                                contentDescription = if (open) "Close search" else "Search",
+                                tint = c.text,
+                            )
+                        }
                     }
-                    if (searchOpen) {
+                    androidx.compose.animation.AnimatedVisibility(
+                        visible = searchOpen,
+                        modifier = Modifier.weight(1f),
+                        enter = expandHorizontally(
+                            animationSpec = spring(
+                                dampingRatio = Spring.DampingRatioMediumBouncy,
+                                stiffness = 420f,
+                            ),
+                            expandFrom = Alignment.Start,
+                        ) + fadeIn(tween(180)),
+                        exit = shrinkHorizontally(
+                            animationSpec = tween(160, easing = FastOutSlowInEasing),
+                            shrinkTowards = Alignment.Start,
+                        ) + fadeOut(tween(120)),
+                    ) {
                         BasicTextField(
                             value = query,
                             onValueChange = { query = it },
@@ -268,7 +350,7 @@ fun HomeScreen(
                             singleLine = true,
                             textStyle = TextStyle(color = c.text, fontSize = 15.sp),
                             modifier = Modifier
-                                .weight(1f)
+                                .fillMaxWidth()
                                 .padding(end = 12.dp)
                                 .focusRequester(searchFocus),
                             decorationBox = { inner ->
@@ -284,7 +366,18 @@ fun HomeScreen(
                 }
             }
             Spacer(Modifier.width(10.dp))
-            SurfaceCard(shape = RoundedCornerShape(percent = 50)) {
+            val filterSlide by animateFloatAsState(
+                targetValue = if (searchOpen) 6f else 0f,
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioMediumBouncy,
+                    stiffness = 500f,
+                ),
+                label = "filterSlide",
+            )
+            SurfaceCard(
+                modifier = Modifier.graphicsLayer { translationX = filterSlide },
+                shape = RoundedCornerShape(percent = 50),
+            ) {
                 Text(
                     text = if (failedOnly) "Failed" else "All",
                     color = if (failedOnly) Orange else c.text,

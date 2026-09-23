@@ -258,7 +258,7 @@ fun SettingsScreen(
                 ) { onToggle("space", it) }
                 ToggleRow(
                     "Start / stop sound",
-                    "Chime when dictation starts and stops",
+                    "Bubble click when dictation starts and stops",
                     settings.soundCue,
                 ) { onToggle("sound", it) }
                 ToggleRow(
