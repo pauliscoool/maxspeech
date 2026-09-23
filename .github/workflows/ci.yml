@@ -23,6 +23,8 @@ jobs:
       - run: npm run build
       - working-directory: src-tauri
         run: cargo check
+      - working-directory: src-tauri
+        run: cargo test
 
   macos:
     runs-on: macos-latest
@@ -41,6 +43,8 @@ jobs:
       - run: npm run build
       - working-directory: src-tauri
         run: cargo check
+      - working-directory: src-tauri
+        run: cargo test
 
   linux:
     runs-on: ubuntu-latest
@@ -79,3 +83,5 @@ jobs:
         run: cargo check
       - working-directory: src-tauri
         run: cargo build
+      - working-directory: src-tauri
+        run: cargo test
