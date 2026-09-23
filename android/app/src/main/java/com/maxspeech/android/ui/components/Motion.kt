@@ -1,15 +1,19 @@
 package com.maxspeech.android.ui.components
 
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -26,11 +30,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.maxspeech.android.data.UiTheme
 import com.maxspeech.android.ui.theme.Turquoise
@@ -39,6 +46,39 @@ import kotlinx.coroutines.delay
 val PageEnterSpec = fadeIn(tween(200)) + slideInVertically(tween(200)) { it / 10 } togetherWith
     fadeOut(tween(120))
 
+/**
+ * Soft blur + fade. Appear: blurred/transparent → sharp/opaque.
+ * Disappear: sharp/opaque → blurred/transparent. Keeps content mounted until exit finishes.
+ */
+@Composable
+fun BlurFade(
+    visible: Boolean,
+    modifier: Modifier = Modifier,
+    durationMs: Int = 340,
+    maxBlur: Dp = 20.dp,
+    content: @Composable () -> Unit,
+) {
+    var mounted by remember { mutableStateOf(visible) }
+    LaunchedEffect(visible) {
+        if (visible) mounted = true
+    }
+    val progress by animateFloatAsState(
+        targetValue = if (visible) 1f else 0f,
+        animationSpec = tween(durationMs, easing = FastOutSlowInEasing),
+        label = "blurFade",
+        finishedListener = { _ ->
+            if (!visible) mounted = false
+        },
+    )
+    if (!mounted) return
+    Box(
+        modifier = modifier
+            .graphicsLayer { alpha = progress }
+            .blur(radius = maxBlur * (1f - progress)),
+    ) {
+        content()
+    }
+}
 @Composable
 fun <T> PageEnter(
     target: T,
@@ -50,6 +90,33 @@ fun <T> PageEnter(
         modifier = modifier,
         transitionSpec = { PageEnterSpec },
         label = "page-enter",
+        content = { content(it) },
+    )
+}
+
+/** Horizontal slide between enum tabs (Home ↔ Style ↔ Settings). */
+@Composable
+fun <T : Enum<T>> PageSlide(
+    target: T,
+    modifier: Modifier = Modifier,
+    content: @Composable (T) -> Unit,
+) {
+    AnimatedContent(
+        targetState = target,
+        modifier = modifier,
+        transitionSpec = {
+            val forward = targetState.ordinal > initialState.ordinal
+            val enter = fadeIn(tween(220, easing = FastOutSlowInEasing)) +
+                slideInHorizontally(tween(260, easing = FastOutSlowInEasing)) {
+                    if (forward) it / 5 else -it / 5
+                }
+            val exit = fadeOut(tween(160)) +
+                slideOutHorizontally(tween(220, easing = FastOutSlowInEasing)) {
+                    if (forward) -it / 6 else it / 6
+                }
+            enter togetherWith exit
+        },
+        label = "page-slide",
         content = { content(it) },
     )
 }

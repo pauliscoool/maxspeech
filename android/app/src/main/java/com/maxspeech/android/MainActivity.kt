@@ -1,10 +1,18 @@
 package com.maxspeech.android
 
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
+import android.provider.Settings
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Column
@@ -14,6 +22,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Text
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -22,27 +31,43 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
+import androidx.lifecycle.lifecycleScope
+import com.maxspeech.android.overlay.OverlayService
 import com.maxspeech.android.ui.AppViewModel
 import com.maxspeech.android.ui.MaxSpeechRoot
 import java.io.File
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private val vm: AppViewModel by viewModels()
+    private var uiReady = false
+
+    private val notifPermission = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { if (uiReady) startFloatingMic() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         try {
             enableEdgeToEdge()
             WindowCompat.getInsetsController(window, window.decorView).isAppearanceLightStatusBars = false
-            val crashFile = File(filesDir, "last-crash.txt")
+            val crashFile = crashFile()
             val priorCrash = runCatching {
                 crashFile.takeIf { it.exists() }?.readText()?.take(6000)
             }.getOrNull()
 
+            // Stale crash from the fixed overlay lifecycle bug used to block every launch.
+            if (isStaleFixedCrash(priorCrash)) {
+                Log.i(TAG, "Clearing stale fixed crash report")
+                runCatching { crashFile.delete() }
+            }
+            val crashToShow = priorCrash?.takeIf { !isStaleFixedCrash(it) && crashFile.exists() }
+
             setContent {
-                var showCrash by remember { mutableStateOf(!priorCrash.isNullOrBlank()) }
-                if (showCrash && !priorCrash.isNullOrBlank()) {
+                var showCrash by remember { mutableStateOf(!crashToShow.isNullOrBlank()) }
+                if (showCrash && !crashToShow.isNullOrBlank()) {
                     Column(
                         Modifier
                             .fillMaxSize()
@@ -52,25 +77,32 @@ class MainActivity : ComponentActivity() {
                     ) {
                         Text("Last crash — screenshot this and send it", color = Color.White, fontSize = 20.sp)
                         Text(
-                            priorCrash,
+                            crashToShow,
                             color = Color(0xFFFFCC80),
                             fontSize = 11.sp,
                             modifier = Modifier.padding(top = 16.dp),
                         )
                         Button(
                             onClick = {
-                                runCatching { crashFile.delete() }
+                                clearCrash()
                                 showCrash = false
+                                uiReady = true
+                                startFloatingMic()
                             },
                             modifier = Modifier.padding(top = 20.dp),
                         ) { Text("Open MaxSpeech") }
                     }
                 } else {
+                    LaunchedEffect(Unit) {
+                        uiReady = true
+                        clearCrash()
+                        startFloatingMic()
+                    }
                     MaxSpeechRoot(vm)
                 }
             }
         } catch (t: Throwable) {
-            Log.e("MaxSpeech", "MainActivity.onCreate failed", t)
+            Log.e(TAG, "MainActivity.onCreate failed", t)
             setContent {
                 Column(
                     Modifier
@@ -84,5 +116,85 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        if (uiReady) startFloatingMic()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (uiReady) startFloatingMic()
+        if (Build.VERSION.SDK_INT >= 33) {
+            val granted = ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.POST_NOTIFICATIONS,
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!granted) {
+                notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+    }
+
+    private fun startFloatingMic() {
+        if (!Settings.canDrawOverlays(this)) {
+            Log.w(TAG, "Floating mic: overlay permission missing")
+            return
+        }
+        lifecycleScope.launch {
+            val user = runCatching { MaxSpeechApp.instance.auth.current() }.getOrNull()
+            if (user == null || user.local) {
+                Log.i(TAG, "Floating mic: skipped — not signed in")
+                MaxSpeechApp.instance.floatingMic.hide()
+                OverlayService.stop(this@MainActivity)
+                return@launch
+            }
+            Log.i(TAG, "Floating mic: showing + starting keep-alive service")
+            runCatching {
+                MaxSpeechApp.instance.floatingMic.ensureShown(this@MainActivity)
+                OverlayService.start(this@MainActivity)
+                maybeRequestBatteryExemption()
+                clearCrash()
+            }.onFailure { Log.e(TAG, "Floating mic start failed", it) }
+        }
+    }
+
+    /** One-time prompt so OEMs don't kill the idle keep-alive. */
+    private fun maybeRequestBatteryExemption() {
+        if (Build.VERSION.SDK_INT < 23) return
+        val prefs = getSharedPreferences("maxspeech_runtime", MODE_PRIVATE)
+        if (prefs.getBoolean("battery_prompted", false)) return
+        val pm = getSystemService(PowerManager::class.java) ?: return
+        if (pm.isIgnoringBatteryOptimizations(packageName)) {
+            prefs.edit().putBoolean("battery_prompted", true).apply()
+            return
+        }
+        prefs.edit().putBoolean("battery_prompted", true).apply()
+        runCatching {
+            startActivity(
+                Intent(
+                    Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                    Uri.parse("package:$packageName"),
+                ),
+            )
+        }.onFailure { Log.w(TAG, "Battery exemption prompt failed", it) }
+    }
+
+    private fun crashFile(): File = File(filesDir, "last-crash.txt")
+
+    private fun clearCrash() {
+        runCatching { crashFile().delete() }
+    }
+
+    private fun isStaleFixedCrash(text: String?): Boolean {
+        if (text.isNullOrBlank()) return false
+        return text.contains("ViewTreeLifecycleOwner not found") ||
+            text.contains("Room cannot verify the data integrity") ||
+            text.contains("Expected identity hash")
+    }
+
+    companion object {
+        private const val TAG = "MaxSpeech"
     }
 }

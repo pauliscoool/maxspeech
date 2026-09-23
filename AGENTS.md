@@ -60,11 +60,13 @@ vercel alias set <deployment-url> maxspeech.vercel.app
 3. **Local login:** Auth screen has **Continue locally** — offline mode without Supabase.
 4. **App tones:** Style profiles match foreground exe + optional window title; title-specific rules beat bare-exe. Seed is insert-if-missing (never overwrite user tone/enabled).
 5. **Hotkeys (Windows):** Low-level hook for modifier combos like Ctrl+Win; ignore injected keys; keep modifiers reconciled so Ctrl does not get stuck.
-6. **Paste:** Enhance fully, then inject once; use paste epoch so stale sessions do not paste halves.
+6. **Paste:** Enhance fully, then inject once; use paste epoch so stale sessions do not paste halves. On Android, leave text on the clipboard **only if inject failed**; restore/clear the clipboard after a successful paste.
 7. **Mic:** Fuzzy device name matching; Bluetooth-friendly tests; live level events.
 8. **Updates:** Prefer signed Tauri `latest.json` on GitHub Releases; fallback to `https://maxspeech.vercel.app/updates/latest.json` + Releases API.
 9. **Secrets:** Never commit `.env`, signing private keys, or API keys. `.env.example` is the template.
 10. **Ship when a batch is done:** After app changes are complete and no further sub-work is in flight, bump the patch version, build the Windows installer (`scripts/build-installer.ps1`), silent-install on this machine, commit+push `origin windows` (never giant EXEs), then deploy `website/` to Vercel prod and alias `maxspeech.vercel.app` so `website/updates/latest.json` drives in-app update.
+11. **No user API keys in product UI:** MaxSpeech is a paid SaaS. Do **not** expose optional Deepgram/LLM (or other) API key fields in Settings on Android or desktop. Speech/enhance use **Maximus Dev company keys** only. Free tier must show a persistent, hard-to-ignore **Upgrade now** banner at the top of every main app page.
+12. **About / privacy copy:** Say we use Maximus Dev company API keys for speech models, and that user content is **not** used for training.
 
 ## Env
 
@@ -76,6 +78,19 @@ Copy `.env.example` → `.env`:
 ## Version / release
 
 Bump together: `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`, and website download filenames / `website/updates/latest.json`.
+
+### Android beta versioning (current track)
+
+We are shipping **Android beta** builds (sideload / website APK), not App Store yet.
+
+| Track | Scheme | Notes |
+|-------|--------|-------|
+| **Beta (now)** | `0.3-beta` → … → **`5.0-beta`** | Bump the leading number for each beta drop (`0.3`, `0.4`, … `5.0`). `versionName` includes `-beta`. Bump `versionCode` every ship. |
+| **Full / App Store (later)** | Restart at **`0.1`** then climb | After the last **5.0 beta**, cut the first public App Store release as **0.1** (no `-beta`). Then normal store increments. |
+
+**Agent reminder:** When Android `versionName` reaches **`5.0-beta`** (or you are about to ship past it), **stop and remind Paul** to plan the first full App Store release starting at **0.1**. Do not silently jump into store numbering.
+
+Website Android page (`website/android.html`) and `website/downloads/MaxSpeech.apk` must match the shipped beta `versionName` on every Android ship + Vercel prod deploy.
 
 **Auto-release:** Pushes to `master` that change the app (`src/`, `src-tauri/`, package manifests, or the release workflow) run `.github/workflows/release.yml`: patch bump via `scripts/bump-patch-version.mjs`, commit with `[skip ci]`, then build and publish a GitHub Release + signed updater `latest.json`. Website/docs-only commits are skipped.
 

@@ -17,7 +17,7 @@ import com.maxspeech.android.data.UiTheme
 val Turquoise = Color(0xFF2DD4BF)
 val TurquoiseDim = Color(0xFF14B8A6)
 val Orange = Color(0xFFF97316)
-val Hairline = Color.White.copy(alpha = 0.12f)
+val Hairline = Color.White.copy(alpha = 0.05f)
 
 data class MsColors(
     val bg: Color,
@@ -46,11 +46,11 @@ fun darkColors(glass: Float) = MsColors(
     text = Color.White,
     textDim = Color(0xFFA3A3A3),
     glassFill = Color.White.copy(alpha = 0.10f * (glass / 0.5f).coerceIn(0.15f, 2.2f)),
-    hairline = Color.White.copy(alpha = 0.12f),
+    hairline = Color.White.copy(alpha = 0.05f),
     turquoise = Turquoise,
     orange = Orange,
     error = Color(0xFFEF4444),
-    capsule = Brush.linearGradient(listOf(Color(0xFF5B8CFF), Turquoise, Color(0xFF86EFD0), Orange)),
+    capsule = Brush.linearGradient(listOf(Turquoise, Color(0xFF86EFD0), Orange)),
 )
 
 fun grayColors(glass: Float) = darkColors(glass).copy(
@@ -77,10 +77,10 @@ fun lightColors(glass: Float) = MsColors(
 
 val DisplayLarge = TextStyle(
     fontFamily = FontFamily.SansSerif,
-    fontWeight = FontWeight.Bold,
-    fontSize = 32.sp,
-    letterSpacing = (-0.8).sp,
-    lineHeight = 38.sp,
+    fontWeight = FontWeight.SemiBold,
+    fontSize = 26.sp,
+    letterSpacing = (-0.4).sp,
+    lineHeight = 32.sp,
 )
 
 val TitleSmall = TextStyle(
