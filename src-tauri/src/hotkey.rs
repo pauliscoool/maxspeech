@@ -10,6 +10,7 @@ const DEFAULT_HOTKEY: &str = "ctrl+super";
 #[cfg(not(windows))]
 const DEFAULT_HOTKEY: &str = "ctrl+shift+space";
 const DEFAULT_MODE: &str = "hold"; // "hold" | "toggle"
+const ENHANCER_HOTKEY: &str = "ctrl+shift+e";
 
 static CURRENT_HOTKEY: Mutex<Option<String>> = Mutex::new(None);
 static USING_MODIFIER_HOOK: Mutex<bool> = Mutex::new(false);
@@ -50,6 +51,33 @@ pub fn register_hotkeys(app: &AppHandle) {
         if shortcut_str != DEFAULT_HOTKEY {
             let _ = register_shortcut(app, DEFAULT_HOTKEY, &mode);
         }
+    }
+
+    register_enhancer_hotkey(app);
+}
+
+/// Ctrl+Shift+E opens the enhance-selection widget. Plain RegisterHotKey is
+/// enough here: it swallows the E and fires once on press.
+fn register_enhancer_hotkey(app: &AppHandle) {
+    let shortcut: Shortcut = match ENHANCER_HOTKEY.parse() {
+        Ok(s) => s,
+        Err(e) => {
+            log::error!("Invalid enhancer hotkey '{ENHANCER_HOTKEY}': {e}");
+            return;
+        }
+    };
+    if app.global_shortcut().is_registered(shortcut) {
+        return;
+    }
+    let result = app
+        .global_shortcut()
+        .on_shortcut(shortcut, move |app, _shortcut, event| {
+            if event.state == ShortcutState::Pressed {
+                crate::enhancer::trigger(app);
+            }
+        });
+    if let Err(e) = result {
+        log::error!("Failed to register enhancer hotkey '{ENHANCER_HOTKEY}': {e}");
     }
 }
 

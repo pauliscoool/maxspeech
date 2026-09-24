@@ -2,6 +2,7 @@
 
 mod audio;
 mod context;
+mod enhancer;
 mod hotkey;
 mod inject;
 mod overlay_win;
@@ -979,6 +980,11 @@ fn main() {
             win_update::download_and_run_installer,
             remake_dictation,
             update_history_text,
+            enhancer::enhancer_session,
+            enhancer::enhancer_run,
+            enhancer::enhancer_stop,
+            enhancer::enhancer_close,
+            enhancer::enhancer_replace,
         ])
         .setup(|app| {
             let handle = app.handle().clone();

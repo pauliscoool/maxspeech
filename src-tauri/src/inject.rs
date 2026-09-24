@@ -209,6 +209,94 @@ fn any_modifier_down() -> bool {
     }
 }
 
+fn press_ctrl_combo(letter: char) -> Result<(), Box<dyn std::error::Error>> {
+    let mod_key = paste_modifier();
+    let mut enigo = Enigo::new(&Settings::default()).map_err(|e| format!("{e}"))?;
+    enigo
+        .key(mod_key, Direction::Press)
+        .map_err(|e| format!("{e}"))?;
+    let click = enigo.key(Key::Unicode(letter), Direction::Click);
+    let _ = enigo.key(mod_key, Direction::Release);
+    click.map_err(|e| format!("{e}"))?;
+    Ok(())
+}
+
+/// Poll until the clipboard differs from `marker` (the copy landed).
+fn wait_for_copy(marker: &str, timeout: Duration) -> Option<String> {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(30));
+        match get_clipboard_text() {
+            Some(t) if t != marker && !t.is_empty() => return Some(t),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Copy the focused app's selection; if nothing is selected, select all first.
+/// A sentinel on the clipboard tells "copy landed" apart from "nothing selected".
+pub fn capture_selection() -> Result<String, Box<dyn std::error::Error>> {
+    let _guard = INJECT_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    // The hotkey's own Ctrl+Shift must be up or the copy becomes Ctrl+Shift+C.
+    wait_for_modifiers_up(Duration::from_millis(600));
+    thread::sleep(Duration::from_millis(40));
+
+    let previous = get_clipboard_text();
+    let marker = format!(
+        "\u{200B}maxspeech-sel-{}",
+        CLIPBOARD_GEN.fetch_add(1, Ordering::SeqCst)
+    );
+    ensure_clipboard_text(&marker)?;
+
+    press_ctrl_combo('c')?;
+    let mut copied = wait_for_copy(&marker, Duration::from_millis(350));
+    if copied.is_none() {
+        press_ctrl_combo('a')?;
+        thread::sleep(Duration::from_millis(60));
+        press_ctrl_combo('c')?;
+        copied = wait_for_copy(&marker, Duration::from_millis(500));
+    }
+
+    match &previous {
+        Some(prev) => {
+            let _ = set_clipboard_text(prev);
+        }
+        None => {
+            if let Ok(mut cb) = arboard::Clipboard::new() {
+                let _ = cb.clear();
+            }
+        }
+    }
+
+    match copied {
+        Some(t) if !t.trim().is_empty() => Ok(t),
+        _ => Err("No text to enhance".into()),
+    }
+}
+
+/// Bring `hwnd` back to the foreground before pasting over its selection.
+#[cfg(windows)]
+pub fn focus_window(hwnd: isize) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, SetForegroundWindow};
+    if hwnd == 0 {
+        return;
+    }
+    let target = HWND(hwnd as *mut _);
+    unsafe {
+        if GetForegroundWindow() != target {
+            let _ = SetForegroundWindow(target);
+            thread::sleep(Duration::from_millis(80));
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub fn focus_window(_hwnd: isize) {}
+
 pub fn undo_insertion(insertion: &LastInsertion) -> Result<(), Box<dyn std::error::Error>> {
     let _guard = INJECT_LOCK
         .lock()

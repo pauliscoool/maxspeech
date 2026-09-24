@@ -1,5 +1,7 @@
+pub mod agent_llm;
 pub mod commands;
 pub mod learn_substitutions;
+pub mod recovery;
 pub mod tone;
 pub mod vocab;
 
@@ -162,7 +164,7 @@ fn replay_listening_for_late_overlay(app: &tauri::AppHandle) {
     });
 }
 
-fn is_signed_in(store: &Store) -> bool {
+pub(crate) fn is_signed_in(store: &Store) -> bool {
     // Must be explicitly unlocked by the UI after a real login / Continue locally.
     // Stale account_email alone must not allow hotkey dictation on the login screen.
     let unlocked = store
@@ -387,6 +389,8 @@ pub fn start_dictation(app: &tauri::AppHandle) {
         ..Default::default()
     };
 
+    let retry_keyterms = config.keywords.clone();
+    let stt_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let session_pcm: Arc<Mutex<Vec<i16>>> = Arc::new(Mutex::new(Vec::new()));
     *state.session_pcm.lock().unwrap() = Some(session_pcm.clone());
 
@@ -414,9 +418,13 @@ pub fn start_dictation(app: &tauri::AppHandle) {
     // paint / WebView2 creation. stream_audio drains PCM during the handshake
     // so the first seconds are not dropped.
     let app_for_stt = app.clone();
+    let stt_error_writer = stt_error.clone();
     tauri::async_runtime::spawn(async move {
         if let Err(e) = deepgram::stream_audio(config, audio_rx, transcript_tx, stop_rx).await {
             log::error!("Deepgram stream error: {e}");
+            if let Ok(mut slot) = stt_error_writer.lock() {
+                *slot = Some(e.to_string());
+            }
             let _ = app_for_stt.emit("dictation-error", format!("STT error: {e}"));
             let _ = app_for_stt.emit("dictation-state", "error");
         }
@@ -510,16 +518,6 @@ pub fn start_dictation(app: &tauri::AppHandle) {
             let _ = store.record_duration(duration_secs);
         }
 
-        if text.is_empty() {
-            {
-                let state = app_handle.state::<PipelineState>();
-                *state.session_pcm.lock().unwrap() = None;
-            }
-            hide_overlay_if_current(&app_handle, paste_token);
-            emit_state_if_current(&app_handle, paste_token, "idle");
-            return;
-        }
-
         // Don't flash "Enhancing…" until we know we'll actually call the LLM.
         // Paste happens after enhance — showing Enhancing while only doing local
         // cleanup/paste is confusing (text already looks "done" to the user).
@@ -533,6 +531,47 @@ pub fn start_dictation(app: &tauri::AppHandle) {
             .as_ref()
             .map(|a| context::friendly_app_name(&a.exe))
             .unwrap_or_else(|| "Unknown".to_string());
+
+        let mut text = text;
+        if text.is_empty() {
+            let pcm: Vec<i16> = {
+                let state = app_handle.state::<PipelineState>();
+                let arc = state.session_pcm.lock().unwrap().clone();
+                arc.and_then(|a| a.lock().ok().map(|g| g.clone()))
+                    .unwrap_or_default()
+            };
+            if !recovery::has_speech(&pcm) {
+                // Accidental tap or silent mic — nothing worth keeping.
+                let state = app_handle.state::<PipelineState>();
+                *state.session_pcm.lock().unwrap() = None;
+                hide_overlay_if_current(&app_handle, paste_token);
+                emit_state_if_current(&app_handle, paste_token, "idle");
+                return;
+            }
+
+            log::warn!("Live transcript empty despite speech-like audio — retrying from recording");
+            match recovery::retry_transcribe(&pcm, &language_for_pipeline, &retry_keyterms).await {
+                Ok(recovered) => {
+                    log::info!("Recovered dictation via batch retry ({} chars)", recovered.len());
+                    text = recovered;
+                }
+                Err(reason) => {
+                    let stream_err = stt_error.lock().ok().and_then(|g| g.clone());
+                    let detail = stream_err
+                        .map(|e| format!("Transcription failed: {e}"))
+                        .unwrap_or(reason);
+                    recovery::save_failed(&app_handle, &app_name, &detail, &pcm);
+                    let state = app_handle.state::<PipelineState>();
+                    *state.session_pcm.lock().unwrap() = None;
+                    let _ = app_handle.emit(
+                        "dictation-error",
+                        "Couldn't transcribe — saved to History, tap Retry there",
+                    );
+                    emit_state_if_current(&app_handle, paste_token, "error");
+                    return;
+                }
+            }
+        }
 
         if let Some(cmd_result) = commands::check_command(&text) {
             let pipeline_state = app_handle.state::<PipelineState>();
@@ -781,6 +820,13 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                 }
                 Err(e) => {
                     log::warn!("Paste failed: {e}");
+                    // Never lose the text: leave it on the clipboard and say so.
+                    let _ = inject::copy_text(&final_output);
+                    let _ = app_handle.emit(
+                        "dictation-error",
+                        "Couldn't paste — text copied, press Ctrl+V",
+                    );
+                    emit_state_if_current(&app_handle, paste_token, "error");
                 }
             }
 

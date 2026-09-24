@@ -519,9 +519,10 @@ export async function syncAllLocalHistoryIfMax(): Promise<void> {
 
   try {
     const rows = await invoke<
-      { id: number; text: string; app_name: string; created_at: string }[]
+      { id: number; text: string; app_name: string; created_at: string; status?: string | null }[]
     >("get_history", { search: "", limit: 200, offset: 0 });
     for (const row of rows) {
+      if (row.status === "failed") continue;
       await pushHistoryIfMax(row);
     }
   } catch (e) {
