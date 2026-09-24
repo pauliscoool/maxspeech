@@ -12,6 +12,8 @@ pub struct HistoryEntry {
     pub recording_path: Option<String>,
     /// True when a Remake audio file exists on disk.
     pub can_remake: bool,
+    /// `Some("failed")` when transcription never produced text (Retry re-runs it).
+    pub status: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -114,6 +116,8 @@ impl Store {
             "ALTER TABLE history ADD COLUMN recording_path TEXT",
             [],
         );
+        // NULL = fine; "failed" = transcription produced nothing (nullable, additive).
+        let _ = conn.execute("ALTER TABLE history ADD COLUMN status TEXT", []);
         // Append-only usage ledger — deletes must never refund quota.
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS usage_events (
@@ -371,6 +375,16 @@ impl Store {
         Ok(id)
     }
 
+    /// A dictation whose transcription failed. Never billed — no words were produced.
+    pub fn add_failed_history(&self, reason: &str, app_name: &str) -> Result<i64, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO history (text, app_name, status) VALUES (?1, ?2, 'failed')",
+            params![reason, app_name],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
     pub fn set_history_recording_path(
         &self,
         id: i64,
@@ -422,6 +436,7 @@ impl Store {
         app_name: String,
         created_at: String,
         recording_path: Option<String>,
+        status: Option<String>,
     ) -> HistoryEntry {
         let path = recording_path.filter(|p| !p.is_empty());
         let can_remake = path
@@ -435,6 +450,7 @@ impl Store {
             created_at,
             recording_path: if can_remake { path } else { None },
             can_remake,
+            status,
         }
     }
 
@@ -449,7 +465,7 @@ impl Store {
         let conn = self.conn.lock().unwrap();
         if search.is_empty() {
             let mut stmt = conn.prepare(
-                "SELECT id, text, app_name, created_at, recording_path FROM history ORDER BY id DESC LIMIT ?1 OFFSET ?2",
+                "SELECT id, text, app_name, created_at, recording_path, status FROM history ORDER BY id DESC LIMIT ?1 OFFSET ?2",
             )?;
             let rows = stmt.query_map(params![limit, offset], |row| {
                 Ok(Self::map_history_row(
@@ -458,12 +474,13 @@ impl Store {
                     row.get(2)?,
                     row.get(3)?,
                     row.get(4)?,
+                    row.get(5)?,
                 ))
             })?;
             rows.collect()
         } else {
             let mut stmt = conn.prepare(
-                "SELECT id, text, app_name, created_at, recording_path FROM history WHERE text LIKE '%' || ?1 || '%' ORDER BY id DESC LIMIT ?2 OFFSET ?3",
+                "SELECT id, text, app_name, created_at, recording_path, status FROM history WHERE text LIKE '%' || ?1 || '%' ORDER BY id DESC LIMIT ?2 OFFSET ?3",
             )?;
             let rows = stmt.query_map(params![search, limit, offset], |row| {
                 Ok(Self::map_history_row(
@@ -472,6 +489,7 @@ impl Store {
                     row.get(2)?,
                     row.get(3)?,
                     row.get(4)?,
+                    row.get(5)?,
                 ))
             })?;
             rows.collect()
@@ -627,12 +645,12 @@ impl Store {
     pub fn get_stats(&self) -> Result<Stats, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         let total_entries: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM history",
+            "SELECT COUNT(*) FROM history WHERE status IS NULL",
             [],
             |row| row.get(0),
         )?;
         let texts: Vec<String> = {
-            let mut stmt = conn.prepare("SELECT text FROM history")?;
+            let mut stmt = conn.prepare("SELECT text FROM history WHERE status IS NULL")?;
             let rows = stmt.query_map([], |row| row.get(0))?;
             rows.filter_map(|r| r.ok()).collect()
         };
@@ -642,7 +660,7 @@ impl Store {
             .sum();
         let days_active: i64 = conn
             .query_row(
-                "SELECT COUNT(DISTINCT date(created_at)) FROM history",
+                "SELECT COUNT(DISTINCT date(created_at)) FROM history WHERE status IS NULL",
                 [],
                 |row| row.get(0),
             )
@@ -663,7 +681,7 @@ impl Store {
     pub fn get_history_by_id(&self, id: i64) -> Result<Option<HistoryEntry>, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         match conn.query_row(
-            "SELECT id, text, app_name, created_at, recording_path FROM history WHERE id = ?1",
+            "SELECT id, text, app_name, created_at, recording_path, status FROM history WHERE id = ?1",
             params![id],
             |row| {
                 Ok(Self::map_history_row(
@@ -672,6 +690,7 @@ impl Store {
                     row.get(2)?,
                     row.get(3)?,
                     row.get(4)?,
+                    row.get(5)?,
                 ))
             },
         ) {
@@ -684,7 +703,7 @@ impl Store {
     pub fn update_history_text(&self, id: i64, text: &str) -> Result<(), rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "UPDATE history SET text = ?1 WHERE id = ?2",
+            "UPDATE history SET text = ?1, status = NULL WHERE id = ?2",
             params![text, id],
         )?;
         Ok(())

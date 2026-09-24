@@ -1,5 +1,7 @@
+pub mod agent_llm;
 pub mod commands;
 pub mod learn_substitutions;
+pub mod recovery;
 pub mod tone;
 pub mod vocab;
 
@@ -33,6 +35,7 @@ pub struct PipelineState {
     session_gen: Mutex<u64>,
     /// Bumped only when a *new* recording starts. A finishing enhance/inject from an
     /// older recording skips paste if this no longer matches (prevents half+half).
+    /// Re-checked inside inject after the modifier wait so mid-wait starts cancel.
     paste_epoch: Mutex<u64>,
     /// 16 kHz mono PCM for the active session (Remake cache).
     session_pcm: Mutex<Option<Arc<Mutex<Vec<i16>>>>>,
@@ -161,7 +164,7 @@ fn replay_listening_for_late_overlay(app: &tauri::AppHandle) {
     });
 }
 
-fn is_signed_in(store: &Store) -> bool {
+pub(crate) fn is_signed_in(store: &Store) -> bool {
     // Must be explicitly unlocked by the UI after a real login / Continue locally.
     // Stale account_email alone must not allow hotkey dictation on the login screen.
     let unlocked = store
@@ -386,6 +389,8 @@ pub fn start_dictation(app: &tauri::AppHandle) {
         ..Default::default()
     };
 
+    let retry_keyterms = config.keywords.clone();
+    let stt_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let session_pcm: Arc<Mutex<Vec<i16>>> = Arc::new(Mutex::new(Vec::new()));
     *state.session_pcm.lock().unwrap() = Some(session_pcm.clone());
 
@@ -413,9 +418,13 @@ pub fn start_dictation(app: &tauri::AppHandle) {
     // paint / WebView2 creation. stream_audio drains PCM during the handshake
     // so the first seconds are not dropped.
     let app_for_stt = app.clone();
+    let stt_error_writer = stt_error.clone();
     tauri::async_runtime::spawn(async move {
         if let Err(e) = deepgram::stream_audio(config, audio_rx, transcript_tx, stop_rx).await {
             log::error!("Deepgram stream error: {e}");
+            if let Ok(mut slot) = stt_error_writer.lock() {
+                *slot = Some(e.to_string());
+            }
             let _ = app_for_stt.emit("dictation-error", format!("STT error: {e}"));
             let _ = app_for_stt.emit("dictation-state", "error");
         }
@@ -509,16 +518,6 @@ pub fn start_dictation(app: &tauri::AppHandle) {
             let _ = store.record_duration(duration_secs);
         }
 
-        if text.is_empty() {
-            {
-                let state = app_handle.state::<PipelineState>();
-                *state.session_pcm.lock().unwrap() = None;
-            }
-            hide_overlay_if_current(&app_handle, paste_token);
-            emit_state_if_current(&app_handle, paste_token, "idle");
-            return;
-        }
-
         // Don't flash "Enhancing…" until we know we'll actually call the LLM.
         // Paste happens after enhance — showing Enhancing while only doing local
         // cleanup/paste is confusing (text already looks "done" to the user).
@@ -533,6 +532,47 @@ pub fn start_dictation(app: &tauri::AppHandle) {
             .map(|a| context::friendly_app_name(&a.exe))
             .unwrap_or_else(|| "Unknown".to_string());
 
+        let mut text = text;
+        if text.is_empty() {
+            let pcm: Vec<i16> = {
+                let state = app_handle.state::<PipelineState>();
+                let arc = state.session_pcm.lock().unwrap().clone();
+                arc.and_then(|a| a.lock().ok().map(|g| g.clone()))
+                    .unwrap_or_default()
+            };
+            if !recovery::has_speech(&pcm) {
+                // Accidental tap or silent mic — nothing worth keeping.
+                let state = app_handle.state::<PipelineState>();
+                *state.session_pcm.lock().unwrap() = None;
+                hide_overlay_if_current(&app_handle, paste_token);
+                emit_state_if_current(&app_handle, paste_token, "idle");
+                return;
+            }
+
+            log::warn!("Live transcript empty despite speech-like audio — retrying from recording");
+            match recovery::retry_transcribe(&pcm, &language_for_pipeline, &retry_keyterms).await {
+                Ok(recovered) => {
+                    log::info!("Recovered dictation via batch retry ({} chars)", recovered.len());
+                    text = recovered;
+                }
+                Err(reason) => {
+                    let stream_err = stt_error.lock().ok().and_then(|g| g.clone());
+                    let detail = stream_err
+                        .map(|e| format!("Transcription failed: {e}"))
+                        .unwrap_or(reason);
+                    recovery::save_failed(&app_handle, &app_name, &detail, &pcm);
+                    let state = app_handle.state::<PipelineState>();
+                    *state.session_pcm.lock().unwrap() = None;
+                    let _ = app_handle.emit(
+                        "dictation-error",
+                        "Couldn't transcribe — saved to History, tap Retry there",
+                    );
+                    emit_state_if_current(&app_handle, paste_token, "error");
+                    return;
+                }
+            }
+        }
+
         if let Some(cmd_result) = commands::check_command(&text) {
             let pipeline_state = app_handle.state::<PipelineState>();
             let still_current = {
@@ -544,6 +584,7 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                 // Do not emit idle — a newer listening session may already own the UI.
                 return;
             }
+            let epoch_alive = || paste_still_current(&app_handle, paste_token);
             match cmd_result {
                 commands::CommandResult::ScratchThat => {
                     let last = pipeline_state.last_insertion.lock().unwrap();
@@ -561,21 +602,34 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                         // something to replace it with (LLM failure used to wipe text).
                         match tone::rewrite_with_llm(&old, &instruction).await {
                             Ok(rewritten) => {
+                                if !epoch_alive() {
+                                    log::info!(
+                                        "Skipping rewrite inject for stale paste={paste_token}"
+                                    );
+                                    return;
+                                }
                                 let _ = inject::undo_insertion(&LastInsertion {
                                     text: old.clone(),
                                     char_count: count,
                                     pasted_at: Instant::now(),
                                 });
-                                match inject::inject_text(&rewritten) {
+                                match inject::inject_text_if(&rewritten, epoch_alive) {
                                     Ok(new_ins) => {
                                         *pipeline_state.last_insertion.lock().unwrap() =
                                             Some(new_ins);
+                                    }
+                                    Err(e) if e.to_string().contains("cancelled") => {
+                                        log::info!(
+                                            "Rewrite inject cancelled (stale paste={paste_token})"
+                                        );
                                     }
                                     Err(e) => {
                                         log::warn!(
                                             "Rewrite inject failed after undo, restoring original: {e}"
                                         );
-                                        if let Ok(restored) = inject::inject_text(&old) {
+                                        if let Ok(restored) =
+                                            inject::inject_text_if(&old, epoch_alive)
+                                        {
                                             *pipeline_state.last_insertion.lock().unwrap() =
                                                 Some(restored);
                                         }
@@ -589,8 +643,16 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                     }
                 }
                 commands::CommandResult::InsertText(t) => {
-                    if let Ok(ins) = inject::inject_text(&t) {
-                        *pipeline_state.last_insertion.lock().unwrap() = Some(ins);
+                    match inject::inject_text_if(&t, epoch_alive) {
+                        Ok(ins) => {
+                            *pipeline_state.last_insertion.lock().unwrap() = Some(ins);
+                        }
+                        Err(e) if e.to_string().contains("cancelled") => {
+                            log::info!(
+                                "Command inject cancelled (stale paste={paste_token})"
+                            );
+                        }
+                        Err(e) => log::warn!("Command inject failed: {e}"),
                     }
                 }
             }
@@ -736,16 +798,36 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                 return;
             }
 
-            if let Ok(ins) = inject::inject_text(&final_output) {
-                let prev = pipeline_state.pending_learn_from.lock().unwrap().take();
-                if let Some(prev_text) = prev {
-                    learn_substitutions::learn_from_redictate(
-                        &prev_text,
-                        &final_output,
-                        &store,
-                    );
+            let epoch_alive = || paste_still_current(&app_handle, paste_token);
+            match inject::inject_text_if(&final_output, epoch_alive) {
+                Ok(ins) => {
+                    let prev = pipeline_state.pending_learn_from.lock().unwrap().take();
+                    if let Some(prev_text) = prev {
+                        learn_substitutions::learn_from_redictate(
+                            &prev_text,
+                            &final_output,
+                            &store,
+                        );
+                    }
+                    *pipeline_state.last_insertion.lock().unwrap() = Some(ins);
                 }
-                *pipeline_state.last_insertion.lock().unwrap() = Some(ins);
+                Err(e) if e.to_string().contains("cancelled") => {
+                    log::info!(
+                        "Paste cancelled mid-inject for stale session paste={paste_token}"
+                    );
+                    // Newer session owns the field — don't emit idle / toast.
+                    return;
+                }
+                Err(e) => {
+                    log::warn!("Paste failed: {e}");
+                    // Never lose the text: leave it on the clipboard and say so.
+                    let _ = inject::copy_text(&final_output);
+                    let _ = app_handle.emit(
+                        "dictation-error",
+                        "Couldn't paste — text copied, press Ctrl+V",
+                    );
+                    emit_state_if_current(&app_handle, paste_token, "error");
+                }
             }
 
             // Grammarly-like toast before WAV I/O so it isn't delayed by Remake save.
@@ -803,6 +885,13 @@ pub fn start_dictation(app: &tauri::AppHandle) {
         hide_overlay_if_current(&app_handle, paste_token);
         emit_state_if_current(&app_handle, paste_token, "idle");
     });
+}
+
+/// True while this paste token is still the newest recording start.
+fn paste_still_current(app: &tauri::AppHandle, paste_token: u64) -> bool {
+    let state = app.state::<PipelineState>();
+    let epoch = state.paste_epoch.lock().unwrap();
+    *epoch == paste_token
 }
 
 /// Only the current paste epoch may drive overlay state — prevents a finishing
@@ -884,6 +973,10 @@ pub fn stop_dictation(app: &tauri::AppHandle) {
     });
 
     log::info!("Dictation stopped after {elapsed_secs:.1}s ({trail_ms}ms trail)");
+    // Switch to the thinking wave while Deepgram drains + enhance runs — frozen
+    // mic bars after release look stuck when transcription takes a moment.
+    let paste_token = *state.paste_epoch.lock().unwrap();
+    emit_state_if_current(app, paste_token, "processing");
 }
 
 fn invalidate_session(state: &PipelineState) {

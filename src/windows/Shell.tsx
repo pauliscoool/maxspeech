@@ -16,6 +16,7 @@ const UsagePage = lazy(() => import("./pages/UsagePage"));
 import PlanModal from "../components/PlanModal";
 import ThemeWipe from "../components/ThemeWipe";
 import AppToast from "../components/AppToast";
+import AppleSpinner from "../components/AppleSpinner";
 import {
   checkForUpdate,
   formatUpdateFailure,
@@ -474,7 +475,9 @@ export default function Shell({ authUser }: { authUser: AuthUser | null }) {
       <main className="flex-1 min-w-0 overflow-y-auto page-enter" key={page}>
         <Suspense
           fallback={
-            <div className="p-8 text-sm text-[var(--ms-text-dim)]">Loading…</div>
+            <div className="flex items-center justify-center p-16">
+              <AppleSpinner size={24} />
+            </div>
           }
         >
         {page === "home" && (

@@ -1550,16 +1550,71 @@ html[data-window="shell"] .flex.h-screen {
   }
 }
 
-/* Inline action spinner for Copy / Remake */
-.ms-spin {
-  width: 10px;
-  height: 10px;
-  border: 1.5px solid currentColor;
-  border-right-color: transparent;
-  border-radius: 50%;
+/* Apple-style asterisk activity indicator — bare radial ticks. */
+.ms-apple-spin {
+  position: relative;
   display: inline-block;
-  animation: msSpin 0.55s linear infinite;
+  flex-shrink: 0;
+  color: var(--ms-spin-color, var(--ms-turquoise));
+  vertical-align: middle;
+}
+
+.ms-apple-spin-tick {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  justify-content: center;
+  animation: msAppleTick 0.85s linear infinite;
+}
+
+.ms-apple-spin-tick::before {
+  content: "";
+  width: 11%;
+  height: 26%;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+@keyframes msAppleTick {
+  0% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0.12;
+  }
+}
+
+/* Compact inline busy tick (Copy / Remake) — same asterisk language. */
+.ms-spin {
+  position: relative;
+  width: 11px;
+  height: 11px;
+  display: inline-block;
   vertical-align: -1px;
+  color: currentColor;
+  border-radius: 50%;
+  animation: msSpin 0.75s steps(8) infinite;
+  background: conic-gradient(
+    from 0deg,
+    currentColor 0 8deg,
+    transparent 8deg 45deg,
+    currentColor 45deg 53deg,
+    transparent 53deg 90deg,
+    currentColor 90deg 98deg,
+    transparent 98deg 135deg,
+    currentColor 135deg 143deg,
+    transparent 143deg 180deg,
+    currentColor 180deg 188deg,
+    transparent 188deg 225deg,
+    currentColor 225deg 233deg,
+    transparent 233deg 270deg,
+    currentColor 270deg 278deg,
+    transparent 278deg 315deg,
+    currentColor 315deg 323deg,
+    transparent 323deg 360deg
+  );
+  -webkit-mask: radial-gradient(farthest-side, transparent 48%, #000 49% 72%, transparent 73%);
+  mask: radial-gradient(farthest-side, transparent 48%, #000 49% 72%, transparent 73%);
 }
 
 @keyframes msSpin {
@@ -1749,5 +1804,239 @@ html[data-window="shell"] .flex.h-screen {
   .settings-nested {
     animation: none !important;
     filter: none !important;
+  }
+}
+
+/* ── Enhance-selection widget (Ctrl+Shift+E) ─────────────────────────── */
+html[data-window="enhancer"],
+html[data-window="enhancer"] body,
+html[data-window="enhancer"] #root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: #18181b !important;
+}
+
+.enh-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 12px;
+  gap: 10px;
+  box-sizing: border-box;
+  color: #f4f4f5;
+  background: #18181b;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  font-family: inherit;
+  user-select: none;
+}
+
+.enh-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.enh-select {
+  position: relative;
+}
+
+.enh-select-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 0 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: #27272a;
+  color: #f4f4f5;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.enh-select-btn:hover {
+  background: #303034;
+  border-color: rgba(34, 211, 238, 0.4);
+}
+
+.enh-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 5;
+  min-width: 230px;
+  padding: 6px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: #202024;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
+  animation: enhMenuIn 0.14s ease-out;
+}
+
+.enh-menu-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  width: 100%;
+  min-height: 44px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: #f4f4f5;
+  text-align: left;
+  cursor: pointer;
+}
+.enh-menu-item:hover {
+  background: #2c2c31;
+}
+.enh-menu-item.is-active {
+  background: rgba(34, 211, 238, 0.14);
+}
+.enh-menu-label {
+  font-size: 14px;
+  font-weight: 600;
+}
+.enh-menu-item.is-active .enh-menu-label {
+  color: #22d3ee;
+}
+.enh-menu-hint {
+  font-size: 12px;
+  color: #a1a1aa;
+}
+
+.enh-status {
+  flex: 1;
+  text-align: right;
+  font-size: 12px;
+  color: #a1a1aa;
+}
+
+.enh-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: #0f0f11;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  user-select: text;
+}
+
+.enh-text {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 15px;
+  line-height: 1.55;
+  color: #f4f4f5;
+}
+
+.enh-error {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.5;
+  color: #f87171;
+}
+
+.enh-caret {
+  display: inline-block;
+  width: 2px;
+  height: 1.1em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: #22d3ee;
+  animation: enhBlink 0.9s steps(1) infinite;
+}
+
+.enh-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.enh-action {
+  position: relative;
+  width: 132px;
+  height: 44px;
+}
+
+.enh-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 18px;
+  border-radius: 12px;
+  border: 1px solid transparent;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.28s ease, transform 0.28s ease, background 0.15s ease;
+}
+
+.enh-btn-ghost {
+  background: transparent;
+  color: #a1a1aa;
+  border-color: rgba(255, 255, 255, 0.08);
+}
+.enh-btn-ghost:hover {
+  background: #27272a;
+  color: #f4f4f5;
+}
+
+.enh-action .enh-btn {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+}
+.enh-btn.is-hidden {
+  opacity: 0;
+  transform: scale(0.94);
+  pointer-events: none;
+}
+
+.enh-btn-stop {
+  background: #27272a;
+  color: #f4f4f5;
+  border-color: rgba(255, 255, 255, 0.12);
+}
+.enh-btn-stop:hover {
+  background: #303034;
+}
+.enh-stop-icon {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  background: #22d3ee;
+}
+
+.enh-btn-replace {
+  background: linear-gradient(135deg, #22d3ee, #3b82f6);
+  color: #04141a;
+}
+.enh-btn-replace:hover {
+  filter: brightness(1.08);
+}
+
+@keyframes enhBlink {
+  50% {
+    opacity: 0;
+  }
+}
+@keyframes enhMenuIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
   }
 }

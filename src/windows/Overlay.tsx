@@ -74,8 +74,7 @@ export default function Overlay() {
   }, []);
 
   useEffect(() => {
-    // Processing: synthetic ping-pong / dig wave. Listening: real audio-level
-    // events only — do not breathe as if the mic is live while WASAPI/WS open.
+    // Processing: synthetic left↔right / dig wave. Listening: real audio levels.
     if (state !== "listening" && state !== "processing") {
       if (raf.current) cancelAnimationFrame(raf.current);
       raf.current = null;
@@ -442,6 +441,11 @@ export default function Overlay() {
   );
 }
 
+function truncate(s: string, n: number) {
+  const t = s.trim().replace(/\s+/g, " ");
+  return t.length <= n ? t : t.slice(0, n - 1) + "…";
+}
+
 function pingPong01(t: number, oneWayS: number): number {
   const cycle = oneWayS * 2;
   const x = ((t % cycle) + cycle) % cycle;
@@ -452,7 +456,7 @@ function gaussian(dist: number, sigma: number): number {
   return Math.exp(-(dist * dist) / (2 * sigma * sigma));
 }
 
-/** Processing / enhance: traveling ping-pong, then a slower dual-phase “dig”. */
+/** Processing / enhance: traveling left↔right pulse, then a slower dual-phase dig. */
 function thinkingBarLevel(t: number, i: number): number {
   const n = BAR_COUNT - 1;
   const pulse = pingPong01(t, 1.05);
@@ -470,11 +474,6 @@ function thinkingBarLevel(t: number, i: number): number {
   const k = Math.min(1, (t - THINKING_DIG_AFTER_S) / 0.4);
   const eased = k * k * (3 - 2 * k);
   return Math.min(0.98, a1 + (a2 - a1) * eased);
-}
-
-function truncate(s: string, n: number) {
-  const t = s.trim().replace(/\s+/g, " ");
-  return t.length <= n ? t : t.slice(0, n - 1) + "…";
 }
 
 async function clearOverlayChrome() {
