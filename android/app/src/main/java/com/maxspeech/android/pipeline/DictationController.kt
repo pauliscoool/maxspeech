@@ -54,6 +54,7 @@ const val DictationRetryWindowMs = 5_000L
 private const val RETRY_WINDOW_MS = DictationRetryWindowMs
 private const val STREAM_OPEN_TIMEOUT_MS = 6_000L
 private const val SAVED_RETRY_WINDOW_MS = 60_000L
+private const val AUTO_RETRY_PAUSE_MS = 10_000L
 /** ~0.25s of 16 kHz 16-bit mono. */
 private const val MIN_PCM_BYTES = 16_000 * 2 / 4
 
@@ -78,6 +79,7 @@ class DictationController(
     private var errorDismissJob: Job? = null
     // Tracked so cancel / a new session stops a stale finish from pasting or closing the new socket.
     private var finishJob: Job? = null
+    private var autoRetryJob: Job? = null
     private val finals = StringBuilder()
     private val lastInterim = StringBuilder()
     private var sessionApp: String = ""
@@ -369,10 +371,13 @@ class DictationController(
                 ?.trim()
                 .orEmpty()
         }
+        Log.i(TAG, "finish: stream=${if (streamComplete) "complete" else "incomplete"} words=${raw.length} voice=${audio.heardVoice}")
         // Streaming missed audio (weak network) or heard nothing: re-transcribe the recording.
         if (raw.isBlank() || !streamComplete) {
             val pcm = synchronized(pcmLock) { pcmCapture.toByteArray() }
-            when (val batch = batchFallback(pcm)) {
+            val batch = batchFallback(pcm)
+            Log.i(TAG, "batch: pcm=${pcm.size}B result=${batch::class.simpleName}")
+            when (batch) {
                 is BatchResult.Text -> if (batch.text.isNotBlank()) raw = batch.text
                 is BatchResult.Rejected -> if (raw.isBlank()) {
                     presentError(batch.message)
@@ -383,6 +388,7 @@ class DictationController(
                     savedHeldMs = heldMs
                     savedConfirmOnly = confirmOnly
                     presentError("No connection. Recording saved, tap retry.", autoClearMs = SAVED_RETRY_WINDOW_MS)
+                    autoRetryWhenOnline()
                     return
                 }
             }
@@ -393,6 +399,12 @@ class DictationController(
     private suspend fun processTranscript(raw: String, snap: AppSettings, heldMs: Long, confirmOnly: Boolean) {
         if (raw.isNotBlank() && handleVoiceCommand(raw, snap)) return
         if (raw.isBlank()) {
+            // The mic heard a voice but no words came back: say so instead of vanishing.
+            if (audio.heardVoice) {
+                thinkingJob?.cancel()
+                presentError("Didn't catch that. Try again.")
+                return
+            }
             // Flush still empty — stop quietly; no error chip / retry delay.
             resetToIdle()
             return
@@ -522,6 +534,38 @@ class DictationController(
         }
     }
 
+    /** Saved recording on screen: send it by itself once the phone is back online. */
+    private fun autoRetryWhenOnline() {
+        autoRetryJob?.cancel()
+        autoRetryJob = scope.launch {
+            val cm = context.getSystemService(android.net.ConnectivityManager::class.java)
+            val startedAt = SystemClock.elapsedRealtime()
+            var wasOffline = !isOnline(cm)
+            while (SystemClock.elapsedRealtime() - startedAt < SAVED_RETRY_WINDOW_MS - 5_000L) {
+                delay(2_000L)
+                val pcm = savedPcm ?: return@launch
+                if (_ui.value.phase != DictationPhase.Error) return@launch
+                val online = isOnline(cm)
+                if (!online) {
+                    wasOffline = true
+                    continue
+                }
+                // Retry right when the network returns, or after a pause on a flaky link.
+                if (wasOffline || SystemClock.elapsedRealtime() - startedAt >= AUTO_RETRY_PAUSE_MS) {
+                    Log.i(TAG, "Network back — retrying saved recording")
+                    retrySavedAudio(pcm)
+                    return@launch
+                }
+            }
+        }
+    }
+
+    private fun isOnline(cm: android.net.ConnectivityManager?): Boolean {
+        cm ?: return true
+        val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return false
+        return caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+    }
+
     /** Retry a recording that couldn't be sent: transcribe the saved audio instead of re-recording. */
     private fun retrySavedAudio(pcm: ByteArray) {
         errorDismissJob?.cancel()
@@ -544,6 +588,7 @@ class DictationController(
                     BatchResult.Unreachable -> {
                         thinkingJob?.cancel()
                         presentError("Still no connection. Recording kept, tap retry.", autoClearMs = SAVED_RETRY_WINDOW_MS)
+                        autoRetryWhenOnline()
                     }
                 }
             } finally {

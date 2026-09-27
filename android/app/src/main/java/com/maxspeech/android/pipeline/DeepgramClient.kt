@@ -89,6 +89,7 @@ class DeepgramClient {
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 if (generation.get() != gen) return
+                android.util.Log.w("MaxSpeechStt", "stream failed http=${response?.code}: ${t.message}")
                 open.set(false)
                 degraded = true
                 ready.trySend(Result.failure(t))
