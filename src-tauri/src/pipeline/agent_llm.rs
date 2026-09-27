@@ -341,7 +341,6 @@ where
         if is_cancelled() {
             return Ok(String::new());
         }
-        let t0 = Instant::now();
         let res = rewrite(system, body, is_cancelled).await;
         match res {
             Ok(reply) => {

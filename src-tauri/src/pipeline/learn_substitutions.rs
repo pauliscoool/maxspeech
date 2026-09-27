@@ -22,7 +22,26 @@ pub fn elapsed_within_window(elapsed: Duration) -> bool {
 
 /// Persist small diffs between a previous paste and a follow-up dictation.
 pub fn learn_from_redictate(previous: &str, next: &str, store: &Store) {
-    persist_pairs(&substitutions_from_redictate(previous, next), store);
+    persist_pairs(&redictate_corrections(previous, next), store);
+}
+
+/// Re-dictating within a few seconds is often the speaker changing their mind
+/// ("going home" → "going out"), not ASR getting a word wrong. Learning those
+/// swaps made later dictations paste words that were never said, so only keep
+/// pairs whose replacement is a name / term (capitalized for a reason).
+pub fn redictate_corrections(previous: &str, next: &str) -> Vec<Substitution> {
+    let next_tokens = tokenize(next);
+    substitutions_from_redictate(previous, next)
+        .into_iter()
+        .filter(|sub| {
+            tokenize(&sub.to).iter().any(|t| {
+                let sentence_start = next_tokens.len() >= 3
+                    && next_tokens.first().map(|f| f == t).unwrap_or(false)
+                    && !t.chars().skip(1).any(|c| c.is_uppercase());
+                looks_like_name_term(t) && !sentence_start
+            })
+        })
+        .collect()
 }
 
 /// Same mapping for spoken self-correct and history edits (no time window).
@@ -452,6 +471,26 @@ mod tests {
     fn skips_unrelated_suffix_without_name_context() {
         let pairs = substitutions_from_redictate("see you in court", "Core");
         assert!(pairs.is_empty());
+    }
+
+    #[test]
+    fn redictate_skips_plain_word_changes_of_mind() {
+        assert!(redictate_corrections("I'm going home now", "I'm going out now").is_empty());
+        assert!(redictate_corrections("Going home now", "Heading home now").is_empty());
+        assert!(redictate_corrections("send the report", "send the invoice").is_empty());
+    }
+
+    #[test]
+    fn redictate_keeps_name_fixes() {
+        assert_eq!(
+            redictate_corrections("Send it to Daniel please", "Send it to Samuel please"),
+            vec![Substitution {
+                from: "daniel".into(),
+                to: "Samuel".into(),
+            }]
+        );
+        assert_eq!(redictate_corrections("Daniel", "Samuel").len(), 1);
+        assert_eq!(redictate_corrections("Covenant court", "Core").len(), 1);
     }
 
     #[test]

@@ -665,14 +665,20 @@ html[data-window="shell"] aside > div:first-child {
   -webkit-backdrop-filter: none;
   /* Hard-mask the HWND to a capsule so WebView2/DWM white never shows in
      the rectangular corners outside the CSS border-radius AA fringe. */
-  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 148 36'%3E%3Crect x='2' y='2' width='144' height='32' rx='16' ry='16' fill='%23000'/%3E%3C/svg%3E");
-  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 148 36'%3E%3Crect x='2' y='2' width='144' height='32' rx='16' ry='16' fill='%23000'/%3E%3C/svg%3E");
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 141 34'%3E%3Crect x='2' y='2' width='137' height='30' rx='15' ry='15' fill='%23000'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 141 34'%3E%3Crect x='2' y='2' width='137' height='30' rx='15' ry='15' fill='%23000'/%3E%3C/svg%3E");
   -webkit-mask-size: 100% 100%;
   mask-size: 100% 100%;
   -webkit-mask-repeat: no-repeat;
   mask-repeat: no-repeat;
   -webkit-mask-position: center;
   mask-position: center;
+}
+
+/* Toggle-mode pill (184x34, see overlay_win.rs PILL_CONTROLS_W): same capsule, wider. */
+.overlay-root--controls {
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 184 34'%3E%3Crect x='2' y='2' width='180' height='30' rx='15' ry='15' fill='%23000'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 184 34'%3E%3Crect x='2' y='2' width='180' height='30' rx='15' ry='15' fill='%23000'/%3E%3C/svg%3E");
 }
 
 .overlay-root--toast,
@@ -698,8 +704,8 @@ html[data-window="shell"] aside > div:first-child {
 }
 
 .liquid-glass-pill--limit {
-  width: 148px;
-  height: 36px;
+  width: 141px;
+  height: 34px;
   flex: 0 0 auto;
   justify-content: center;
 }
@@ -713,6 +719,83 @@ html[data-window="shell"] aside > div:first-child {
 .liquid-glass-pill--in,
 .liquid-glass-pill--out {
   animation: none;
+}
+
+/* The HWND itself must never animate (WebView2 white flash), so the pop-in
+   lives on the content: waveform rises in, side buttons spring after it. */
+.liquid-glass-pill--in > .overlay-waveform {
+  animation: msPillWaveIn 200ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.overlay-ctl {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  border-radius: 9999px;
+  border: none;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  animation: msPillCtlIn 240ms cubic-bezier(0.34, 1.56, 0.64, 1) 60ms both;
+  transition: transform 90ms ease, background-color 120ms ease, opacity 120ms ease;
+}
+
+.overlay-ctl:active {
+  transform: scale(0.88);
+}
+
+.overlay-ctl--cancel {
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.overlay-ctl--cancel:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.overlay-ctl--done {
+  background: #2dd4bf;
+  color: #04201c;
+}
+
+.overlay-ctl--done:hover {
+  background: #5eead4;
+}
+
+.overlay-ctl--done:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+@keyframes msPillWaveIn {
+  from {
+    opacity: 0;
+    transform: scaleY(0.35) scaleX(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes msPillCtlIn {
+  from {
+    opacity: 0;
+    transform: scale(0.5);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .liquid-glass-pill--in > .overlay-waveform,
+  .overlay-ctl {
+    animation: none;
+  }
 }
 
 .limit-upgrade {

@@ -12,6 +12,7 @@ use crate::recording::{self, MAX_REMAKE_RECORDINGS, WAV_SAMPLE_RATE};
 use crate::secrets;
 use crate::store::Store;
 use crate::stt::deepgram::{self, DeepgramConfig, TranscriptChunk};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
@@ -42,6 +43,13 @@ pub struct PipelineState {
     /// Foreground app captured at hotkey-down (tone + history must use this, not
     /// whatever is focused after enhance finishes).
     session_fg: Mutex<Option<context::ForegroundApp>>,
+    /// Window focused at hotkey-down, so overlay ✓/✗ clicks can hand focus back.
+    session_hwnd: Mutex<isize>,
+    /// Deepgram returned any words for the current session.
+    heard_text: AtomicBool,
+    /// Paste token of a session the user cancelled or that held no speech; its
+    /// pipeline must end silently (no paste, no history, no failure toast).
+    discarded_paste: Mutex<u64>,
 }
 
 impl Default for PipelineState {
@@ -58,6 +66,9 @@ impl Default for PipelineState {
             paste_epoch: Mutex::new(0),
             session_pcm: Mutex::new(None),
             session_fg: Mutex::new(None),
+            session_hwnd: Mutex::new(0),
+            heard_text: AtomicBool::new(false),
+            discarded_paste: Mutex::new(0),
         }
     }
 }
@@ -73,11 +84,19 @@ fn focus_login_ui(app: &tauri::AppHandle) {
 }
 
 fn show_overlay_fast(app: &tauri::AppHandle) {
+    show_overlay_with(app, false);
+}
+
+/// `controls`: toggle-mode pill with ✗ / ✓ buttons (wider, clickable).
+fn show_overlay_with(app: &tauri::AppHandle, controls: bool) {
     // Hotkey path runs on a worker thread — WebView2/DWM clears only stick on the
     // UI thread. Queue there; fall back to inline if scheduling fails.
     let app2 = app.clone();
-    if app.run_on_main_thread(move || show_overlay_fast_inner(&app2)).is_err() {
-        show_overlay_fast_inner(app);
+    if app
+        .run_on_main_thread(move || show_overlay_fast_inner(&app2, controls))
+        .is_err()
+    {
+        show_overlay_fast_inner(app, controls);
     }
 }
 
@@ -98,8 +117,7 @@ fn hide_overlay_fast(app: &tauri::AppHandle) {
 }
 
 fn hide_overlay_if_current(app: &tauri::AppHandle, paste_token: u64) {
-    let current = *app.state::<PipelineState>().paste_epoch.lock().unwrap();
-    if current != paste_token {
+    if !paste_still_current(app, paste_token) {
         return;
     }
     hide_overlay_fast(app);
@@ -108,7 +126,7 @@ fn hide_overlay_if_current(app: &tauri::AppHandle, paste_token: u64) {
 /// Bottom-center pill slot on the monitor under the cursor (falls back to
 /// primary). Recomputed every hotkey — a OnceLock left Ctrl+Win stuck on the
 /// first screen forever, and `current_monitor()` is wrong while parked off-screen.
-fn overlay_listening_slot(w: &tauri::WebviewWindow) -> (i32, i32) {
+fn overlay_listening_slot(w: &tauri::WebviewWindow, pill_w: f64) -> (i32, i32) {
     let monitor = w
         .cursor_position()
         .ok()
@@ -120,8 +138,8 @@ fn overlay_listening_slot(w: &tauri::WebviewWindow) -> (i32, i32) {
         let scale = monitor.scale_factor();
         let size = monitor.size();
         let origin = monitor.position();
-        let pill_w = (148.0 * scale).round() as i32;
-        let pill_h = (36.0 * scale).round() as i32;
+        let pill_w = (pill_w * scale).round() as i32;
+        let pill_h = (crate::overlay_win::PILL_H * scale).round() as i32;
         let margin = (48.0 * scale).round() as i32;
         (
             origin.x + (size.width as i32 - pill_w) / 2,
@@ -132,16 +150,16 @@ fn overlay_listening_slot(w: &tauri::WebviewWindow) -> (i32, i32) {
     }
 }
 
-fn show_overlay_fast_inner(app: &tauri::AppHandle) {
+fn show_overlay_fast_inner(app: &tauri::AppHandle, controls: bool) {
     // Only create a WebView2 here if startup pre-warm missed. Callers start
     // mic + Deepgram *before* this so a cold overlay cannot steal the first seconds.
     let cold = app.get_webview_window("overlay").is_none();
     crate::ensure_overlay_window(app);
     if let Some(w) = app.get_webview_window("overlay") {
-        let (x, y) = overlay_listening_slot(&w);
+        let (x, y) = overlay_listening_slot(&w, crate::overlay_win::pill_width(controls));
         // Clip while still parked, then one SetWindowPos — never reveal a
         // rectangular HWND for a frame.
-        crate::overlay_win::reveal_listening(&w, x, y);
+        crate::overlay_win::reveal_listening(&w, x, y, controls);
     }
     if cold {
         replay_listening_for_late_overlay(app);
@@ -160,6 +178,8 @@ fn replay_listening_for_late_overlay(app: &tauri::AppHandle) {
                 return;
             }
             let _ = app.emit("dictation-state", "listening");
+            // Toggle mode's ✗/✓ too, or a cold overlay is wide and clickable with no buttons.
+            let _ = app.emit("dictation-controls", crate::hotkey::get_hotkey_mode(&app) == "toggle");
         }
     });
 }
@@ -290,6 +310,8 @@ pub fn start_dictation(app: &tauri::AppHandle) {
     *state.started_at.lock().unwrap() = Some(Instant::now());
     // Snapshot focus now — enhance/history must not use a later app switch.
     *state.session_fg.lock().unwrap() = context::get_foreground_app();
+    *state.session_hwnd.lock().unwrap() = context::foreground_hwnd();
+    state.heard_text.store(false, Ordering::SeqCst);
     {
         let last = state.last_insertion.lock().unwrap();
         let pending = last.as_ref().and_then(|ins| {
@@ -391,6 +413,7 @@ pub fn start_dictation(app: &tauri::AppHandle) {
 
     let retry_keyterms = config.keywords.clone();
     let stt_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let stream_complete = Arc::new(std::sync::atomic::AtomicBool::new(true));
     let session_pcm: Arc<Mutex<Vec<i16>>> = Arc::new(Mutex::new(Vec::new()));
     *state.session_pcm.lock().unwrap() = Some(session_pcm.clone());
 
@@ -408,25 +431,33 @@ pub fn start_dictation(app: &tauri::AppHandle) {
             if let Ok(mut buf) = pcm_tee.lock() {
                 buf.extend_from_slice(&chunk);
             }
-            if audio_tx.send(chunk).is_err() {
-                break;
-            }
+            // A dead STT socket must not stop the local recording: Remake and the
+            // batch retry need the whole take, not just the part before the drop.
+            let _ = audio_tx.send(chunk);
         }
     });
 
     // Deepgram TLS/WS and WASAPI must start immediately — overlapping overlay
     // paint / WebView2 creation. stream_audio drains PCM during the handshake
     // so the first seconds are not dropped.
-    let app_for_stt = app.clone();
     let stt_error_writer = stt_error.clone();
+    let stream_complete_writer = stream_complete.clone();
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = deepgram::stream_audio(config, audio_rx, transcript_tx, stop_rx).await {
-            log::error!("Deepgram stream error: {e}");
-            if let Ok(mut slot) = stt_error_writer.lock() {
-                *slot = Some(e.to_string());
+        match deepgram::stream_audio(config, audio_rx, transcript_tx, stop_rx).await {
+            Ok(true) => {}
+            Ok(false) => {
+                log::warn!("Deepgram stream incomplete — will re-transcribe from the recording");
+                stream_complete_writer.store(false, std::sync::atomic::Ordering::SeqCst);
             }
-            let _ = app_for_stt.emit("dictation-error", format!("STT error: {e}"));
-            let _ = app_for_stt.emit("dictation-state", "error");
+            Err(e) => {
+                // No error pill here: the recording continues and the batch retry /
+                // failure notification after release report the outcome.
+                log::error!("Deepgram stream error: {e}");
+                if let Ok(mut slot) = stt_error_writer.lock() {
+                    *slot = Some(e.to_string());
+                }
+                stream_complete_writer.store(false, std::sync::atomic::Ordering::SeqCst);
+            }
         }
     });
 
@@ -440,8 +471,11 @@ pub fn start_dictation(app: &tauri::AppHandle) {
     play_sound_cue(app, crate::sound::CueKind::Start);
 
     // Overlay last: connecting bars until this session's audio-level events.
+    // Toggle mode has no key to release, so the pill gets ✗ / ✓ buttons.
+    let controls = crate::hotkey::get_hotkey_mode(app) == "toggle";
+    let _ = app.emit("dictation-controls", controls);
     let _ = app.emit("dictation-state", "listening");
-    show_overlay_fast(app);
+    show_overlay_with(app, controls);
 
     // Auto-stop after remaining Free time (or 2 min max). Bound to session_id so a
     // previous session's sleep cannot kill a newer recording (common in toggle mode).
@@ -482,11 +516,19 @@ pub fn start_dictation(app: &tauri::AppHandle) {
         stop_dictation(&app_timeout);
     });
 
+    // This session's own buffer: the shared slot may already belong to a newer session.
+    let session_pcm_task = session_pcm.clone();
     let app_handle = app.clone();
     tauri::async_runtime::spawn(async move {
         let mut final_text = String::new();
         let mut last_interim = String::new();
         while let Some(chunk) = transcript_rx.recv().await {
+            if !chunk.text.trim().is_empty() && paste_still_current(&app_handle, paste_token) {
+                app_handle
+                    .state::<PipelineState>()
+                    .heard_text
+                    .store(true, Ordering::SeqCst);
+            }
             let _ = app_handle.emit(
                 "transcript",
                 serde_json::json!({ "text": chunk.text, "is_final": chunk.is_final }),
@@ -499,6 +541,12 @@ pub fn start_dictation(app: &tauri::AppHandle) {
         let interim = last_interim.trim();
         if !interim.is_empty() {
             text = merge_trailing_interim(&text, interim);
+        }
+
+        if *app_handle.state::<PipelineState>().discarded_paste.lock().unwrap() == paste_token {
+            log::info!("Session paste={paste_token} cancelled — discarding");
+            clear_session_pcm_if_current(&app_handle, paste_token);
+            return;
         }
 
         // Bill wall-clock recording time even if this session produced no text.
@@ -533,41 +581,70 @@ pub fn start_dictation(app: &tauri::AppHandle) {
             .unwrap_or_else(|| "Unknown".to_string());
 
         let mut text = text;
-        if text.is_empty() {
-            let pcm: Vec<i16> = {
-                let state = app_handle.state::<PipelineState>();
-                let arc = state.session_pcm.lock().unwrap().clone();
-                arc.and_then(|a| a.lock().ok().map(|g| g.clone()))
-                    .unwrap_or_default()
-            };
-            if !recovery::has_speech(&pcm) {
+        let stream_incomplete = !stream_complete.load(std::sync::atomic::Ordering::SeqCst);
+        if text.is_empty() || stream_incomplete {
+            let pcm: Vec<i16> = session_pcm_task
+                .lock()
+                .map(|g| g.clone())
+                .unwrap_or_default();
+            if text.is_empty() && !recovery::has_speech(&pcm) {
                 // Accidental tap or silent mic — nothing worth keeping.
-                let state = app_handle.state::<PipelineState>();
-                *state.session_pcm.lock().unwrap() = None;
+                clear_session_pcm_if_current(&app_handle, paste_token);
                 hide_overlay_if_current(&app_handle, paste_token);
                 emit_state_if_current(&app_handle, paste_token, "idle");
                 return;
             }
 
-            log::warn!("Live transcript empty despite speech-like audio — retrying from recording");
-            match recovery::retry_transcribe(&pcm, &language_for_pipeline, &retry_keyterms).await {
+            log::warn!("Live transcript empty or incomplete — retrying from recording");
+            let retried =
+                recovery::retry_transcribe(&pcm, &language_for_pipeline, &retry_keyterms).await;
+            // ✗ pressed while the batch retry ran: no failed entry, toast, or auto-paste.
+            if *app_handle.state::<PipelineState>().discarded_paste.lock().unwrap() == paste_token {
+                clear_session_pcm_if_current(&app_handle, paste_token);
+                return;
+            }
+            match retried {
                 Ok(recovered) => {
                     log::info!("Recovered dictation via batch retry ({} chars)", recovered.len());
                     text = recovered;
+                }
+                Err(reason) if !text.is_empty() => {
+                    log::warn!("Batch retry failed, using partial live transcript: {reason}");
+                }
+                Err(reason) if reason == recovery::NO_SPEECH => {
+                    // Noise (cough, keyboard) with no words: treat as silence, not a failure.
+                    log::info!("Batch retry heard no words — dismissing quietly");
+                    clear_session_pcm_if_current(&app_handle, paste_token);
+                    hide_overlay_if_current(&app_handle, paste_token);
+                    emit_state_if_current(&app_handle, paste_token, "idle");
+                    return;
                 }
                 Err(reason) => {
                     let stream_err = stt_error.lock().ok().and_then(|g| g.clone());
                     let detail = stream_err
                         .map(|e| format!("Transcription failed: {e}"))
                         .unwrap_or(reason);
-                    recovery::save_failed(&app_handle, &app_name, &detail, &pcm);
-                    let state = app_handle.state::<PipelineState>();
-                    *state.session_pcm.lock().unwrap() = None;
-                    let _ = app_handle.emit(
-                        "dictation-error",
-                        "Couldn't transcribe — saved to History, tap Retry there",
-                    );
+                    let failed_id = recovery::save_failed(&app_handle, &app_name, &detail, &pcm);
+                    clear_session_pcm_if_current(&app_handle, paste_token);
+                    if paste_still_current(&app_handle, paste_token) {
+                        let _ = app_handle.emit(
+                            "dictation-error",
+                            "Failed to transcribe — retrying in 5 seconds",
+                        );
+                    }
                     emit_state_if_current(&app_handle, paste_token, "error");
+                    recovery::notify(
+                        &app_handle,
+                        "Failed to transcribe",
+                        "Bad connection? Retrying in 5 seconds.",
+                    );
+                    if let Some(hid) = failed_id {
+                        recovery::spawn_auto_retry(
+                            app_handle.clone(),
+                            hid,
+                            fg.as_ref().map(|a| a.exe.clone()),
+                        );
+                    }
                     return;
                 }
             }
@@ -790,6 +867,11 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                 let epoch = pipeline_state.paste_epoch.lock().unwrap();
                 *epoch == paste_token
             };
+            // ✗ pressed while the thinking wave was running (toggle mode).
+            if *pipeline_state.discarded_paste.lock().unwrap() == paste_token {
+                log::info!("Skipping paste for cancelled session paste={paste_token}");
+                return;
+            }
             if !still_current {
                 log::info!(
                     "Skipping paste for stale session paste={paste_token} (newer dictation started)"
@@ -849,14 +931,11 @@ pub fn start_dictation(app: &tauri::AppHandle) {
             let history_text = final_output.trim_end().to_string();
             if let Ok(hid) = store.add_history(&history_text, &app_name) {
                 // Persist local Remake WAV (newest 10 only).
-                let pcm = {
-                    let state = app_handle.state::<PipelineState>();
-                    let taken = state.session_pcm.lock().unwrap().take();
-                    match taken {
-                        Some(arc) => arc.lock().map(|g| g.clone()).unwrap_or_default(),
-                        None => Vec::new(),
-                    }
-                };
+                let pcm = session_pcm_task
+                    .lock()
+                    .map(|g| g.clone())
+                    .unwrap_or_default();
+                clear_session_pcm_if_current(&app_handle, paste_token);
                 if !pcm.is_empty() {
                     let path = recording::wav_path_for_history_id(hid);
                     if let Err(e) = recording::write_wav_i16(&path, &pcm, WAV_SAMPLE_RATE) {
@@ -887,22 +966,43 @@ pub fn start_dictation(app: &tauri::AppHandle) {
     });
 }
 
-/// True while this paste token is still the newest recording start.
+/// True while this paste token is still the newest recording start (even if ✗ discarded it).
+fn epoch_current(app: &tauri::AppHandle, paste_token: u64) -> bool {
+    *app.state::<PipelineState>().paste_epoch.lock().unwrap() == paste_token
+}
+
+/// True while this session may still paste or drive the overlay: newest, and not ✗-cancelled.
 fn paste_still_current(app: &tauri::AppHandle, paste_token: u64) -> bool {
+    epoch_current(app, paste_token)
+        && *app.state::<PipelineState>().discarded_paste.lock().unwrap() != paste_token
+}
+
+/// Drop the shared Remake buffer only if a newer session hasn't replaced it.
+fn clear_session_pcm_if_current(app: &tauri::AppHandle, paste_token: u64) {
+    if epoch_current(app, paste_token) {
+        *app.state::<PipelineState>().session_pcm.lock().unwrap() = None;
+    }
+}
+
+/// Paste epoch now, so a later auto-retry can tell whether the user dictated again.
+pub(crate) fn current_paste_epoch(app: &tauri::AppHandle) -> u64 {
+    *app.state::<PipelineState>().paste_epoch.lock().unwrap()
+}
+
+/// A dictation is recording, or one started after `epoch`: an auto-retry must not paste into it.
+pub(crate) fn dictation_moved_on(app: &tauri::AppHandle, epoch: u64) -> bool {
     let state = app.state::<PipelineState>();
-    let epoch = state.paste_epoch.lock().unwrap();
-    *epoch == paste_token
+    let active = *state.active.lock().unwrap();
+    active || *state.paste_epoch.lock().unwrap() != epoch
 }
 
 /// Only the current paste epoch may drive overlay state — prevents a finishing
 /// session from flipping a newer listening UI to idle (hotkey "stuck" feel).
 fn emit_state_if_current(app: &tauri::AppHandle, paste_token: u64, state: &str) {
-    let pipeline = app.state::<PipelineState>();
-    let current = *pipeline.paste_epoch.lock().unwrap();
-    if current == paste_token {
+    if paste_still_current(app, paste_token) {
         let _ = app.emit("dictation-state", state);
     } else {
-        log::debug!("Skip stale dictation-state '{state}' paste={paste_token} current={current}");
+        log::debug!("Skip stale or cancelled dictation-state '{state}' paste={paste_token}");
     }
 }
 
@@ -973,10 +1073,50 @@ pub fn stop_dictation(app: &tauri::AppHandle) {
     });
 
     log::info!("Dictation stopped after {elapsed_secs:.1}s ({trail_ms}ms trail)");
+    let paste_token = *state.paste_epoch.lock().unwrap();
+    // Nothing said: no voice on the mic and no words from Deepgram. Vanish now
+    // instead of spinning the thinking wave while the stream drains.
+    let heard_voice = state
+        .session_pcm
+        .lock()
+        .unwrap()
+        .as_ref()
+        .and_then(|a| a.lock().ok().map(|g| recovery::heard_voice(&g)))
+        .unwrap_or(false);
+    if !heard_voice && !state.heard_text.load(Ordering::SeqCst) {
+        // Hide now, but let the stream decide: a soft word Deepgram does catch still pastes.
+        log::info!("No speech detected — dismissing overlay");
+        hide_overlay_if_current(app, paste_token);
+        emit_state_if_current(app, paste_token, "idle");
+        return;
+    }
     // Switch to the thinking wave while Deepgram drains + enhance runs — frozen
     // mic bars after release look stuck when transcription takes a moment.
-    let paste_token = *state.paste_epoch.lock().unwrap();
     emit_state_if_current(app, paste_token, "processing");
+}
+
+/// Overlay ✗ (toggle mode): stop recording and throw the take away.
+pub fn cancel_dictation(app: &tauri::AppHandle) {
+    let paste_token = *app.state::<PipelineState>().paste_epoch.lock().unwrap();
+    stop_dictation(app);
+    discard_session(app, paste_token);
+}
+
+/// Hand focus back to the window the user was dictating into (overlay clicks
+/// can take it), so the paste lands in the right place.
+pub fn refocus_session_window(app: &tauri::AppHandle) {
+    let hwnd = *app.state::<PipelineState>().session_hwnd.lock().unwrap();
+    inject::focus_window(hwnd);
+}
+
+fn discard_session(app: &tauri::AppHandle, paste_token: u64) {
+    let state = app.state::<PipelineState>();
+    if *state.paste_epoch.lock().unwrap() != paste_token {
+        return;
+    }
+    *state.discarded_paste.lock().unwrap() = paste_token;
+    hide_overlay_fast(app);
+    let _ = app.emit("dictation-state", "idle");
 }
 
 fn invalidate_session(state: &PipelineState) {

@@ -17,6 +17,20 @@ use tauri::WebviewWindow;
 /// Charcoal RGB with A=0. If alpha fails we still never flash WebView2 white.
 const CLEAR: tauri::window::Color = tauri::window::Color(18, 18, 18, 0);
 
+/// Listening pill size (logical px). Keep in sync with Overlay.tsx + index.css masks.
+pub const PILL_W: f64 = 141.0;
+pub const PILL_H: f64 = 34.0;
+/// Toggle-mode pill: same waveform plus ✗ / ✓ buttons on either side.
+pub const PILL_CONTROLS_W: f64 = 184.0;
+
+pub fn pill_width(controls: bool) -> f64 {
+    if controls {
+        PILL_CONTROLS_W
+    } else {
+        PILL_W
+    }
+}
+
 /// Force window + webview background fully transparent (sync when on main thread).
 pub fn clear_background(w: &WebviewWindow) {
     let _ = w.set_background_color(Some(CLEAR));
@@ -56,7 +70,8 @@ pub fn set_click_through(w: &WebviewWindow, on: bool) {
     {
         use windows::Win32::UI::WindowsAndMessaging::{
             GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, SWP_FRAMECHANGED,
-            SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_EX_LAYERED, WS_EX_TRANSPARENT,
+            SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+            WS_EX_TRANSPARENT,
         };
         let Ok(hwnd) = w.hwnd() else { return };
         if !on {
@@ -64,7 +79,9 @@ pub fn set_click_through(w: &WebviewWindow, on: bool) {
         }
         unsafe {
             let cur = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
-            let mut next = cur & !WS_EX_LAYERED.0;
+            // NOACTIVATE: clicking the pill's ✗ / ✓ must not steal focus from the
+            // app being dictated into.
+            let mut next = (cur & !WS_EX_LAYERED.0) | WS_EX_NOACTIVATE.0;
             if on {
                 next |= WS_EX_TRANSPARENT.0;
             } else {
@@ -219,8 +236,8 @@ pub fn park_idle(w: &WebviewWindow) {
             }
         }
         let _ = w.set_size(Size::Logical(LogicalSize {
-            width: 148.0,
-            height: 36.0,
+            width: PILL_W,
+            height: PILL_H,
         }));
         // Keep the capsule while idle — next hotkey only has to move on-screen.
         clip_capsule(w);
@@ -232,8 +249,8 @@ pub fn park_idle(w: &WebviewWindow) {
         use tauri::{LogicalPosition, LogicalSize, Position, Size};
         clear_background(w);
         let _ = w.set_size(Size::Logical(LogicalSize {
-            width: 148.0,
-            height: 36.0,
+            width: PILL_W,
+            height: PILL_H,
         }));
         let _ = w.set_position(Position::Logical(LogicalPosition {
             x: -40_000.0,
@@ -246,15 +263,16 @@ pub fn park_idle(w: &WebviewWindow) {
 }
 
 /// Reveal the listening pill. Size + clip WHILE still off-screen, then one move.
-pub fn reveal_listening(w: &WebviewWindow, x: i32, y: i32) {
+pub fn reveal_listening(w: &WebviewWindow, x: i32, y: i32, controls: bool) {
     use tauri::{LogicalSize, Size};
     clear_background(w);
     let _ = w.set_size(Size::Logical(LogicalSize {
-        width: 148.0,
-        height: 36.0,
+        width: pill_width(controls),
+        height: PILL_H,
     }));
     clip_capsule(w);
-    set_click_through(w, true);
+    // Toggle mode needs clicks for ✗ / ✓; hold mode stays click-through.
+    set_click_through(w, !controls);
     move_topmost(w, x, y);
 }
 
