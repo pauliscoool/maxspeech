@@ -188,6 +188,7 @@ export async function signUp(
     password,
     options: {
       data: { username: cleanUser },
+      emailRedirectTo: "https://maxspeech.vercel.app/reset",
     },
   });
   if (error) throw new Error(error.message);

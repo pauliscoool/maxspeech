@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">MaxSpeech</string>
+    <string name="a11y_description">MaxSpeech uses Accessibility only to paste dictated text into the field you are typing in, and to notice when a text field is focused so the dictation capsule can appear. It does not read your screen otherwise, and audio never goes through Accessibility. You can turn this off in Android Settings → Accessibility.</string>
+    <string name="overlay_notification_title">MaxSpeech overlay</string>
+    <string name="overlay_notification_idle">Tap a chat or text field — the capsule appears above it.</string>
+    <string name="overlay_notification_listening">Listening…</string>
+</resources>

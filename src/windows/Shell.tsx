@@ -292,7 +292,8 @@ export default function Shell({ authUser }: { authUser: AuthUser | null }) {
           void refresh();
         }}
       />
-      {updateInfo && (
+      {/* Settings already has its own About & updates card — skip shell chrome there. */}
+      {updateInfo && page !== "settings" && (
         <div
           className="shrink-0 px-4 py-2.5 flex items-center justify-between gap-3"
           style={{
