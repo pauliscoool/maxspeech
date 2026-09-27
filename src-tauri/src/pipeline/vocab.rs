@@ -248,6 +248,25 @@ fn fix_common_asr(text: &str) -> String {
         ("graph ql", "GraphQL"),
         ("mongo db", "MongoDB"),
         ("a ws", "AWS"),
+        ("o clock", "o'clock"),
+        ("oclock", "o'clock"),
+        ("bit bucket", "Bitbucket"),
+        ("fig ma", "Figma"),
+        ("my sequel", "MySQL"),
+        ("my sql", "MySQL"),
+        ("kubernettes", "Kubernetes"),
+        ("cooper netes", "Kubernetes"),
+        ("c sharp", "C#"),
+        ("c plus plus", "C++"),
+        ("dot net", ".NET"),
+        ("j query", "jQuery"),
+        ("elastic search", "Elasticsearch"),
+        ("weather or not", "whether or not"),
+        ("per say", "per se"),
+        ("for all intensive purposes", "for all intents and purposes"),
+        ("case and point", "case in point"),
+        ("nip it in the butt", "nip it in the bud"),
+        ("escape goat", "scapegoat"),
     ] {
         result = replace_phrase_ci(&result, from, to);
     }
@@ -444,6 +463,10 @@ mod tests {
         assert_eq!(fix_common_asr("edit in vs code"), "edit in VS Code");
         assert_eq!(fix_common_asr("on the clout"), "on the cloud");
         assert_eq!(fix_common_asr("install CurseForge"), "install CurseForge");
+        assert_eq!(fix_common_asr("meet at 3 o clock"), "meet at 3 o'clock");
+        assert_eq!(fix_common_asr("open fig ma"), "open Figma");
+        assert_eq!(fix_common_asr("write it in c sharp"), "write it in C#");
+        assert_eq!(fix_common_asr("weather or not we go"), "whether or not we go");
     }
 
     #[test]

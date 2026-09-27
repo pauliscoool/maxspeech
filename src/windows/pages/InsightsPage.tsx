@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { formatWeeklyUsage, weeklyUsagePct, planLabel, type PlanStatus } from "../../lib/plan";
+import { formatWeeklyUsage, weeklyUsagePct, usageMeterTitle, usageResetHint, type PlanStatus } from "../../lib/plan";
 
 interface Stats {
   total_words: number;
@@ -20,7 +20,8 @@ export default function InsightsPage() {
       .catch(() => setPlan(null));
   }, []);
 
-  const showMeter = plan?.weekly_limit != null;
+  const showMeter =
+    plan?.weekly_limit != null || plan?.daily_seconds_limit != null;
   const pct = plan ? weeklyUsagePct(plan) : null;
 
   return (
@@ -34,13 +35,15 @@ export default function InsightsPage() {
         <div className="surface-card p-4 sm:p-5 space-y-3">
           <div className="flex items-baseline justify-between gap-3">
             <div>
-              <div className="text-sm font-medium">{planLabel(plan.tier)} weekly usage</div>
+              <div className="text-sm font-medium">{usageMeterTitle(plan)}</div>
               <div className="text-[11px] text-[var(--ms-text-dim)] mt-0.5">
                 {!plan.can_dictate
-                  ? plan.tier === "max"
+                  ? plan.daily_seconds_limit != null
+                    ? "Limit reached — try again in 24 hours, or upgrade"
+                    : plan.tier === "max"
                     ? "Limit reached — resets Monday (UTC)"
                     : "Limit reached — upgrade"
-                  : "Resets every Monday (UTC)"}
+                  : usageResetHint(plan)}
               </div>
             </div>
             <div

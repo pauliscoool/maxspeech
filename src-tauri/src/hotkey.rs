@@ -10,6 +10,7 @@ const DEFAULT_HOTKEY: &str = "ctrl+super";
 #[cfg(not(windows))]
 const DEFAULT_HOTKEY: &str = "ctrl+shift+space";
 const DEFAULT_MODE: &str = "hold"; // "hold" | "toggle"
+const ENHANCER_HOTKEY: &str = "ctrl+shift+e";
 
 static CURRENT_HOTKEY: Mutex<Option<String>> = Mutex::new(None);
 static USING_MODIFIER_HOOK: Mutex<bool> = Mutex::new(false);
@@ -51,6 +52,33 @@ pub fn register_hotkeys(app: &AppHandle) {
             let _ = register_shortcut(app, DEFAULT_HOTKEY, &mode);
         }
     }
+
+    register_enhancer_hotkey(app);
+}
+
+/// Ctrl+Shift+E opens the enhance-selection widget. Plain RegisterHotKey is
+/// enough here: it swallows the E and fires once on press.
+fn register_enhancer_hotkey(app: &AppHandle) {
+    let shortcut: Shortcut = match ENHANCER_HOTKEY.parse() {
+        Ok(s) => s,
+        Err(e) => {
+            log::error!("Invalid enhancer hotkey '{ENHANCER_HOTKEY}': {e}");
+            return;
+        }
+    };
+    if app.global_shortcut().is_registered(shortcut) {
+        return;
+    }
+    let result = app
+        .global_shortcut()
+        .on_shortcut(shortcut, move |app, _shortcut, event| {
+            if event.state == ShortcutState::Pressed {
+                crate::enhancer::trigger(app);
+            }
+        });
+    if let Err(e) = result {
+        log::error!("Failed to register enhancer hotkey '{ENHANCER_HOTKEY}': {e}");
+    }
 }
 
 fn register_shortcut(app: &AppHandle, shortcut_str: &str, mode: &str) -> Result<(), String> {
@@ -59,23 +87,30 @@ fn register_shortcut(app: &AppHandle, shortcut_str: &str, mode: &str) -> Result<
     // Clear previous registration (plugin shortcut and/or modifier hook).
     unregister_current(app);
 
+    // Windows LL hook: Ctrl+Win (modifier-only) and Ctrl+Shift+Z (must swallow Z
+    // so editors never see Ctrl+Z undo / Ctrl+Shift+Z redo while dictating).
+    #[cfg(windows)]
+    if uses_windows_ll_hook(&cleaned) {
+        win_mod_hook::install(app, &cleaned, mode)?;
+        *USING_MODIFIER_HOOK.lock().unwrap() = true;
+        *CURRENT_HOTKEY.lock().unwrap() = Some(cleaned.clone());
+        log::info!("Hotkey registered via LL hook: {cleaned} (mode={mode})");
+        return Ok(());
+    }
+
     if is_modifier_only(&cleaned) {
         if !is_supported_modifier_only(&cleaned) {
             return Err(format!("Unsupported modifier-only hotkey '{cleaned}'"));
         }
-        #[cfg(windows)]
-        {
-            win_mod_hook::install(app, &cleaned, mode)?;
-            *USING_MODIFIER_HOOK.lock().unwrap() = true;
-            *CURRENT_HOTKEY.lock().unwrap() = Some(cleaned.clone());
-            log::info!("Hotkey registered via LL hook: {cleaned} (mode={mode})");
-            return Ok(());
-        }
         #[cfg(not(windows))]
         {
             return Err(format!(
-                "Modifier-only hotkey '{cleaned}' is only supported on Windows"
+                "modifier-only hotkey '{cleaned}' is only supported on Windows"
             ));
+        }
+        #[cfg(windows)]
+        {
+            return Err(format!("Unsupported modifier-only hotkey '{cleaned}'"));
         }
     }
 
@@ -142,17 +177,24 @@ pub fn set_hotkey(app: &AppHandle, shortcut_str: &str) -> Result<(), String> {
     if is_blocked_combo(&cleaned) {
         return Err("That hotkey combo is not supported. Try Ctrl+Win or Ctrl+Shift+Z.".into());
     }
-    // Validate: modifier-only (Windows hook) or standard Shortcut parse
-    if is_modifier_only(&cleaned) {
-        #[cfg(not(windows))]
-        {
-            return Err(format!(
-                "modifier-only hotkey '{cleaned}' is only supported on Windows"
-            ));
-        }
+    // Validate: Windows LL-hook combos, other modifier-only, or standard Shortcut.
+    #[cfg(windows)]
+    if uses_windows_ll_hook(&cleaned) {
+        // ok
+    } else if is_modifier_only(&cleaned) {
         if !is_supported_modifier_only(&cleaned) {
             return Err(format!("Unsupported modifier-only hotkey '{cleaned}'"));
         }
+    } else {
+        let _: Shortcut = cleaned
+            .parse()
+            .map_err(|e| format!("Invalid shortcut: {e}"))?;
+    }
+    #[cfg(not(windows))]
+    if is_modifier_only(&cleaned) {
+        return Err(format!(
+            "modifier-only hotkey '{cleaned}' is only supported on Windows"
+        ));
     } else {
         let _: Shortcut = cleaned
             .parse()
@@ -287,14 +329,20 @@ fn is_supported_modifier_only(s: &str) -> bool {
     s == "ctrl+super"
 }
 
+/// Combos that must use WH_KEYBOARD_LL on Windows (eat keys / reliable hold).
+#[cfg(windows)]
+fn uses_windows_ll_hook(s: &str) -> bool {
+    s == "ctrl+super" || s == "ctrl+shift+z"
+}
+
 fn is_blocked_combo(s: &str) -> bool {
     // Ctrl+Alt alone is removed as an option (conflicts / unused).
     s == "ctrl+alt" || s == "alt+ctrl"
 }
 
-/// Windows low-level keyboard hook for modifier-only combos (Ctrl+Win).
-/// `RegisterHotKey` / tauri global-shortcut require a non-modifier main key, so
-/// Ctrl+Win cannot be registered that way.
+/// Windows low-level keyboard hook for combos that need key swallowing:
+/// - Ctrl+Win: RegisterHotKey cannot bind modifier-only shortcuts
+/// - Ctrl+Shift+Z: must eat Z so editors never see Ctrl+Z (undo) on Shift release
 #[cfg(windows)]
 mod win_mod_hook {
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -305,8 +353,9 @@ mod win_mod_hook {
     use tauri::{AppHandle, Manager};
     use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        SendInput, GetAsyncKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
-        KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_CONTROL, VK_LCONTROL, VK_LWIN, VK_RCONTROL, VK_RWIN,
+        GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
+        VIRTUAL_KEY, VK_CONTROL, VK_LCONTROL, VK_LSHIFT, VK_LWIN, VK_RCONTROL, VK_RSHIFT, VK_RWIN,
+        VK_SHIFT,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         CallNextHookEx, DispatchMessageW, GetMessageW, PostThreadMessageW, SetWindowsHookExW,
@@ -320,6 +369,13 @@ mod win_mod_hook {
     /// Dummy VK used to cancel the pending Start-menu action when Win was pressed
     /// before Ctrl (we must not eat Win-up unless we ate Win-down).
     const VK_DISARM: u16 = 0xE8;
+    const VK_Z: u32 = 0x5A;
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum ComboKind {
+        CtrlWin,
+        CtrlShiftZ,
+    }
 
     struct HookThread {
         thread_id: u32,
@@ -329,25 +385,39 @@ mod win_mod_hook {
     static HOOK_THREAD: Mutex<Option<HookThread>> = Mutex::new(None);
     static APP: Mutex<Option<AppHandle>> = Mutex::new(None);
     static MODE: Mutex<String> = Mutex::new(String::new());
+    static KIND: Mutex<ComboKind> = Mutex::new(ComboKind::CtrlWin);
     static COMBO_ACTIVE: AtomicBool = AtomicBool::new(false);
     /// True only if we swallowed the matching Win KEYDOWN — then we must eat KEYUP.
     static ATE_WIN_DOWN: AtomicBool = AtomicBool::new(false);
+    /// True only if we swallowed Z — keep eating until Z-up so a lone Z never lands.
+    static ATE_Z_DOWN: AtomicBool = AtomicBool::new(false);
     static CTRL_DOWN: AtomicBool = AtomicBool::new(false);
     static WIN_DOWN: AtomicBool = AtomicBool::new(false);
+    static SHIFT_DOWN: AtomicBool = AtomicBool::new(false);
+    static Z_DOWN: AtomicBool = AtomicBool::new(false);
     /// Bumped on every edge so stale debounce workers bail out.
     static EDGE_GEN: AtomicU64 = AtomicU64::new(0);
     /// Watchdog thread polls OS modifiers while the LL hook is installed.
     static HEAL_STOP: AtomicBool = AtomicBool::new(false);
 
-    pub fn install(app: &AppHandle, _combo: &str, mode: &str) -> Result<(), String> {
+    pub fn install(app: &AppHandle, combo: &str, mode: &str) -> Result<(), String> {
         uninstall();
+        let kind = match combo {
+            "ctrl+super" => ComboKind::CtrlWin,
+            "ctrl+shift+z" => ComboKind::CtrlShiftZ,
+            other => return Err(format!("Unsupported LL-hook combo '{other}'")),
+        };
         *APP.lock().unwrap() = Some(app.clone());
         *MODE.lock().unwrap() = mode.to_string();
+        *KIND.lock().unwrap() = kind;
         COMBO_ACTIVE.store(false, Ordering::SeqCst);
         ATE_WIN_DOWN.store(false, Ordering::SeqCst);
+        ATE_Z_DOWN.store(false, Ordering::SeqCst);
         EDGE_GEN.fetch_add(1, Ordering::SeqCst);
         CTRL_DOWN.store(ctrl_physically_down(), Ordering::SeqCst);
         WIN_DOWN.store(win_physically_down(), Ordering::SeqCst);
+        SHIFT_DOWN.store(shift_physically_down(), Ordering::SeqCst);
+        Z_DOWN.store(z_physically_down(), Ordering::SeqCst);
 
         let (tx, rx) = std::sync::mpsc::channel::<Result<u32, String>>();
         let join = thread::spawn(move || {
@@ -392,16 +462,11 @@ mod win_mod_hook {
         HEAL_STOP.store(false, Ordering::SeqCst);
         thread::spawn(|| {
             while !HEAL_STOP.load(Ordering::SeqCst) {
-                thread::sleep(Duration::from_millis(120));
+                thread::sleep(Duration::from_millis(80));
                 if HEAL_STOP.load(Ordering::SeqCst) {
                     break;
                 }
-                // Only reconcile when we think something is held or the combo was active.
-                if CTRL_DOWN.load(Ordering::SeqCst)
-                    || WIN_DOWN.load(Ordering::SeqCst)
-                    || COMBO_ACTIVE.load(Ordering::SeqCst)
-                    || ATE_WIN_DOWN.load(Ordering::SeqCst)
-                {
+                if needs_heal_poll() {
                     reconcile_modifiers();
                 }
             }
@@ -418,8 +483,11 @@ mod win_mod_hook {
         if ATE_WIN_DOWN.swap(false, Ordering::SeqCst) {
             synthesize_win_up();
         }
+        ATE_Z_DOWN.store(false, Ordering::SeqCst);
         CTRL_DOWN.store(false, Ordering::SeqCst);
         WIN_DOWN.store(false, Ordering::SeqCst);
+        SHIFT_DOWN.store(false, Ordering::SeqCst);
+        Z_DOWN.store(false, Ordering::SeqCst);
         if let Some(mut ht) = HOOK_THREAD.lock().unwrap().take() {
             unsafe {
                 let _ = PostThreadMessageW(ht.thread_id, WM_QUIT, WPARAM(0), LPARAM(0));
@@ -429,6 +497,60 @@ mod win_mod_hook {
             }
         }
         *APP.lock().unwrap() = None;
+    }
+
+    fn needs_heal_poll() -> bool {
+        CTRL_DOWN.load(Ordering::SeqCst)
+            || WIN_DOWN.load(Ordering::SeqCst)
+            || SHIFT_DOWN.load(Ordering::SeqCst)
+            || Z_DOWN.load(Ordering::SeqCst)
+            || COMBO_ACTIVE.load(Ordering::SeqCst)
+            || ATE_WIN_DOWN.load(Ordering::SeqCst)
+            || ATE_Z_DOWN.load(Ordering::SeqCst)
+    }
+
+    fn combo_kind() -> ComboKind {
+        *KIND.lock().unwrap()
+    }
+
+    fn combo_held() -> bool {
+        match combo_kind() {
+            ComboKind::CtrlWin => {
+                CTRL_DOWN.load(Ordering::SeqCst) && WIN_DOWN.load(Ordering::SeqCst)
+            }
+            ComboKind::CtrlShiftZ => {
+                CTRL_DOWN.load(Ordering::SeqCst)
+                    && SHIFT_DOWN.load(Ordering::SeqCst)
+                    && Z_DOWN.load(Ordering::SeqCst)
+            }
+        }
+    }
+
+    /// Physical check that respects swallowed keys (OS won't show them as down).
+    fn combo_physically_ok() -> bool {
+        match combo_kind() {
+            ComboKind::CtrlWin => {
+                if !ctrl_physically_down() {
+                    return false;
+                }
+                // Eaten Win never reaches GetAsyncKeyState — trust our atomic.
+                if ATE_WIN_DOWN.load(Ordering::SeqCst) {
+                    WIN_DOWN.load(Ordering::SeqCst)
+                } else {
+                    win_physically_down()
+                }
+            }
+            ComboKind::CtrlShiftZ => {
+                if !ctrl_physically_down() || !shift_physically_down() {
+                    return false;
+                }
+                if ATE_Z_DOWN.load(Ordering::SeqCst) {
+                    Z_DOWN.load(Ordering::SeqCst)
+                } else {
+                    z_physically_down()
+                }
+            }
+        }
     }
 
     fn ctrl_physically_down() -> bool {
@@ -441,6 +563,14 @@ mod win_mod_hook {
         }
     }
 
+    fn shift_physically_down() -> bool {
+        unsafe { GetAsyncKeyState(VK_SHIFT.0 as i32) < 0 }
+    }
+
+    fn z_physically_down() -> bool {
+        unsafe { GetAsyncKeyState(VK_Z as i32) < 0 }
+    }
+
     fn is_ctrl_vk(vk: u32) -> bool {
         vk == VK_CONTROL.0 as u32
             || vk == VK_LCONTROL.0 as u32
@@ -449,6 +579,16 @@ mod win_mod_hook {
 
     fn is_win_vk(vk: u32) -> bool {
         vk == VK_LWIN.0 as u32 || vk == VK_RWIN.0 as u32
+    }
+
+    fn is_shift_vk(vk: u32) -> bool {
+        vk == VK_SHIFT.0 as u32
+            || vk == VK_LSHIFT.0 as u32
+            || vk == VK_RSHIFT.0 as u32
+    }
+
+    fn is_z_vk(vk: u32) -> bool {
+        vk == VK_Z
     }
 
     /// Cancel the "Win is held → open Start on release" latch without eating Win-up.
@@ -523,20 +663,19 @@ mod win_mod_hook {
         };
         let mode = MODE.lock().unwrap().clone();
         thread::spawn(move || {
-            // Debounce brief Ctrl/Win flicker so we don't start then instantly stop.
+            // Tiny debounce for key-order flicker (Ctrl then Win within 1ms).
             thread::sleep(Duration::from_millis(1));
             if EDGE_GEN.load(Ordering::SeqCst) != gen {
                 return;
             }
-            // Heal sticky / missed KEYUP before deciding the combo is held.
+            // Soft sync only — never clear swallowed-key atomics from OS here.
             let _ = sync_modifier_atomics();
-            if !(CTRL_DOWN.load(Ordering::SeqCst) && WIN_DOWN.load(Ordering::SeqCst)) {
+            if !combo_held() {
                 return;
             }
-            if !ctrl_physically_down() || !win_physically_down() {
-                CTRL_DOWN.store(ctrl_physically_down(), Ordering::SeqCst);
-                WIN_DOWN.store(win_physically_down(), Ordering::SeqCst);
-                COMBO_ACTIVE.store(false, Ordering::SeqCst);
+            // Critical: do NOT clear COMBO_ACTIVE on a soft physical miss.
+            // Clearing it made release a no-op ("press and nothing / stuck").
+            if !combo_physically_ok() {
                 return;
             }
 
@@ -565,22 +704,24 @@ mod win_mod_hook {
         };
         let mode = MODE.lock().unwrap().clone();
         thread::spawn(move || {
-            // Debounce: if the combo comes back quickly, don't stop.
-            thread::sleep(Duration::from_millis(12));
+            // Short debounce: if the combo comes back quickly, don't stop.
+            thread::sleep(Duration::from_millis(8));
             if EDGE_GEN.load(Ordering::SeqCst) != gen {
                 return;
             }
             let _ = sync_modifier_atomics();
-            if CTRL_DOWN.load(Ordering::SeqCst) && WIN_DOWN.load(Ordering::SeqCst) {
+            if combo_held() {
                 return;
             }
 
             // If we ate Win-down but OS still thinks Win is held after release,
             // synthesize Win-up so Start / sticky Win can't linger.
-            if ATE_WIN_DOWN.load(Ordering::SeqCst) && !win_physically_down() {
-                ATE_WIN_DOWN.store(false, Ordering::SeqCst);
-            } else if ATE_WIN_DOWN.swap(false, Ordering::SeqCst) && win_physically_down() {
-                synthesize_win_up();
+            if combo_kind() == ComboKind::CtrlWin {
+                if ATE_WIN_DOWN.load(Ordering::SeqCst) && !win_physically_down() {
+                    ATE_WIN_DOWN.store(false, Ordering::SeqCst);
+                } else if ATE_WIN_DOWN.swap(false, Ordering::SeqCst) && win_physically_down() {
+                    synthesize_win_up();
+                }
             }
 
             let mode_now = app
@@ -594,7 +735,7 @@ mod win_mod_hook {
     }
 
     fn update_combo_state() {
-        let want = CTRL_DOWN.load(Ordering::SeqCst) && WIN_DOWN.load(Ordering::SeqCst);
+        let want = combo_held();
         let was = COMBO_ACTIVE.swap(want, Ordering::SeqCst);
         if want && !was {
             fire_pressed();
@@ -603,28 +744,48 @@ mod win_mod_hook {
         }
     }
 
-    /// Sync atomics from OS without firing press/release (safe inside debounce workers).
+    /// Sync atomics from OS without clobbering swallowed keys.
+    /// Safe inside debounce workers and the heal thread.
     fn sync_modifier_atomics() -> bool {
         let ctrl_os = ctrl_physically_down();
-        let win_os = win_physically_down();
         let mut changed = false;
 
         if CTRL_DOWN.load(Ordering::SeqCst) != ctrl_os {
             CTRL_DOWN.store(ctrl_os, Ordering::SeqCst);
             changed = true;
         }
-        if WIN_DOWN.load(Ordering::SeqCst) != win_os {
-            WIN_DOWN.store(win_os, Ordering::SeqCst);
-            if !win_os {
-                ATE_WIN_DOWN.store(false, Ordering::SeqCst);
+
+        match combo_kind() {
+            ComboKind::CtrlWin => {
+                // While we ate Win-down, GetAsyncKeyState is wrong (key never
+                // reached the OS). Trust WIN_DOWN from the hook until Win-up.
+                if !ATE_WIN_DOWN.load(Ordering::SeqCst) {
+                    let win_os = win_physically_down();
+                    if WIN_DOWN.load(Ordering::SeqCst) != win_os {
+                        WIN_DOWN.store(win_os, Ordering::SeqCst);
+                        changed = true;
+                    }
+                }
             }
-            changed = true;
+            ComboKind::CtrlShiftZ => {
+                let shift_os = shift_physically_down();
+                if SHIFT_DOWN.load(Ordering::SeqCst) != shift_os {
+                    SHIFT_DOWN.store(shift_os, Ordering::SeqCst);
+                    changed = true;
+                }
+                // Same swallow rule as Win: don't clear Z from OS while eaten.
+                if !ATE_Z_DOWN.load(Ordering::SeqCst) {
+                    let z_os = z_physically_down();
+                    if Z_DOWN.load(Ordering::SeqCst) != z_os {
+                        Z_DOWN.store(z_os, Ordering::SeqCst);
+                        changed = true;
+                    }
+                }
+            }
         }
         changed
     }
 
-    /// Resync modifier atomics both ways from GetAsyncKeyState so missed
-    /// KEYUP/KEYDOWN (sleep, focus loss, injected paste) cannot stick forever.
     fn reconcile_modifiers() {
         if sync_modifier_atomics() {
             update_combo_state();
@@ -651,26 +812,27 @@ mod win_mod_hook {
             return unsafe { CallNextHookEx(None, code, wparam, lparam) };
         }
 
+        let kind = combo_kind();
         let mut eat = false;
 
         if is_ctrl_vk(vk) {
             if is_down {
                 CTRL_DOWN.store(true, Ordering::SeqCst);
-                // Win already held (Win-then-Ctrl): do NOT eat the upcoming Win-up
-                // (that stuck the Win key in the OS). Disarm Start menu instead.
-                if WIN_DOWN.load(Ordering::SeqCst) && !ATE_WIN_DOWN.load(Ordering::SeqCst) {
+                if kind == ComboKind::CtrlWin
+                    && WIN_DOWN.load(Ordering::SeqCst)
+                    && !ATE_WIN_DOWN.load(Ordering::SeqCst)
+                {
+                    // Win-then-Ctrl: disarm Start without eating Win-up.
                     disarm_win_start_menu();
                 }
             } else if is_up {
                 CTRL_DOWN.store(false, Ordering::SeqCst);
             }
             update_combo_state();
-            reconcile_modifiers();
-        } else if is_win_vk(vk) {
+        } else if kind == ComboKind::CtrlWin && is_win_vk(vk) {
             if is_down {
                 WIN_DOWN.store(true, Ordering::SeqCst);
                 // Swallow Win only when Ctrl is already held (Ctrl-then-Win).
-                // Matching KEYUP must also be eaten — never eat UP without DOWN.
                 if CTRL_DOWN.load(Ordering::SeqCst) {
                     ATE_WIN_DOWN.store(true, Ordering::SeqCst);
                     eat = true;
@@ -683,9 +845,35 @@ mod win_mod_hook {
                 }
                 update_combo_state();
             }
-            reconcile_modifiers();
+        } else if kind == ComboKind::CtrlShiftZ && is_shift_vk(vk) {
+            if is_down {
+                SHIFT_DOWN.store(true, Ordering::SeqCst);
+            } else if is_up {
+                SHIFT_DOWN.store(false, Ordering::SeqCst);
+            }
+            update_combo_state();
+        } else if kind == ComboKind::CtrlShiftZ && is_z_vk(vk) {
+            if is_down {
+                Z_DOWN.store(true, Ordering::SeqCst);
+                // Eat Z whenever Ctrl+Shift are held, or we already swallowed this
+                // press (auto-repeat / release-order). Prevents Ctrl+Z undo when
+                // Shift lifts first while Z is still held.
+                if (CTRL_DOWN.load(Ordering::SeqCst) && SHIFT_DOWN.load(Ordering::SeqCst))
+                    || ATE_Z_DOWN.load(Ordering::SeqCst)
+                {
+                    ATE_Z_DOWN.store(true, Ordering::SeqCst);
+                    eat = true;
+                }
+                update_combo_state();
+            } else if is_up {
+                Z_DOWN.store(false, Ordering::SeqCst);
+                if ATE_Z_DOWN.swap(false, Ordering::SeqCst) {
+                    eat = true;
+                }
+                update_combo_state();
+            }
         } else if is_down {
-            // Any other key while we think modifiers are stuck — resync from OS.
+            // Foreign key while modifiers look stuck — soft heal (non-swallowed only).
             reconcile_modifiers();
         }
 

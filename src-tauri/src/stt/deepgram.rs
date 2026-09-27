@@ -296,10 +296,9 @@ type WsStream = tokio_tungstenite::WebSocketStream<
 >;
 
 fn build_url(config: &DeepgramConfig) -> String {
-    // endpointing: wait for a short silence before speech_final.
-    // Keep this moderate — too low chops quiet ends; too high feels laggy.
-    // Quiet / soft last syllables need a bit more than 500ms on English.
-    let endpointing = if config.language == "multi" { 350 } else { 650 };
+    // endpointing: silence before speech_final. Too low chops the last words
+    // on a brief pause; hold-to-talk can wait a bit for a complete phrase.
+    let endpointing = if config.language == "multi" { 700 } else { 1100 };
     let mut url = format!(
         "wss://api.deepgram.com/v1/listen?model={}&language={}&punctuate=true&interim_results=true&smart_format=true&numerals=true&endpointing={}&encoding=linear16&sample_rate=16000&channels=1",
         config.model, config.language, endpointing
@@ -477,7 +476,7 @@ pub async fn stream_audio(
                     // before Finalize so Deepgram still hears word endings.
                     loop {
                         match tokio::time::timeout(
-                            std::time::Duration::from_millis(100),
+                            std::time::Duration::from_millis(280),
                             audio_rx.recv(),
                         )
                         .await
@@ -495,8 +494,9 @@ pub async fn stream_audio(
                     let _ = write
                         .send(Message::Text(r#"{"type":"Finalize"}"#.into()))
                         .await;
-                    // Give Deepgram a moment to flush the last syllable after Finalize.
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    // Finalize is not instant — last-word Results often arrive
+                    // after ~endpointing, not in the first hundred milliseconds.
+                    tokio::time::sleep(std::time::Duration::from_millis(750)).await;
                     let _ = write
                         .send(Message::Text(r#"{"type":"CloseStream"}"#.into()))
                         .await;

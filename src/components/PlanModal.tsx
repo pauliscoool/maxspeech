@@ -10,7 +10,7 @@ import {
 } from "../lib/plan";
 import {
   canSelectTierWithoutPayment,
-  isOwnerFreePlanEmail,
+  isOwnerAccount,
 } from "../lib/planAccess";
 import { updateCloudPlan, type AuthUser } from "../lib/auth";
 import {
@@ -76,6 +76,7 @@ export default function PlanModal({
           ? "Switched to Max — dictation history will sync to the cloud."
           : `Switched to ${PLAN_OPTIONS.find((p) => p.tier === tier)?.label ?? tier}.`,
       );
+      window.dispatchEvent(new Event("maxspeech-plan-changed"));
       onChanged();
     } catch (e) {
       setPlanMsg(`Could not set plan: ${e}`);
@@ -108,11 +109,11 @@ export default function PlanModal({
           <p className="text-sm text-[var(--ms-text-dim)] leading-relaxed">
             {localPlan
               ? `Current: ${planLabel(localPlan.tier)}${
-                  localPlan.weekly_limit != null
-                    ? ` · ${formatWeeklyUsage(localPlan)} words this week`
+                  localPlan.weekly_limit != null || localPlan.daily_seconds_limit != null
+                    ? ` · ${formatWeeklyUsage(localPlan)}`
                     : ""
                 }`
-              : "Pick the weekly word allowance that fits how you dictate."}
+              : "Pick the plan that fits how you dictate."}
           </p>
         </div>
 
@@ -176,7 +177,7 @@ export default function PlanModal({
         </div>
 
         <p className="text-[11px] text-[var(--ms-text-dim)] leading-relaxed">
-          {isOwnerFreePlanEmail(authUser?.email)
+          {isOwnerAccount(authUser?.email)
             ? "Owner access: all plans including Max are selectable on this account — your devices sync settings, dictionary, snippets, and style automatically. Cloud history sync included with Max."
             : "Free plan is available now. Paid plans unlock when checkout ships. Cloud history sync is included with Max."}
         </p>

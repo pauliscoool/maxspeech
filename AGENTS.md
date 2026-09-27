@@ -64,7 +64,15 @@ vercel alias set <deployment-url> maxspeech.vercel.app
 7. **Mic:** Fuzzy device name matching; Bluetooth-friendly tests; live level events.
 8. **Updates:** Prefer signed Tauri `latest.json` on GitHub Releases; fallback to `https://maxspeech.vercel.app/updates/latest.json` + Releases API.
 9. **Secrets:** Never commit `.env`, signing private keys, or API keys. `.env.example` is the template.
-10. **Ship when a batch is done:** After app changes are complete and no further sub-work is in flight, bump the patch version, build the Windows installer (`scripts/build-installer.ps1`), silent-install on this machine, commit+push `origin windows` (never giant EXEs), then deploy `website/` to Vercel prod and alias `maxspeech.vercel.app` so `website/updates/latest.json` drives in-app update.
+10. **Free plan:** 2 minutes of recording every rolling 24 hours. Paid tiers keep weekly word caps.
+11. **Ship when a batch is done:** After app changes are complete and no further sub-work is in flight:
+    1. Bump the patch version
+    2. Build the Windows installer (`scripts/build-installer.ps1`)
+    3. Silent-install on this machine and confirm the app launches
+    4. Commit+push `origin windows` (never giant EXEs)
+    5. **Always deploy `website/` to Vercel production** (`vercel deploy --prod -y`) and alias `maxspeech.vercel.app` so `website/updates/latest.json` and the installer download are live
+
+    **Vercel is mandatory — no exceptions.** Any decently sized update (overlay, UI, installer, updater, download page, marketing copy) must ship to Vercel prod + alias before you call the work done. Preview-only deploys are not enough. Do this every time, even if the change feels “app-only”: the site is how users get the new build.
 
 ## Env
 

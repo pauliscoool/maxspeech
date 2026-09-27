@@ -22,6 +22,10 @@ if (label === "overlay") {
   void import("./windows/Overlay").then(({ default: Overlay }) => {
     ReactDOM.createRoot(root).render(<Overlay />);
   });
+} else if (label === "enhancer") {
+  void import("./windows/Enhancer").then(({ default: Enhancer }) => {
+    ReactDOM.createRoot(root).render(<Enhancer />);
+  });
 } else {
   void import("./App").then(({ default: App }) => {
     ReactDOM.createRoot(root).render(

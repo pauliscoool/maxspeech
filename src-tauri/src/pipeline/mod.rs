@@ -1,5 +1,7 @@
+pub mod agent_llm;
 pub mod commands;
 pub mod learn_substitutions;
+pub mod recovery;
 pub mod tone;
 pub mod vocab;
 
@@ -33,6 +35,7 @@ pub struct PipelineState {
     session_gen: Mutex<u64>,
     /// Bumped only when a *new* recording starts. A finishing enhance/inject from an
     /// older recording skips paste if this no longer matches (prevents half+half).
+    /// Re-checked inside inject after the modifier wait so mid-wait starts cancel.
     paste_epoch: Mutex<u64>,
     /// 16 kHz mono PCM for the active session (Remake cache).
     session_pcm: Mutex<Option<Arc<Mutex<Vec<i16>>>>>,
@@ -102,34 +105,40 @@ fn hide_overlay_if_current(app: &tauri::AppHandle, paste_token: u64) {
     hide_overlay_fast(app);
 }
 
+/// Bottom-center pill slot on the monitor under the cursor (falls back to
+/// primary). Recomputed every hotkey — a OnceLock left Ctrl+Win stuck on the
+/// first screen forever, and `current_monitor()` is wrong while parked off-screen.
+fn overlay_listening_slot(w: &tauri::WebviewWindow) -> (i32, i32) {
+    let monitor = w
+        .cursor_position()
+        .ok()
+        .and_then(|p| w.monitor_from_point(p.x, p.y).ok().flatten())
+        .or_else(|| w.primary_monitor().ok().flatten())
+        .or_else(|| w.current_monitor().ok().flatten());
+
+    if let Some(monitor) = monitor {
+        let scale = monitor.scale_factor();
+        let size = monitor.size();
+        let origin = monitor.position();
+        let pill_w = (148.0 * scale).round() as i32;
+        let pill_h = (36.0 * scale).round() as i32;
+        let margin = (48.0 * scale).round() as i32;
+        (
+            origin.x + (size.width as i32 - pill_w) / 2,
+            origin.y + size.height as i32 - pill_h - margin,
+        )
+    } else {
+        (873, 996)
+    }
+}
+
 fn show_overlay_fast_inner(app: &tauri::AppHandle) {
-    use std::sync::OnceLock;
-
-    /// Physical bottom-center slot, resolved once. Idle parks the same-sized
-    /// HWND off-screen, so the hotkey only has to clip (off-screen) and move.
-    static SLOT: OnceLock<(i32, i32)> = OnceLock::new();
-
     // Only create a WebView2 here if startup pre-warm missed. Callers start
     // mic + Deepgram *before* this so a cold overlay cannot steal the first seconds.
     let cold = app.get_webview_window("overlay").is_none();
     crate::ensure_overlay_window(app);
     if let Some(w) = app.get_webview_window("overlay") {
-        let (x, y) = *SLOT.get_or_init(|| {
-            if let Ok(Some(monitor)) = w.current_monitor() {
-                let scale = monitor.scale_factor();
-                let size = monitor.size();
-                let origin = monitor.position();
-                let pill_w = (148.0 * scale).round() as i32;
-                let pill_h = (36.0 * scale).round() as i32;
-                let margin = (48.0 * scale).round() as i32;
-                (
-                    origin.x + (size.width as i32 - pill_w) / 2,
-                    origin.y + size.height as i32 - pill_h - margin,
-                )
-            } else {
-                (873, 996)
-            }
-        });
+        let (x, y) = overlay_listening_slot(&w);
         // Clip while still parked, then one SetWindowPos — never reveal a
         // rectangular HWND for a frame.
         crate::overlay_win::reveal_listening(&w, x, y);
@@ -155,7 +164,7 @@ fn replay_listening_for_late_overlay(app: &tauri::AppHandle) {
     });
 }
 
-fn is_signed_in(store: &Store) -> bool {
+pub(crate) fn is_signed_in(store: &Store) -> bool {
     // Must be explicitly unlocked by the UI after a real login / Continue locally.
     // Stale account_email alone must not allow hotkey dictation on the login screen.
     let unlocked = store
@@ -246,13 +255,18 @@ pub fn start_dictation(app: &tauri::AppHandle) {
         return;
     }
 
-    // Weekly word limit: hard stop when plan quota is exhausted (Mon 00:00 UTC reset).
+    // Plan quota: Free is 2 minutes / 24h; paid is weekly words (Mon 00:00 UTC).
     let plan_status = app
         .try_state::<Store>()
         .and_then(|store| store.get_plan_status().ok());
     if let Some(ref status) = plan_status {
         if !status.can_dictate {
-            let _ = app.emit("dictation-limit", true);
+            let limit_msg = if status.daily_seconds_limit.is_some() {
+                "Daily limit reached"
+            } else {
+                "Weekly limit reached"
+            };
+            let _ = app.emit("dictation-limit", limit_msg);
             let _ = app.emit("dictation-state", "limit");
             show_overlay_fast(app);
             let _ = app
@@ -288,9 +302,24 @@ pub fn start_dictation(app: &tauri::AppHandle) {
         *state.pending_learn_from.lock().unwrap() = pending;
     }
 
+    let remaining_cap = plan_status
+        .as_ref()
+        .and_then(|s| s.seconds_remaining)
+        .map(|s| Duration::from_secs(s.max(1)))
+        .unwrap_or(MAX_RECORDING)
+        .min(MAX_RECORDING);
+    let free_time_cap = plan_status
+        .as_ref()
+        .and_then(|s| s.daily_seconds_limit)
+        .is_some();
+    let plan_tier = plan_status
+        .as_ref()
+        .map(|s| s.tier)
+        .unwrap_or(crate::plan::PlanTier::Free);
+
     log::info!(
         "Dictation started session={session_id} paste={paste_token} (max {}s wall-clock)",
-        MAX_RECORDING.as_secs()
+        remaining_cap.as_secs()
     );
 
     let keywords: Vec<String> = app
@@ -300,10 +329,6 @@ pub fn start_dictation(app: &tauri::AppHandle) {
         .into_iter()
         .map(|w| w.word)
         .collect();
-
-    let plan_tier = plan_status
-        .map(|s| s.tier)
-        .unwrap_or(crate::plan::PlanTier::Free);
     let (multilingual, languages) = app
         .try_state::<Store>()
         .map(|store| {
@@ -364,6 +389,8 @@ pub fn start_dictation(app: &tauri::AppHandle) {
         ..Default::default()
     };
 
+    let retry_keyterms = config.keywords.clone();
+    let stt_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let session_pcm: Arc<Mutex<Vec<i16>>> = Arc::new(Mutex::new(Vec::new()));
     *state.session_pcm.lock().unwrap() = Some(session_pcm.clone());
 
@@ -391,9 +418,13 @@ pub fn start_dictation(app: &tauri::AppHandle) {
     // paint / WebView2 creation. stream_audio drains PCM during the handshake
     // so the first seconds are not dropped.
     let app_for_stt = app.clone();
+    let stt_error_writer = stt_error.clone();
     tauri::async_runtime::spawn(async move {
         if let Err(e) = deepgram::stream_audio(config, audio_rx, transcript_tx, stop_rx).await {
             log::error!("Deepgram stream error: {e}");
+            if let Ok(mut slot) = stt_error_writer.lock() {
+                *slot = Some(e.to_string());
+            }
             let _ = app_for_stt.emit("dictation-error", format!("STT error: {e}"));
             let _ = app_for_stt.emit("dictation-state", "error");
         }
@@ -412,11 +443,11 @@ pub fn start_dictation(app: &tauri::AppHandle) {
     let _ = app.emit("dictation-state", "listening");
     show_overlay_fast(app);
 
-    // Auto-stop after true wall-clock MAX_RECORDING. Bound to session_id so a
+    // Auto-stop after remaining Free time (or 2 min max). Bound to session_id so a
     // previous session's sleep cannot kill a newer recording (common in toggle mode).
     let app_timeout = app.clone();
     tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(MAX_RECORDING).await;
+        tokio::time::sleep(remaining_cap).await;
         let state = app_timeout.state::<PipelineState>();
         if *state.session_gen.lock().unwrap() != session_id {
             return;
@@ -431,7 +462,7 @@ pub fn start_dictation(app: &tauri::AppHandle) {
             .map(|t| t.elapsed())
             .unwrap_or(Duration::ZERO);
         // Prefer Instant: only auto-stop once this session has actually hit the cap.
-        if elapsed + Duration::from_millis(50) < MAX_RECORDING {
+        if elapsed + Duration::from_millis(50) < remaining_cap {
             log::warn!(
                 "Ignoring stale max-length timer (session={session_id}, elapsed={:.1}s)",
                 elapsed.as_secs_f64()
@@ -442,7 +473,12 @@ pub fn start_dictation(app: &tauri::AppHandle) {
             "Max recording length reached after {:.1}s (session={session_id}) — stopping",
             elapsed.as_secs_f64()
         );
-        let _ = app_timeout.emit("dictation-error", "Max length: 2 minutes — stopping");
+        let msg = if free_time_cap {
+            "Free limit: 2 minutes every 24 hours — stopping"
+        } else {
+            "Max length: 2 minutes — stopping"
+        };
+        let _ = app_timeout.emit("dictation-error", msg);
         stop_dictation(&app_timeout);
     });
 
@@ -464,14 +500,22 @@ pub fn start_dictation(app: &tauri::AppHandle) {
         if !interim.is_empty() {
             text = merge_trailing_interim(&text, interim);
         }
-        if text.is_empty() {
-            {
-                let state = app_handle.state::<PipelineState>();
-                *state.session_pcm.lock().unwrap() = None;
+
+        // Bill wall-clock recording time even if this session produced no text.
+        let duration_secs = {
+            let secs = *app_handle
+                .state::<PipelineState>()
+                .last_session_secs
+                .lock()
+                .unwrap();
+            if secs <= 0.0 {
+                0
+            } else {
+                secs.ceil() as u64
             }
-            hide_overlay_if_current(&app_handle, paste_token);
-            emit_state_if_current(&app_handle, paste_token, "idle");
-            return;
+        };
+        if let Some(store) = app_handle.try_state::<Store>() {
+            let _ = store.record_duration(duration_secs);
         }
 
         // Don't flash "Enhancing…" until we know we'll actually call the LLM.
@@ -488,6 +532,47 @@ pub fn start_dictation(app: &tauri::AppHandle) {
             .map(|a| context::friendly_app_name(&a.exe))
             .unwrap_or_else(|| "Unknown".to_string());
 
+        let mut text = text;
+        if text.is_empty() {
+            let pcm: Vec<i16> = {
+                let state = app_handle.state::<PipelineState>();
+                let arc = state.session_pcm.lock().unwrap().clone();
+                arc.and_then(|a| a.lock().ok().map(|g| g.clone()))
+                    .unwrap_or_default()
+            };
+            if !recovery::has_speech(&pcm) {
+                // Accidental tap or silent mic — nothing worth keeping.
+                let state = app_handle.state::<PipelineState>();
+                *state.session_pcm.lock().unwrap() = None;
+                hide_overlay_if_current(&app_handle, paste_token);
+                emit_state_if_current(&app_handle, paste_token, "idle");
+                return;
+            }
+
+            log::warn!("Live transcript empty despite speech-like audio — retrying from recording");
+            match recovery::retry_transcribe(&pcm, &language_for_pipeline, &retry_keyterms).await {
+                Ok(recovered) => {
+                    log::info!("Recovered dictation via batch retry ({} chars)", recovered.len());
+                    text = recovered;
+                }
+                Err(reason) => {
+                    let stream_err = stt_error.lock().ok().and_then(|g| g.clone());
+                    let detail = stream_err
+                        .map(|e| format!("Transcription failed: {e}"))
+                        .unwrap_or(reason);
+                    recovery::save_failed(&app_handle, &app_name, &detail, &pcm);
+                    let state = app_handle.state::<PipelineState>();
+                    *state.session_pcm.lock().unwrap() = None;
+                    let _ = app_handle.emit(
+                        "dictation-error",
+                        "Couldn't transcribe — saved to History, tap Retry there",
+                    );
+                    emit_state_if_current(&app_handle, paste_token, "error");
+                    return;
+                }
+            }
+        }
+
         if let Some(cmd_result) = commands::check_command(&text) {
             let pipeline_state = app_handle.state::<PipelineState>();
             let still_current = {
@@ -499,6 +584,7 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                 // Do not emit idle — a newer listening session may already own the UI.
                 return;
             }
+            let epoch_alive = || paste_still_current(&app_handle, paste_token);
             match cmd_result {
                 commands::CommandResult::ScratchThat => {
                     let last = pipeline_state.last_insertion.lock().unwrap();
@@ -516,21 +602,34 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                         // something to replace it with (LLM failure used to wipe text).
                         match tone::rewrite_with_llm(&old, &instruction).await {
                             Ok(rewritten) => {
+                                if !epoch_alive() {
+                                    log::info!(
+                                        "Skipping rewrite inject for stale paste={paste_token}"
+                                    );
+                                    return;
+                                }
                                 let _ = inject::undo_insertion(&LastInsertion {
                                     text: old.clone(),
                                     char_count: count,
                                     pasted_at: Instant::now(),
                                 });
-                                match inject::inject_text(&rewritten) {
+                                match inject::inject_text_if(&rewritten, epoch_alive) {
                                     Ok(new_ins) => {
                                         *pipeline_state.last_insertion.lock().unwrap() =
                                             Some(new_ins);
+                                    }
+                                    Err(e) if e.to_string().contains("cancelled") => {
+                                        log::info!(
+                                            "Rewrite inject cancelled (stale paste={paste_token})"
+                                        );
                                     }
                                     Err(e) => {
                                         log::warn!(
                                             "Rewrite inject failed after undo, restoring original: {e}"
                                         );
-                                        if let Ok(restored) = inject::inject_text(&old) {
+                                        if let Ok(restored) =
+                                            inject::inject_text_if(&old, epoch_alive)
+                                        {
                                             *pipeline_state.last_insertion.lock().unwrap() =
                                                 Some(restored);
                                         }
@@ -544,8 +643,16 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                     }
                 }
                 commands::CommandResult::InsertText(t) => {
-                    if let Ok(ins) = inject::inject_text(&t) {
-                        *pipeline_state.last_insertion.lock().unwrap() = Some(ins);
+                    match inject::inject_text_if(&t, epoch_alive) {
+                        Ok(ins) => {
+                            *pipeline_state.last_insertion.lock().unwrap() = Some(ins);
+                        }
+                        Err(e) if e.to_string().contains("cancelled") => {
+                            log::info!(
+                                "Command inject cancelled (stale paste={paste_token})"
+                            );
+                        }
+                        Err(e) => log::warn!("Command inject failed: {e}"),
                     }
                 }
             }
@@ -576,15 +683,17 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                 .flatten()
                 .map(|v| v != "false")
                 .unwrap_or(true);
+            let enhance_speed = tone::EnhanceSpeed::from_store(&store);
 
-            // Short hold (<5s): paste fast with local cleanup only. Full LLM
+            // Short hold: paste fast with local cleanup only. Full LLM
             // enhance is reserved for longer dictations where the lag is worth it.
+            // Fast skips more often; Ultra almost always runs the model.
             let session_secs = *app_handle
                 .state::<PipelineState>()
                 .last_session_secs
                 .lock()
                 .unwrap();
-            let quick_session = session_secs < 5.0;
+            let quick_session = session_secs < enhance_speed.quick_skip_secs();
 
             let word_count = corrected.split_whitespace().count();
             let mut enhance_ran = false;
@@ -622,9 +731,10 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                 match tone::enhance_dictation_ex(
                     &corrected,
                     &tone_name,
-                    word_count >= 40,
+                    word_count >= enhance_speed.long_word_threshold(),
                     multilingual_session,
                     &dict_terms,
+                    enhance_speed,
                 )
                 .await
                 {
@@ -688,16 +798,36 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                 return;
             }
 
-            if let Ok(ins) = inject::inject_text(&final_output) {
-                let prev = pipeline_state.pending_learn_from.lock().unwrap().take();
-                if let Some(prev_text) = prev {
-                    learn_substitutions::learn_from_redictate(
-                        &prev_text,
-                        &final_output,
-                        &store,
-                    );
+            let epoch_alive = || paste_still_current(&app_handle, paste_token);
+            match inject::inject_text_if(&final_output, epoch_alive) {
+                Ok(ins) => {
+                    let prev = pipeline_state.pending_learn_from.lock().unwrap().take();
+                    if let Some(prev_text) = prev {
+                        learn_substitutions::learn_from_redictate(
+                            &prev_text,
+                            &final_output,
+                            &store,
+                        );
+                    }
+                    *pipeline_state.last_insertion.lock().unwrap() = Some(ins);
                 }
-                *pipeline_state.last_insertion.lock().unwrap() = Some(ins);
+                Err(e) if e.to_string().contains("cancelled") => {
+                    log::info!(
+                        "Paste cancelled mid-inject for stale session paste={paste_token}"
+                    );
+                    // Newer session owns the field — don't emit idle / toast.
+                    return;
+                }
+                Err(e) => {
+                    log::warn!("Paste failed: {e}");
+                    // Never lose the text: leave it on the clipboard and say so.
+                    let _ = inject::copy_text(&final_output);
+                    let _ = app_handle.emit(
+                        "dictation-error",
+                        "Couldn't paste — text copied, press Ctrl+V",
+                    );
+                    emit_state_if_current(&app_handle, paste_token, "error");
+                }
             }
 
             // Grammarly-like toast before WAV I/O so it isn't delayed by Remake save.
@@ -755,6 +885,13 @@ pub fn start_dictation(app: &tauri::AppHandle) {
         hide_overlay_if_current(&app_handle, paste_token);
         emit_state_if_current(&app_handle, paste_token, "idle");
     });
+}
+
+/// True while this paste token is still the newest recording start.
+fn paste_still_current(app: &tauri::AppHandle, paste_token: u64) -> bool {
+    let state = app.state::<PipelineState>();
+    let epoch = state.paste_epoch.lock().unwrap();
+    *epoch == paste_token
 }
 
 /// Only the current paste epoch may drive overlay state — prevents a finishing
@@ -816,10 +953,10 @@ pub fn stop_dictation(app: &tauri::AppHandle) {
         *gen
     };
 
-    // Trail keeps the mic open past Deepgram endpointing so the last syllable
-    // finalizes. Short holds stay snappy but need enough tail for soft endings
-    // (40ms was dropping the last word ~1/5–1/10 of the time).
-    let trail_ms: u64 = if elapsed_secs < 5.0 { 140 } else { 280 };
+    // Keep capturing after hotkey-up. People release during the last syllable,
+    // and 140–280ms was still chopping endings. Snappy paste matters less than
+    // hearing the full phrase.
+    let trail_ms: u64 = if elapsed_secs < 5.0 { 520 } else { 800 };
 
     let stop_tx = state.stop_tx.lock().unwrap().take();
     let app_trail = app.clone();
@@ -836,6 +973,10 @@ pub fn stop_dictation(app: &tauri::AppHandle) {
     });
 
     log::info!("Dictation stopped after {elapsed_secs:.1}s ({trail_ms}ms trail)");
+    // Switch to the thinking wave while Deepgram drains + enhance runs — frozen
+    // mic bars after release look stuck when transcription takes a moment.
+    let paste_token = *state.paste_epoch.lock().unwrap();
+    emit_state_if_current(app, paste_token, "processing");
 }
 
 fn invalidate_session(state: &PipelineState) {

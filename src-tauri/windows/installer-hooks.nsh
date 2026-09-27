@@ -32,6 +32,8 @@
     ${If} $R8 < 16
       Goto force_quit_loop_${ForceQuitID}
     ${EndIf}
+  ; Last resort: taskkill leftover tray processes so File copy can proceed.
+  nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /F /IM ${MAINBINARYNAME}.exe'
   force_quit_done_${ForceQuitID}:
   !undef ForceQuitID
 !macroend

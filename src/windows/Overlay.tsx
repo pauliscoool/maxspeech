@@ -4,6 +4,9 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   getCurrentWindow,
   currentMonitor,
+  cursorPosition,
+  monitorFromPoint,
+  primaryMonitor,
   LogicalSize,
   LogicalPosition,
 } from "@tauri-apps/api/window";
@@ -20,14 +23,16 @@ const BAR_COUNT = 20;
 const BAR_MAX_PX = 18;
 const BAR_WIDTH_PX = 3;
 const BAR_GAP_PX = 3;
+/** Shared ribbon width: bars sample one continuous wash, not per-bar paints. */
+const WAVEFORM_W_PX = BAR_COUNT * BAR_WIDTH_PX + (BAR_COUNT - 1) * BAR_GAP_PX;
 /** After this long still processing, switch from ping-pong wave → digging sweep. */
 const THINKING_DIG_AFTER_S = 3;
 /** 20×3 + 19×3 = 117px bars + ~28px side padding. */
 const OVERLAY_W = 148;
 const OVERLAY_H = 36;
 const CLEAR_BG = [18, 18, 18, 0] as [number, number, number, number];
-const TOAST_W = 220;
-const TOAST_H = 90;
+const TOAST_W = 187;
+const TOAST_H = 77;
 const TOAST_MS = 1800;
 const TOAST_OUT_MS = 160;
 const LIMIT_W = 292;
@@ -42,6 +47,7 @@ export default function Overlay() {
   const [toastLeaving, setToastLeaving] = useState(false);
   const [pillLeaving, setPillLeaving] = useState(false);
   const [hearing, setHearing] = useState(false);
+  const [limitLabel, setLimitLabel] = useState("Limit reached");
   const smoothed = useRef<number[]>(Array(BAR_COUNT).fill(0.14));
   const raf = useRef<number | null>(null);
   const listening = useRef(false);
@@ -63,14 +69,12 @@ export default function Overlay() {
   useEffect(() => {
     // Warm path: keep WebView shown, but park OFF-SCREEN while idle so a failed
     // alpha composite cannot leave a permanent white strip on the desktop.
-    void ensureScreen();
     void clearOverlayChrome();
     void resizeForState("idle");
   }, []);
 
   useEffect(() => {
-    // Processing: synthetic ping-pong / dig wave. Listening: real audio-level
-    // events only — do not breathe as if the mic is live while WASAPI/WS open.
+    // Processing: synthetic left↔right / dig wave. Listening: real audio levels.
     if (state !== "listening" && state !== "processing") {
       if (raf.current) cancelAnimationFrame(raf.current);
       raf.current = null;
@@ -241,7 +245,11 @@ export default function Overlay() {
       clearErrorSoon();
     }).then((u) => unsubs.push(u));
 
-    listen("dictation-limit", () => {
+    listen<string>("dictation-limit", (e) => {
+      const msg = typeof e.payload === "string" && e.payload.trim()
+        ? e.payload
+        : "Limit reached";
+      setLimitLabel(msg);
       setState("limit");
       void resizeForState("limit");
       clearLimitSoon();
@@ -309,7 +317,7 @@ export default function Overlay() {
       pillLeaving);
 
   const snippet = toast
-    ? truncate(toast.original, 36) + " → " + truncate(toast.enhanced, 36)
+    ? truncate(toast.original, 31) + " → " + truncate(toast.enhanced, 31)
     : "";
 
   const connecting = state === "listening" && !hearing;
@@ -360,8 +368,8 @@ export default function Overlay() {
               src="/logo.png"
               srcSet="/logo.png 1x, /logo@2x.png 2x"
               alt=""
-              width={29}
-              height={29}
+              width={25}
+              height={25}
               draggable={false}
             />
           </div>
@@ -395,21 +403,27 @@ export default function Overlay() {
           {!showLimit && (
             <div
               className="overlay-waveform flex items-end justify-center"
-              style={{ gap: `${BAR_GAP_PX}px`, height: `${BAR_MAX_PX}px` }}
+              style={{
+                gap: `${BAR_GAP_PX}px`,
+                height: `${BAR_MAX_PX}px`,
+                ["--wave-w" as string]: `${WAVEFORM_W_PX}px`,
+              }}
             >
               {levels.map((level, i) => {
                 const mid =
                   1 -
                   (Math.abs(i - (BAR_COUNT - 1) / 2) / ((BAR_COUNT - 1) / 2)) * 0.18;
                 const px = Math.max(3, level * mid * BAR_MAX_PX);
-                const isOrange = i % 6 === 3;
+                const sliceX = i * (BAR_WIDTH_PX + BAR_GAP_PX);
                 return (
                   <div
                     key={i}
-                    className={`liquid-glass-bar shrink-0 origin-bottom ${
-                      isOrange ? "liquid-glass-bar--orange" : ""
-                    }`}
-                    style={{ height: `${px.toFixed(2)}px`, width: `${BAR_WIDTH_PX}px` }}
+                    className="liquid-glass-bar shrink-0 origin-bottom"
+                    style={{
+                      height: `${px.toFixed(2)}px`,
+                      width: `${BAR_WIDTH_PX}px`,
+                      ["--wave-x" as string]: `-${sliceX}px`,
+                    }}
                   />
                 );
               })}
@@ -418,13 +432,18 @@ export default function Overlay() {
 
           {showLimit && (
             <span className="text-[10px] font-medium text-white/90 w-full text-center truncate">
-              Weekly limit reached
+              {limitLabel}
             </span>
           )}
         </div>
       )}
     </div>
   );
+}
+
+function truncate(s: string, n: number) {
+  const t = s.trim().replace(/\s+/g, " ");
+  return t.length <= n ? t : t.slice(0, n - 1) + "…";
 }
 
 function pingPong01(t: number, oneWayS: number): number {
@@ -437,7 +456,7 @@ function gaussian(dist: number, sigma: number): number {
   return Math.exp(-(dist * dist) / (2 * sigma * sigma));
 }
 
-/** Processing / enhance: traveling ping-pong, then a slower dual-phase “dig”. */
+/** Processing / enhance: traveling left↔right pulse, then a slower dual-phase dig. */
 function thinkingBarLevel(t: number, i: number): number {
   const n = BAR_COUNT - 1;
   const pulse = pingPong01(t, 1.05);
@@ -456,14 +475,6 @@ function thinkingBarLevel(t: number, i: number): number {
   const eased = k * k * (3 - 2 * k);
   return Math.min(0.98, a1 + (a2 - a1) * eased);
 }
-
-function truncate(s: string, n: number) {
-  const t = s.trim().replace(/\s+/g, " ");
-  return t.length <= n ? t : t.slice(0, n - 1) + "…";
-}
-
-/** Cached monitor size so hotkey resize doesn't wait on currentMonitor every time. */
-let cachedScreen: { w: number; h: number } | null = null;
 
 async function clearOverlayChrome() {
   const win = getCurrentWindow();
@@ -490,29 +501,37 @@ async function setClickThrough(enabled: boolean) {
   }
 }
 
-async function ensureScreen(): Promise<{ w: number; h: number } | null> {
-  if (cachedScreen) return cachedScreen;
-  const monitor = await currentMonitor();
-  if (!monitor) return null;
-  const scale = monitor.scaleFactor;
-  cachedScreen = {
-    w: monitor.size.width / scale,
-    h: monitor.size.height / scale,
-  };
-  return cachedScreen;
+/** Fresh each call — monitor under cursor, not a Once-cached primary slot. */
+async function resolveTargetMonitor() {
+  try {
+    const cursor = await cursorPosition();
+    const underCursor = await monitorFromPoint(cursor.x, cursor.y);
+    if (underCursor) return underCursor;
+  } catch {
+    /* fall through */
+  }
+  return (await primaryMonitor()) ?? (await currentMonitor());
 }
 
 async function positionBottomCenter(w: number, h: number) {
   try {
     const win = getCurrentWindow();
-    const screen = await ensureScreen();
-    if (!screen) return;
+    const monitor = await resolveTargetMonitor();
+    if (!monitor) return;
+    const scale = monitor.scaleFactor;
+    const screenW = monitor.size.width / scale;
+    const screenH = monitor.size.height / scale;
+    const originX = monitor.position.x / scale;
+    const originY = monitor.position.y / scale;
     // Await chrome clear before paint — fire-and-forget left WebView2 white up.
     await clearOverlayChrome();
     await Promise.all([
       win.setSize(new LogicalSize(w, h)),
       win.setPosition(
-        new LogicalPosition((screen.w - w) / 2, screen.h - h - 48),
+        new LogicalPosition(
+          originX + (screenW - w) / 2,
+          originY + screenH - h - 48,
+        ),
       ),
       win.setAlwaysOnTop(true),
     ]);

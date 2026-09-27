@@ -2,6 +2,7 @@
 
 mod audio;
 mod context;
+mod enhancer;
 mod hotkey;
 mod inject;
 mod overlay_win;
@@ -13,6 +14,7 @@ mod secrets;
 mod sound;
 mod store;
 mod stt;
+mod win_update;
 
 use store::Store;
 use tauri::{
@@ -22,7 +24,7 @@ use tauri::{
 };
 
 /// Native error dialog — works even when the WebView never starts.
-fn show_native_error(title: &str, message: &str) {
+pub(crate) fn show_native_error(title: &str, message: &str) {
     #[cfg(windows)]
     {
         use std::os::windows::ffi::OsStrExt;
@@ -534,23 +536,38 @@ async fn get_plan_status(app: tauri::AppHandle) -> Result<plan::PlanStatus, Stri
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-async fn set_plan_tier(app: tauri::AppHandle, tier: String) -> Result<plan::PlanStatus, String> {
-    let store = app.state::<Store>();
-    let parsed = plan::PlanTier::parse(&tier);
-    let email = store
+fn stored_account_email(store: &Store) -> String {
+    store
         .get_setting("account_email")
         .ok()
         .flatten()
         .unwrap_or_default()
         .trim()
-        .to_ascii_lowercase();
-    const OWNER: &str = "pauldimov5@gmail.com";
+        .to_ascii_lowercase()
+}
+
+fn is_owner_email(email: &str) -> bool {
+    crate::plan::is_owner_email(email)
+}
+
+fn require_owner(store: &Store) -> Result<(), String> {
+    if is_owner_email(&stored_account_email(store)) {
+        Ok(())
+    } else {
+        Err("Only the owner account can edit usage and other people's plans.".into())
+    }
+}
+
+#[tauri::command]
+async fn set_plan_tier(app: tauri::AppHandle, tier: String) -> Result<plan::PlanStatus, String> {
+    let store = app.state::<Store>();
+    let parsed = plan::PlanTier::parse(&tier);
+    let email = stored_account_email(&store);
 
     match parsed {
         plan::PlanTier::Free => {}
         plan::PlanTier::Starter | plan::PlanTier::Pro | plan::PlanTier::Max => {
-            if (email != OWNER) {
+            if !is_owner_email(&email) {
                 return Err(
                     "Payment checkout coming soon for paid plans. Free plan stays available."
                         .into(),
@@ -560,6 +577,41 @@ async fn set_plan_tier(app: tauri::AppHandle, tier: String) -> Result<plan::Plan
     }
 
     store.set_plan_tier(parsed).map_err(|e| e.to_string())?;
+    store.get_plan_status().map_err(|e| e.to_string())
+}
+
+/// Apply a plan from cloud sync without the checkout gate (already entitled).
+#[tauri::command]
+async fn sync_plan_tier(app: tauri::AppHandle, tier: String) -> Result<plan::PlanStatus, String> {
+    let store = app.state::<Store>();
+    let parsed = plan::PlanTier::parse(&tier);
+    store.set_plan_tier(parsed).map_err(|e| e.to_string())?;
+    store.get_plan_status().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn set_usage_bonus(app: tauri::AppHandle, bonus: u64) -> Result<plan::PlanStatus, String> {
+    let store = app.state::<Store>();
+    require_owner(&store)?;
+    store.set_usage_bonus(bonus).map_err(|e| e.to_string())?;
+    store.get_plan_status().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn adjust_usage(app: tauri::AppHandle, delta: i64) -> Result<plan::PlanStatus, String> {
+    let store = app.state::<Store>();
+    require_owner(&store)?;
+    store.adjust_usage(delta).map_err(|e| e.to_string())?;
+    store.get_plan_status().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn set_words_used(app: tauri::AppHandle, words: u64) -> Result<plan::PlanStatus, String> {
+    let store = app.state::<Store>();
+    require_owner(&store)?;
+    let current = store.words_this_week().map_err(|e| e.to_string())?;
+    let delta = words as i64 - current as i64;
+    store.adjust_usage(delta).map_err(|e| e.to_string())?;
     store.get_plan_status().map_err(|e| e.to_string())
 }
 
@@ -659,7 +711,8 @@ fn kill_other_maxspeech_processes() {
 
 /// Download the latest installer from `url`, emit progress, then launch it.
 /// Used when the signed Tauri updater isn't available yet.
-#[tauri::command]
+// Superseded by `win_update::download_and_run_installer` (the registered command).
+#[allow(dead_code)]
 async fn download_and_run_installer(app: tauri::AppHandle, url: String) -> Result<(), String> {
     use futures_util::StreamExt;
     use std::io::Write;
@@ -840,12 +893,14 @@ async fn remake_dictation(app: tauri::AppHandle, id: i64) -> Result<String, Stri
         .unwrap_or_else(|| "default".to_string());
 
     let mut output = if has_llm && ai_enhance {
+        let speed = pipeline::tone::EnhanceSpeed::from_store(&store);
         pipeline::tone::enhance_dictation_ex(
             &corrected,
             &tone_name,
             false,
             multilingual,
             &dict_terms,
+            speed,
         )
         .await
         .unwrap_or(corrected.clone())
@@ -937,6 +992,9 @@ fn ensure_default_autostart(app: &tauri::AppHandle) {
 fn main() {
     install_panic_hook();
     ensure_logs_dir();
+    // Must run before WebView2 / single-instance — the helper is a renamed
+    // copy of this exe and must not open the tray app.
+    win_update::run_if_reinstaller();
 
     if std::env::args().any(|a| a == "--diagnose") {
         match write_diagnose_report() {
@@ -1058,15 +1116,24 @@ fn main() {
             set_hotkey_mode,
             get_plan_status,
             set_plan_tier,
+            sync_plan_tier,
+            set_usage_bonus,
+            adjust_usage,
+            set_words_used,
             open_settings_page,
             open_plans_modal,
             set_overlay_pill_clip,
             park_overlay_idle,
             set_overlay_click_through,
             preview_sound_cue,
-            download_and_run_installer,
+            win_update::download_and_run_installer,
             remake_dictation,
             update_history_text,
+            enhancer::enhancer_session,
+            enhancer::enhancer_run,
+            enhancer::enhancer_stop,
+            enhancer::enhancer_close,
+            enhancer::enhancer_replace,
         ])
         .setup(|app| {
             let handle = app.handle().clone();

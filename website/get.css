@@ -139,9 +139,18 @@
 .android-qr {
   display: block;
   margin: 0 auto 1.25rem;
+  width: min(180px, 56vw);
+  height: auto;
+  aspect-ratio: 1;
   border-radius: 1rem;
   border: 1px solid rgba(46, 211, 198, 0.28);
   background: #07090c;
+}
+
+@media (max-width: 720px) {
+  .android-qr {
+    display: none;
+  }
 }
 
 .get-trouble code {
@@ -199,4 +208,22 @@
 
 .auth-msg.is-error {
   color: #f87171;
+}
+
+@media (max-width: 719px) {
+  .get-page {
+    align-items: flex-start;
+    padding: max(1.25rem, env(safe-area-inset-top)) 1rem max(2.5rem, env(safe-area-inset-bottom));
+  }
+
+  .get-shell .btn-primary {
+    width: 100%;
+    min-height: 3rem;
+    padding: 0.95rem 1.15rem;
+  }
+
+  .get-steps,
+  .get-trouble {
+    font-size: 0.95rem;
+  }
 }

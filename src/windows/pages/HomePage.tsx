@@ -5,6 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { PageId } from "../Shell";
 import { friendlyAppName } from "../../lib/appNames";
 import ConfirmModal from "../../components/ConfirmModal";
+import AppleSpinner from "../../components/AppleSpinner";
 
 interface HistoryEntry {
   id: number;
@@ -13,6 +14,8 @@ interface HistoryEntry {
   created_at: string;
   recording_path?: string | null;
   can_remake?: boolean;
+  /** "failed" = transcription produced nothing; Retry re-runs it from the saved audio. */
+  status?: string | null;
 }
 
 type BtnState = "idle" | "loading" | "ok";
@@ -48,6 +51,12 @@ export default function HomePage({
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [bulkConfirm, setBulkConfirm] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [stats, setStats] = useState<{
+    total_words: number;
+    total_entries: number;
+    days_active: number;
+    avg_wpm: number;
+  } | null>(null);
   const loadGen = useRef(0);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const loadingMoreRef = useRef(false);
@@ -107,6 +116,14 @@ export default function HomePage({
 
   function reloadHistory() {
     void loadPage(0, true);
+    invoke<{
+      total_words: number;
+      total_entries: number;
+      days_active: number;
+      avg_wpm: number;
+    }>("get_stats")
+      .then(setStats)
+      .catch(() => {});
   }
 
   function loadMore() {
@@ -129,6 +146,7 @@ export default function HomePage({
 
     let unlistenFocus: (() => void) | undefined;
     let unlistenHistory: (() => void) | undefined;
+    let unlistenFailed: (() => void) | undefined;
     void getCurrentWindow()
       .onFocusChanged(({ payload: focused }) => {
         if (focused) {
@@ -146,6 +164,12 @@ export default function HomePage({
     }).then((fn) => {
       unlistenHistory = fn;
     });
+    void listen("history-failed", () => {
+      reloadHistory();
+      onChanged();
+    }).then((fn) => {
+      unlistenFailed = fn;
+    });
 
     // Immediate refresh on mount (e.g. navigating back to Home).
     reloadHistory();
@@ -155,6 +179,7 @@ export default function HomePage({
       document.removeEventListener("visibilitychange", onVis);
       unlistenFocus?.();
       unlistenHistory?.();
+      unlistenFailed?.();
     };
   }, [search, onChanged]);
 
@@ -233,7 +258,7 @@ export default function HomePage({
     try {
       const text = await invoke<string>("remake_dictation", { id });
       setEntries((prev) =>
-        prev.map((e) => (e.id === id ? { ...e, text } : e)),
+        prev.map((e) => (e.id === id ? { ...e, text, status: null } : e)),
       );
       onChanged();
       setRemakeState((s) => ({ ...s, [id]: "ok" }));
@@ -317,7 +342,9 @@ export default function HomePage({
   }
 
   return (
-    <div className="page-shell space-y-5">
+    <div className="page-shell home-page space-y-5">
+      <div className="home-layout">
+      <div className="home-main space-y-5">
       <h1 className="page-title">
         Welcome back, <span className="accent-gradient-text">{name}</span>
       </h1>
@@ -398,8 +425,8 @@ export default function HomePage({
       </div>
 
       {loading && entries.length === 0 ? (
-        <div className="surface-card p-8 text-center">
-          <p className="text-xs text-[var(--ms-text-dim)]">Loading…</p>
+        <div className="surface-card p-8 flex items-center justify-center">
+          <AppleSpinner size={24} />
         </div>
       ) : entries.length === 0 ? (
         <div className="surface-card p-8 text-center space-y-2">
@@ -422,10 +449,13 @@ export default function HomePage({
                 const cState = copyState[entry.id] ?? "idle";
                 const rState = remakeState[entry.id] ?? "idle";
                 const isSelected = selected.has(entry.id);
+                const failed = entry.status === "failed";
                 return (
                   <article
                     key={entry.id}
                     className={`surface-card p-3.5 sm:p-4 group ${
+                      failed ? "ring-1 ring-[var(--ms-error)]/40" : ""
+                    } ${
                       selectMode ? "cursor-pointer hover:brightness-[1.03]" : ""
                     } ${
                       selectMode && isSelected
@@ -466,6 +496,17 @@ export default function HomePage({
                             />
                           )}
                           <div className="text-[11px] text-[var(--ms-text-dim)] min-w-0">
+                            {failed && (
+                              <span
+                                className="mr-2 px-1.5 py-0.5 rounded-full text-[10px] font-semibold"
+                                style={{
+                                  background: "rgba(239, 68, 68, 0.15)",
+                                  color: "var(--ms-error)",
+                                }}
+                              >
+                                Failed
+                              </span>
+                            )}
                             {formatTime(entry.created_at)}
                             {entry.app_name ? (
                               <>
@@ -480,7 +521,7 @@ export default function HomePage({
                         {!selectMode && (
                           <div
                             className={`flex gap-1 shrink-0 transition-opacity ${
-                              cState !== "idle" || rState !== "idle"
+                              cState !== "idle" || rState !== "idle" || failed
                                 ? "opacity-100"
                                 : "opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto"
                             }`}
@@ -497,7 +538,9 @@ export default function HomePage({
                                     ? "…"
                                     : rState === "ok"
                                       ? "Copied"
-                                      : "Remake"
+                                      : failed
+                                        ? "Retry"
+                                        : "Remake"
                                 }
                                 state={rState}
                                 onClick={() => remake(entry.id)}
@@ -562,7 +605,11 @@ export default function HomePage({
                         </div>
                       ) : (
                         <p
-                          className="text-sm text-[var(--ms-text-soft)] leading-relaxed whitespace-pre-wrap break-words"
+                          className={`text-sm leading-relaxed whitespace-pre-wrap break-words ${
+                            failed
+                              ? "text-[var(--ms-text-dim)] italic"
+                              : "text-[var(--ms-text-soft)]"
+                          }`}
                           onDoubleClick={
                             selectMode ? undefined : () => beginEdit(entry)
                           }
@@ -583,6 +630,35 @@ export default function HomePage({
           ) : null}
         </div>
       )}
+      </div>
+
+      <aside className="home-rail" aria-label="Status">
+        <HomeStat
+          title="Words"
+          value={stats ? formatHomeStat(stats.total_words) : "—"}
+          hint="All time"
+          accent="teal"
+        />
+        <HomeStat
+          title="Dictations"
+          value={stats ? String(stats.total_entries) : "—"}
+          hint="Sessions"
+          accent="orange"
+        />
+        <HomeStat
+          title="Active days"
+          value={stats ? String(stats.days_active) : "—"}
+          hint="With activity"
+          accent="teal"
+        />
+        <HomeStat
+          title="WPM"
+          value={stats && stats.avg_wpm > 0 ? String(stats.avg_wpm) : "—"}
+          hint="Speaking pace"
+          accent="orange"
+        />
+      </aside>
+      </div>
 
       <ConfirmModal
         open={deleteId != null}
@@ -611,6 +687,33 @@ export default function HomePage({
       />
     </div>
   );
+}
+
+function HomeStat({
+  title,
+  value,
+  hint,
+  accent,
+}: {
+  title: string;
+  value: string;
+  hint: string;
+  accent: "teal" | "orange";
+}) {
+  return (
+    <div className="home-stat">
+      <div className="home-stat-label">{title}</div>
+      <div className={`home-stat-value ${accent === "orange" ? "is-orange" : "is-teal"}`}>
+        {value}
+      </div>
+      <div className="home-stat-hint">{hint}</div>
+    </div>
+  );
+}
+
+function formatHomeStat(n: number) {
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
+  return String(n);
 }
 
 function IconBtn({

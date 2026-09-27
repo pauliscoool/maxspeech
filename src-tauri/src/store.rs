@@ -12,6 +12,8 @@ pub struct HistoryEntry {
     pub recording_path: Option<String>,
     /// True when a Remake audio file exists on disk.
     pub can_remake: bool,
+    /// `Some("failed")` when transcription never produced text (Retry re-runs it).
+    pub status: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -114,16 +116,24 @@ impl Store {
             "ALTER TABLE history ADD COLUMN recording_path TEXT",
             [],
         );
+        // NULL = fine; "failed" = transcription produced nothing (nullable, additive).
+        let _ = conn.execute("ALTER TABLE history ADD COLUMN status TEXT", []);
         // Append-only usage ledger — deletes must never refund quota.
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS usage_events (
                  id INTEGER PRIMARY KEY AUTOINCREMENT,
                  word_count INTEGER NOT NULL,
                  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                 history_id INTEGER
+                 history_id INTEGER,
+                 duration_secs INTEGER NOT NULL DEFAULT 0
              );
              CREATE INDEX IF NOT EXISTS idx_usage_created ON usage_events(created_at);",
         )?;
+        // Older DBs created usage_events before duration_secs existed.
+        let _ = conn.execute(
+            "ALTER TABLE usage_events ADD COLUMN duration_secs INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
 
         // One-time backfill from existing history so this week isn't under-counted.
         let already: i64 = conn
@@ -247,7 +257,46 @@ impl Store {
     }
 
     pub fn set_plan_tier(&self, tier: crate::plan::PlanTier) -> Result<(), rusqlite::Error> {
-        self.set_setting("plan_tier", tier.as_str())
+        self.set_setting("plan_tier", tier.as_str())?;
+        self.set_setting(
+            "plan_updated_at",
+            &chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        )
+    }
+
+    fn active_usage_bonus(&self, week_start: &str) -> u64 {
+        let week = self
+            .get_setting("usage_bonus_week")
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        if week != week_start {
+            return 0;
+        }
+        self.get_setting("usage_bonus")
+            .ok()
+            .flatten()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(0)
+    }
+
+    pub fn set_usage_bonus(&self, bonus: u64) -> Result<(), rusqlite::Error> {
+        let week_start = crate::plan::week_starts_at_sql();
+        self.set_setting("usage_bonus", &bonus.to_string())?;
+        self.set_setting("usage_bonus_week", &week_start)
+    }
+
+    /// Append a usage ledger row. Negative `delta` credits words back this week.
+    pub fn adjust_usage(&self, delta: i64) -> Result<(), rusqlite::Error> {
+        if delta == 0 {
+            return Ok(());
+        }
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO usage_events (word_count, history_id) VALUES (?1, NULL)",
+            params![delta],
+        )?;
+        Ok(())
     }
 
     /// Sum of billed words since Monday 00:00 UTC from the append-only usage ledger.
@@ -263,14 +312,50 @@ impl Store {
         Ok(total.max(0) as u64)
     }
 
+    /// Sum of billed recording seconds in the last 24 hours (UTC).
+    pub fn seconds_last_24h(&self) -> Result<u64, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let total: i64 = conn.query_row(
+            "SELECT COALESCE(SUM(duration_secs), 0) FROM usage_events
+             WHERE created_at >= datetime('now', '-24 hours')",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(total.max(0) as u64)
+    }
+
+    /// Append recording time to the usage ledger (Free 24h clock).
+    pub fn record_duration(&self, duration_secs: u64) -> Result<(), rusqlite::Error> {
+        if duration_secs == 0 {
+            return Ok(());
+        }
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO usage_events (word_count, duration_secs, history_id) VALUES (0, ?1, NULL)",
+            params![duration_secs as i64],
+        )?;
+        Ok(())
+    }
+
     pub fn get_plan_status(&self) -> Result<crate::plan::PlanStatus, rusqlite::Error> {
         let tier = self.get_plan_tier();
         let words_used = self.words_this_week()?;
         let week_starts_at = crate::plan::week_starts_at_sql();
-        Ok(crate::plan::PlanStatus::from_usage(
+        let bonus_words = self.active_usage_bonus(&week_starts_at);
+        let daily_seconds_used = self.seconds_last_24h()?;
+        let email = self
+            .get_setting("account_email")
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        let unlimited = crate::plan::is_owner_email(&email);
+        Ok(crate::plan::PlanStatus::from_usage_with_bonus(
             tier,
             words_used,
             week_starts_at,
+            bonus_words,
+            daily_seconds_used,
+            unlimited,
         ))
     }
 
@@ -288,6 +373,16 @@ impl Store {
             params![word_count, id],
         )?;
         Ok(id)
+    }
+
+    /// A dictation whose transcription failed. Never billed — no words were produced.
+    pub fn add_failed_history(&self, reason: &str, app_name: &str) -> Result<i64, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO history (text, app_name, status) VALUES (?1, ?2, 'failed')",
+            params![reason, app_name],
+        )?;
+        Ok(conn.last_insert_rowid())
     }
 
     pub fn set_history_recording_path(
@@ -341,6 +436,7 @@ impl Store {
         app_name: String,
         created_at: String,
         recording_path: Option<String>,
+        status: Option<String>,
     ) -> HistoryEntry {
         let path = recording_path.filter(|p| !p.is_empty());
         let can_remake = path
@@ -354,6 +450,7 @@ impl Store {
             created_at,
             recording_path: if can_remake { path } else { None },
             can_remake,
+            status,
         }
     }
 
@@ -368,7 +465,7 @@ impl Store {
         let conn = self.conn.lock().unwrap();
         if search.is_empty() {
             let mut stmt = conn.prepare(
-                "SELECT id, text, app_name, created_at, recording_path FROM history ORDER BY id DESC LIMIT ?1 OFFSET ?2",
+                "SELECT id, text, app_name, created_at, recording_path, status FROM history ORDER BY id DESC LIMIT ?1 OFFSET ?2",
             )?;
             let rows = stmt.query_map(params![limit, offset], |row| {
                 Ok(Self::map_history_row(
@@ -377,12 +474,13 @@ impl Store {
                     row.get(2)?,
                     row.get(3)?,
                     row.get(4)?,
+                    row.get(5)?,
                 ))
             })?;
             rows.collect()
         } else {
             let mut stmt = conn.prepare(
-                "SELECT id, text, app_name, created_at, recording_path FROM history WHERE text LIKE '%' || ?1 || '%' ORDER BY id DESC LIMIT ?2 OFFSET ?3",
+                "SELECT id, text, app_name, created_at, recording_path, status FROM history WHERE text LIKE '%' || ?1 || '%' ORDER BY id DESC LIMIT ?2 OFFSET ?3",
             )?;
             let rows = stmt.query_map(params![search, limit, offset], |row| {
                 Ok(Self::map_history_row(
@@ -391,6 +489,7 @@ impl Store {
                     row.get(2)?,
                     row.get(3)?,
                     row.get(4)?,
+                    row.get(5)?,
                 ))
             })?;
             rows.collect()
@@ -546,12 +645,12 @@ impl Store {
     pub fn get_stats(&self) -> Result<Stats, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         let total_entries: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM history",
+            "SELECT COUNT(*) FROM history WHERE status IS NULL",
             [],
             |row| row.get(0),
         )?;
         let texts: Vec<String> = {
-            let mut stmt = conn.prepare("SELECT text FROM history")?;
+            let mut stmt = conn.prepare("SELECT text FROM history WHERE status IS NULL")?;
             let rows = stmt.query_map([], |row| row.get(0))?;
             rows.filter_map(|r| r.ok()).collect()
         };
@@ -561,7 +660,7 @@ impl Store {
             .sum();
         let days_active: i64 = conn
             .query_row(
-                "SELECT COUNT(DISTINCT date(created_at)) FROM history",
+                "SELECT COUNT(DISTINCT date(created_at)) FROM history WHERE status IS NULL",
                 [],
                 |row| row.get(0),
             )
@@ -582,7 +681,7 @@ impl Store {
     pub fn get_history_by_id(&self, id: i64) -> Result<Option<HistoryEntry>, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         match conn.query_row(
-            "SELECT id, text, app_name, created_at, recording_path FROM history WHERE id = ?1",
+            "SELECT id, text, app_name, created_at, recording_path, status FROM history WHERE id = ?1",
             params![id],
             |row| {
                 Ok(Self::map_history_row(
@@ -591,6 +690,7 @@ impl Store {
                     row.get(2)?,
                     row.get(3)?,
                     row.get(4)?,
+                    row.get(5)?,
                 ))
             },
         ) {
@@ -603,7 +703,7 @@ impl Store {
     pub fn update_history_text(&self, id: i64, text: &str) -> Result<(), rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "UPDATE history SET text = ?1 WHERE id = ?2",
+            "UPDATE history SET text = ?1, status = NULL WHERE id = ?2",
             params![text, id],
         )?;
         Ok(())
@@ -666,6 +766,9 @@ impl Store {
         for key in [
             "user_name",
             "plan_tier",
+            "plan_updated_at",
+            "usage_bonus",
+            "usage_bonus_week",
             "account_email",
             "dictation_unlocked",
             "deepgram_api_key",
