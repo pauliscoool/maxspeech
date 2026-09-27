@@ -238,6 +238,24 @@ object Vocab {
         return emptyList()
     }
 
+    /**
+     * Desktop `redictate_corrections`. Re-dictating within seconds is often a change of mind
+     * ("going home" → "going out"), not an ASR miss; learning those swaps made later dictations
+     * paste words never said. Keep only pairs whose replacement is a name / term.
+     */
+    fun redictateCorrections(previous: String, next: String): List<Substitution> {
+        val nextTokens = tokenize(next)
+        return substitutionsFromRedictate(previous, next).filter { sub ->
+            // Judge only the words that changed; an unchanged context word ("Mom") isn't a fix.
+            val fromLc = tokenize(sub.from).map { it.lowercase() }.toSet()
+            tokenize(sub.to).filter { it.lowercase() !in fromLc }.any { t ->
+                val sentenceStart = nextTokens.size >= 3 && nextTokens.first() == t &&
+                    t.drop(1).none { it.isUpperCase() }
+                looksLikeNameTerm(t) && !sentenceStart
+            }
+        }
+    }
+
     private fun equalLengthSubs(a: List<String>, b: List<String>): List<Substitution> {
         val diffs = a.indices.filter { !a[it].equals(b[it], true) }
         if (diffs.isEmpty() || diffs.size > MAX_CHANGED_TOKENS) return emptyList()

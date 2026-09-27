@@ -1,13 +1,14 @@
 # Deepgram keyterm boosts shared by desktop and Android. One term per line; '#' = comment.
 # Do NOT add "MaxSpeech" — boosting the app's own name makes ASR hear it for
 # near-homophones (e.g. "Maximus Dev" → "MaxSpeech").
+# Only distinctive names belong here. Boosting everyday words ("get"→Git, "react",
+# "rust", "percent", "heck") makes Deepgram hear them when the speaker never said them.
 Deepgram
 Supabase
 Tauri
 Claude
 ChatGPT
 # Version control — ASR loves "Git" → "get"
-Git
 GitHub
 GitLab
 gitignore
@@ -33,11 +34,9 @@ GraphQL
 Docker
 Kubernetes
 AWS
-React
 Next.js
 Node.js
 Python
-Rust
 VS Code
 Copilot
 Anthropic
@@ -46,37 +45,18 @@ Redis
 MongoDB
 npm
 Vite
-Windows
 macOS
 Linux
 Android
 Notion
-Slack
 Discord
 Figma
-Linear
 WhatsApp
 Gmail
 Outlook
-Teams
-# Gaming / mods — before Cursor so "curse forge" isn't biased to "Cursor".
+# Gaming / mods.
 CurseForge
-Curse Forge
-Forge
-# Percents — ASR often hears "percent" as "times".
-percent
-percentage
-%
-Cursor
 # Product — ASR hears "Covenant Core" as Court / Corner.
 Covenant Core
-CovenantCore
 # Product — ASR hears "Tailscale" as "tail scale" / "tale scale".
 Tailscale
-Tail Scale
-# Clean language / interjections — keep "flip"/"aww" from becoming profanity or "oh".
-what the flip
-freaking
-heck
-aww
-so cute

@@ -117,4 +117,32 @@ class VocabTest {
         assertTrue(merged.size <= Vocab.MAX_KEYTERMS)
         assertTrue(merged.contains("B0"))
     }
+
+    @Test fun redictateSkipsPlainWordChangesOfMind() {
+        assertTrue(Vocab.redictateCorrections("I'm going home now", "I'm going out now").isEmpty())
+        assertTrue(Vocab.redictateCorrections("Going home now", "Heading home now").isEmpty())
+        assertTrue(Vocab.redictateCorrections("send the report", "send the invoice").isEmpty())
+        // A capitalized context word next to the change must not make it look like a name fix.
+        assertTrue(Vocab.redictateCorrections("Tell Mom dinner is ready", "Tell Mom lunch is ready").isEmpty())
+        assertTrue(Vocab.redictateCorrections("Tell him I'm home", "Tell him I'm out").isEmpty())
+        assertTrue(Vocab.redictateCorrections("I'm home", "I'm out").isEmpty())
+    }
+
+    @Test fun redictateKeepsNameFixes() {
+        assertEquals(
+            listOf(Substitution("daniel", "Samuel")),
+            Vocab.redictateCorrections("Send it to Daniel please", "Send it to Samuel please"),
+        )
+        assertEquals(1, Vocab.redictateCorrections("Daniel", "Samuel").size)
+        assertEquals(1, Vocab.redictateCorrections("Covenant court", "Core").size)
+    }
+
+    @Test fun keytermsSkipEverydayWords() {
+        val terms = File("../../shared/dictation/keyterms.txt").readLines()
+            .map { it.trim().lowercase() }
+            .filter { it.isNotEmpty() && !it.startsWith("#") }
+        for (common in listOf("git", "percent", "forge", "react", "rust", "cursor", "windows", "heck", "aww", "so cute")) {
+            assertTrue("$common should not be a keyterm", common !in terms)
+        }
+    }
 }

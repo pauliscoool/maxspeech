@@ -16,6 +16,10 @@ class AudioCapture {
     private var record: AudioRecord? = null
     private var frame: Long = 0
     private var agcGain = 1f
+    @Volatile private var voicedFrames = 0
+
+    /** ~200ms of the take rose above a quiet-speech floor (raw, before AGC). */
+    val heardVoice: Boolean get() = voicedFrames >= VOICED_FRAMES_MIN
 
     /**
      * [onLevel] receives [BAR_COUNT] visual levels (0..1) — desktop-style global
@@ -25,6 +29,7 @@ class AudioCapture {
         withContext(Dispatchers.IO) {
             frame = 0
             agcGain = 1f
+            voicedFrames = 0
             val min = AudioRecord.getMinBufferSize(
                 SAMPLE_RATE,
                 AudioFormat.CHANNEL_IN_MONO,
@@ -84,6 +89,7 @@ class AudioCapture {
             if (a > peak) peak = a
         }
         val rms = sqrt(sumSq / samples.size).toFloat()
+        if (rms > VOICE_RMS) voicedFrames++
         val fromRms = if (rms > 1e-5f) {
             (AGC_TARGET_RMS / rms).coerceIn(1f, AGC_MAX_GAIN)
         } else {
@@ -132,5 +138,10 @@ class AudioCapture {
         private const val LEVEL_GAIN = 14f
         private const val AGC_TARGET_RMS = 0.12f
         private const val AGC_MAX_GAIN = 5.2f
+        /** ≈200/32768 raw RMS: soft speech clears it, a quiet room does not. */
+        private const val VOICE_RMS = 0.006f
+        /** 4 × 50ms frames. */
+        // 3 × 50ms frames: a soft one-word "yes" still counts; a desk bump doesn't.
+        private const val VOICED_FRAMES_MIN = 3
     }
 }

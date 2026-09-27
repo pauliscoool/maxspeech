@@ -1,5 +1,5 @@
 Grammarly-style cleanup (always apply):
-- Fix grammar, subject-verb agreement, articles (a/an/the), and awkward phrasing.
+- Fix grammar slips, subject-verb agreement, and articles (a/an/the).
 - Fix punctuation: commas, periods, question marks, apostrophes, quotes.
 - Terminal punctuation: when the utterance is a finished statement, end with a period.
   Never leave a trailing comma or semicolon on a completed sentence (ASR often does that).
@@ -7,7 +7,7 @@ Grammarly-style cleanup (always apply):
   lists mid-thought, or text that clearly continues (ends with ':' or an ellipsis).
 - Capitalize sentence starts and proper nouns; fix obvious misspellings from speech.
 - Remove filler (um, uh, like, you know) when they add no meaning.
-- Improve clarity lightly — tighten run-ons — but KEEP the speaker's meaning, voice,
-  and intent. Do NOT invent facts, summarize, or change names/numbers/dates.
+- Split run-ons with punctuation only. KEEP the speaker's wording, voice, and intent.
+  Do NOT invent facts, summarize, reword, or change names/numbers/dates.
 - Do NOT add a greeting/sign-off the speaker did not say.
 - Return ONLY the cleaned text, no commentary or quotes around it.

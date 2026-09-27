@@ -5,6 +5,8 @@ import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -74,8 +76,8 @@ fun KeyboardDockBar(
     onContentSize: (widthPx: Int, heightPx: Int) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier,
 ) {
-    // ~5% tighter than the original dock strip.
-    val scale = (sizeScale * 0.95f).coerceIn(0.55f, 1.55f)
+    // ~10% tighter than the original dock strip (two 5% trims).
+    val scale = (sizeScale * 0.9025f).coerceIn(0.55f, 1.55f)
     val alpha = surfaceAlpha.coerceIn(0.25f, 1f)
     val expanded = ui.phase == DictationPhase.Confirm ||
         ui.phase == DictationPhase.Listening ||
@@ -95,8 +97,13 @@ fun KeyboardDockBar(
         AnimatedContent(
             targetState = expanded,
             transitionSpec = {
-                fadeIn(tween(300, easing = FastOutSlowInEasing)) togetherWith
-                    fadeOut(tween(240, easing = FastOutSlowInEasing))
+                (
+                    fadeIn(tween(190, easing = FastOutSlowInEasing)) +
+                        scaleIn(tween(240, easing = FastOutSlowInEasing), initialScale = 0.94f)
+                    ) togetherWith (
+                    fadeOut(tween(170, easing = FastOutSlowInEasing)) +
+                        scaleOut(tween(170, easing = FastOutSlowInEasing), targetScale = 0.97f)
+                    )
             },
             label = "keyboardDockExpand",
         ) { active ->
@@ -122,7 +129,8 @@ fun KeyboardDockBar(
                     micColor = micColor,
                     shape = shape,
                     showRetry = showRetry,
-                    onMic = { if (showRetry) onRetry() else onHoldStart() },
+                    // Mic always starts a fresh listen; saved-audio retry lives on the Retry chip.
+                    onMic = onHoldStart,
                     onRetry = onRetry,
                     onDragStart = onDragStart,
                     onDragTo = onDragTo,

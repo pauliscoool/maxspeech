@@ -52,6 +52,10 @@ private const val THINKING_DIG_AFTER_S = 3f
 /** How long the Retry affordance stays visible after a failure. */
 const val DictationRetryWindowMs = 5_000L
 private const val RETRY_WINDOW_MS = DictationRetryWindowMs
+private const val STREAM_OPEN_TIMEOUT_MS = 6_000L
+private const val SAVED_RETRY_WINDOW_MS = 60_000L
+/** ~0.25s of 16 kHz 16-bit mono. */
+private const val MIN_PCM_BYTES = 16_000 * 2 / 4
 
 class DictationController(
     private val context: Context,
@@ -72,6 +76,8 @@ class DictationController(
     private var pcmJob: Job? = null
     private var thinkingJob: Job? = null
     private var errorDismissJob: Job? = null
+    // Tracked so cancel / a new session stops a stale finish from pasting or closing the new socket.
+    private var finishJob: Job? = null
     private val finals = StringBuilder()
     private val lastInterim = StringBuilder()
     private var sessionApp: String = ""
@@ -93,6 +99,9 @@ class DictationController(
     private var lastPasteText: String? = null
     private var lastPasteAt = 0L
     private var pendingLearnFrom: String? = null
+    private var savedPcm: ByteArray? = null
+    private var savedHeldMs = 0L
+    private var savedConfirmOnly = false
 
     init {
         scope.launch {
@@ -116,7 +125,9 @@ class DictationController(
             return
         }
         errorDismissJob?.cancel()
+        finishJob?.cancel()
         finishing.set(false)
+        savedPcm = null
         pasteIntoFocusedApp = paste
         sessionApp = targetApp.ifBlank { TextInjector.foregroundPackage() ?: sessionApp.ifBlank { "MaxSpeech" } }
         listenJob?.cancel()
@@ -206,7 +217,6 @@ class DictationController(
                     cachedSnap = fresh
                     PlanCalculator.from(auth.current(), used).canDictate
                 }
-                stt.awaitOpen()
                 if (!planOk.await()) {
                     pcmJob?.cancel()
                     audio.stop()
@@ -220,6 +230,9 @@ class DictationController(
                         stopAndFinish()
                     }
                 }
+                // A slow or dead socket must not stop the recording: PCM is kept locally and
+                // re-transcribed over HTTP when streaming didn't deliver.
+                if (!stt.awaitOpen(STREAM_OPEN_TIMEOUT_MS)) Log.w(TAG, "Live stream unavailable, recording locally")
                 pcmJob?.join()
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
@@ -241,6 +254,10 @@ class DictationController(
     /** Re-run the last session (overlay or in-app Retry). */
     fun retry() {
         if (_ui.value.phase != DictationPhase.Error) return
+        savedPcm?.let {
+            retrySavedAudio(it)
+            return
+        }
         errorDismissJob?.cancel()
         OverlayService.notifyRecording(context, true)
         start(sessionApp, paste = pasteIntoFocusedApp)
@@ -256,6 +273,7 @@ class DictationController(
     private fun resetToIdle() {
         finishing.set(false)
         errorDismissJob?.cancel()
+        finishJob?.cancel()
         listenJob?.cancel()
         pcmJob?.cancel()
         thinkingJob?.cancel()
@@ -273,6 +291,13 @@ class DictationController(
         val preview = TranscriptMerge.display(finals, lastInterim)
             .ifBlank { _ui.value.liveText }
             .trim()
+        // Nothing said: no voice on the mic and no words back. Vanish now instead of
+        // spinning the thinking wave through the flush + batch retry.
+        if (preview.isBlank() && !audio.heardVoice) {
+            Log.i(TAG, "No speech detected, dismissing")
+            resetToIdle()
+            return
+        }
         // Don't bail just because nothing has arrived yet — short dictations often
         // haven't gotten an interim/final back from Deepgram by the time the user
         // taps the checkmark. Always flush and let finishInternal decide (it already
@@ -284,7 +309,7 @@ class DictationController(
             liveText = preview,
         )
         startThinkingWave()
-        scope.launch {
+        finishJob = scope.launch {
             try {
                 finishInternal(confirmOnly = !pasteIntoFocusedApp)
             } finally {
@@ -332,16 +357,40 @@ class DictationController(
         delay(trailMs)
         audio.stop()
         pcmJob?.cancel()
-        stt.finishAndFlush()
+        val streamComplete = stt.finishAndFlush()
         // Let the chunk collector apply the last final before we merge.
         delay(80)
         val merged = TranscriptMerge.mergeTrailing(finals.toString(), lastInterim.toString())
-        val live = _ui.value.liveText.trim()
-        var raw = listOf(merged, live, _ui.value.originalText)
-            .maxByOrNull { it.length }
-            ?.trim()
-            .orEmpty()
-        if (raw.isBlank()) raw = batchFallback()
+        // Finals are Deepgram's corrected words. The longest-string pick used to win with
+        // stale interim guesses that Deepgram had already revised (words never said).
+        var raw = merged.trim().ifBlank {
+            listOf(_ui.value.liveText, _ui.value.originalText)
+                .maxByOrNull { it.trim().length }
+                ?.trim()
+                .orEmpty()
+        }
+        // Streaming missed audio (weak network) or heard nothing: re-transcribe the recording.
+        if (raw.isBlank() || !streamComplete) {
+            val pcm = synchronized(pcmLock) { pcmCapture.toByteArray() }
+            when (val batch = batchFallback(pcm)) {
+                is BatchResult.Text -> if (batch.text.isNotBlank()) raw = batch.text
+                is BatchResult.Rejected -> if (raw.isBlank()) {
+                    presentError(batch.message)
+                    return
+                }
+                BatchResult.Unreachable -> if (raw.isBlank() && pcm.size >= MIN_PCM_BYTES) {
+                    savedPcm = pcm
+                    savedHeldMs = heldMs
+                    savedConfirmOnly = confirmOnly
+                    presentError("No connection. Recording saved, tap retry.", autoClearMs = SAVED_RETRY_WINDOW_MS)
+                    return
+                }
+            }
+        }
+        processTranscript(raw, snap, heldMs, confirmOnly)
+    }
+
+    private suspend fun processTranscript(raw: String, snap: AppSettings, heldMs: Long, confirmOnly: Boolean) {
         if (raw.isNotBlank() && handleVoiceCommand(raw, snap)) return
         if (raw.isBlank()) {
             // Flush still empty — stop quietly; no error chip / retry delay.
@@ -447,14 +496,60 @@ class DictationController(
         }
     }
 
-    /** Streaming gave nothing but we heard audio — re-transcribe the recording (desktop parity). */
-    private suspend fun batchFallback(): String {
-        val pcm = synchronized(pcmLock) { pcmCapture.toByteArray() }
+    private sealed interface BatchResult {
+        data class Text(val text: String) : BatchResult
+        /** Server refused (bad key, quota, bad audio): retrying the same audio can't help. */
+        data class Rejected(val message: String) : BatchResult
+        object Unreachable : BatchResult
+    }
+
+    /** Re-transcribe the recording over HTTP (desktop parity). */
+    private suspend fun batchFallback(pcm: ByteArray): BatchResult {
         // Need at least ~0.25s of audio to be worth a request.
-        if (pcm.size < 16_000 * 2 / 4) return ""
-        return runCatching {
-            stt.transcribeBatch(pcm, sessionKeys, sessionLang, Vocab.mergeKeyterms(dictionary, builtinKeyterms))
-        }.getOrDefault("")
+        if (pcm.size < MIN_PCM_BYTES) return BatchResult.Text("")
+        return try {
+            BatchResult.Text(
+                stt.transcribeBatch(pcm, sessionKeys, sessionLang, Vocab.mergeKeyterms(dictionary, builtinKeyterms)),
+            )
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: java.io.IOException) {
+            Log.w(TAG, "batch transcription unreachable", e)
+            BatchResult.Unreachable
+        } catch (e: Exception) {
+            Log.w(TAG, "batch transcription rejected", e)
+            BatchResult.Rejected(e.message ?: "Speech service error")
+        }
+    }
+
+    /** Retry a recording that couldn't be sent: transcribe the saved audio instead of re-recording. */
+    private fun retrySavedAudio(pcm: ByteArray) {
+        errorDismissJob?.cancel()
+        finishing.set(true)
+        OverlayService.notifyRecording(context, true)
+        _ui.value = DictationUi(phase = DictationPhase.Processing, targetApp = sessionApp)
+        startThinkingWave()
+        finishJob = scope.launch {
+            try {
+                when (val batch = batchFallback(pcm)) {
+                    is BatchResult.Text -> {
+                        savedPcm = null
+                        processTranscript(batch.text, cachedSnap, savedHeldMs, savedConfirmOnly)
+                    }
+                    is BatchResult.Rejected -> {
+                        savedPcm = null
+                        thinkingJob?.cancel()
+                        presentError(batch.message)
+                    }
+                    BatchResult.Unreachable -> {
+                        thinkingJob?.cancel()
+                        presentError("Still no connection. Recording kept, tap retry.", autoClearMs = SAVED_RETRY_WINDOW_MS)
+                    }
+                }
+            } finally {
+                finishing.set(false)
+            }
+        }
     }
 
     /** Returns true when [raw] was a voice command and has been handled. */
@@ -486,7 +581,7 @@ class DictationController(
 
     private fun onPasted(text: String) {
         pendingLearnFrom?.let { prev ->
-            val pairs = Vocab.substitutionsFromRedictate(prev, text)
+            val pairs = Vocab.redictateCorrections(prev, text)
             if (pairs.isNotEmpty()) persistLearned(pairs, Vocab.namesIn(pairs))
         }
         pendingLearnFrom = null

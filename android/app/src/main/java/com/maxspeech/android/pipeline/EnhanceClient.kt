@@ -40,14 +40,16 @@ class EnhanceClient(private val assets: AssetManager) {
             else -> systemPromptForSpeed(tone, multilingual, speed) to 1024
         }
         complete(
-            system = prompt + dictionaryBlock(dictTerms),
+            // Fidelity first: the model must not reword, guess, or answer the dictation.
+            system = asset("fidelity_rules") + "\n\n" + prompt + dictionaryBlock(dictTerms),
             user = text,
             apiKey = apiKey,
             model = if (speed == EnhanceSpeed.Ultra) "gpt-4o" else "gpt-4o-mini",
             temp = when (speed) {
                 EnhanceSpeed.Fast -> 0.0
                 EnhanceSpeed.Thinking -> 0.1
-                EnhanceSpeed.Ultra -> 0.22
+                // Higher temperatures paraphrase and invent words; dictation wants fidelity.
+                EnhanceSpeed.Ultra -> 0.1
             },
             timeoutMs = when (speed) {
                 EnhanceSpeed.Fast -> 12_000L
@@ -87,7 +89,7 @@ class EnhanceClient(private val assets: AssetManager) {
                     .put(JSONObject().put("role", "user").put("content", user)),
             )
             .toString()
-        val client = http.newBuilder().readTimeout(timeoutMs, TimeUnit.MILLISECONDS).build()
+        val client = http.newBuilder().readTimeout(timeoutMs, TimeUnit.MILLISECONDS).callTimeout(timeoutMs + 2_000L, TimeUnit.MILLISECONDS).build()
         val req = Request.Builder()
             .url("https://api.openai.com/v1/chat/completions")
             .header("Authorization", "Bearer $apiKey")

@@ -10,6 +10,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import java.io.IOException
+import android.os.SystemClock
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -26,6 +29,7 @@ data class TranscriptChunk(val text: String, val isFinal: Boolean)
 
 class DeepgramClient {
     private val http = OkHttpClient.Builder()
+        .connectTimeout(8, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.MILLISECONDS)
         .pingInterval(20, TimeUnit.SECONDS)
         .build()
@@ -40,6 +44,11 @@ class DeepgramClient {
     /** Bumps every connect so stale onClosed from a prior socket can't poison awaitOpen. */
     private val generation = AtomicInteger(0)
     private val finalCount = AtomicInteger(0)
+    private val finalizeAcks = AtomicInteger(0)
+    /** Socket died mid-session or audio was dropped: the live transcript can't be trusted. */
+    @Volatile private var degraded = false
+    /** Last chunk heard was an interim, i.e. words exist that Deepgram hasn't finalized yet. */
+    @Volatile private var interimPending = false
     private val pendingLock = Any()
     private val pending = ArrayDeque<okio.ByteString>(MAX_PENDING)
 
@@ -47,6 +56,10 @@ class DeepgramClient {
         closeQuietly()
         closed.set(false)
         open.set(false)
+        degraded = false
+        interimPending = false
+        finalCount.set(0)
+        finalizeAcks.set(0)
         val gen = generation.incrementAndGet()
         // Fresh channel every session — old "closed" results must never reach awaitOpen.
         ready = Channel(Channel.BUFFERED)
@@ -77,6 +90,7 @@ class DeepgramClient {
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 if (generation.get() != gen) return
                 open.set(false)
+                degraded = true
                 ready.trySend(Result.failure(t))
                 closed.set(true)
             }
@@ -84,14 +98,18 @@ class DeepgramClient {
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 if (generation.get() != gen) return
                 open.set(false)
-                // Only fail awaitOpen if we never opened — intentional CloseStream is fine.
+                degraded = true
                 ready.trySend(Result.failure(IllegalStateException(reason.ifBlank { "closed" })))
                 closed.set(true)
             }
         })
     }
 
-    /** Fallback when live streaming returned nothing: transcribe the saved 16 kHz mono PCM in one request. */
+    /**
+     * Transcribe the saved 16 kHz mono PCM in one request, retrying flaky-network failures
+     * within [BATCH_BUDGET_MS]. Returns "" when the service heard no speech; throws
+     * [IOException] when it could not be reached so callers can keep the audio for a retry.
+     */
     suspend fun transcribeBatch(
         pcm: ByteArray,
         keys: List<String>,
@@ -107,34 +125,67 @@ class DeepgramClient {
             val t = term.trim()
             if (t.isNotEmpty()) sb.append("&keyterm=").append(URLEncoder.encode(t, "UTF-8"))
         }
-        val req = Request.Builder()
-            .url(sb.toString())
-            .header("Authorization", "Token $key")
-            .post(pcm.toRequestBody("application/octet-stream".toMediaType()))
-            .build()
-        http.newBuilder().readTimeout(20, TimeUnit.SECONDS).build().newCall(req).execute().use { resp ->
-            val body = resp.body?.string().orEmpty()
-            if (!resp.isSuccessful) return@use ""
-            runCatching {
-                JSONObject(body).getJSONObject("results").getJSONArray("channels").getJSONObject(0)
-                    .getJSONArray("alternatives").getJSONObject(0).optString("transcript").trim()
-            }.getOrDefault("")
+        val url = sb.toString()
+        val audioSecs = pcm.size / 32_000L
+        val perTryMs = (20_000L + audioSecs * 500L).coerceAtMost(40_000L)
+        val startedAt = SystemClock.elapsedRealtime()
+        var lastError: Exception = IOException("No connection")
+        var attempt = 0
+        while (attempt < BATCH_ATTEMPTS) {
+            val remaining = BATCH_BUDGET_MS - (SystemClock.elapsedRealtime() - startedAt)
+            if (remaining < 4_000L) break
+            val req = Request.Builder()
+                .url(url)
+                .header("Authorization", "Token $key")
+                .post(pcm.toRequestBody("application/octet-stream".toMediaType()))
+                .build()
+            val client = http.newBuilder()
+                .connectTimeout(10, TimeUnit.SECONDS)
+                .writeTimeout(20, TimeUnit.SECONDS)
+                .readTimeout(perTryMs, TimeUnit.MILLISECONDS)
+                .callTimeout(minOf(perTryMs + 15_000L, remaining), TimeUnit.MILLISECONDS)
+                .build()
+            try {
+                client.newCall(req).execute().use { resp ->
+                    val body = resp.body?.string().orEmpty()
+                    if (resp.isSuccessful) {
+                        return@withContext runCatching {
+                            JSONObject(body).getJSONObject("results").getJSONArray("channels").getJSONObject(0)
+                                .getJSONArray("alternatives").getJSONObject(0).optString("transcript").trim()
+                        }.getOrDefault("")
+                    }
+                    val retryable = resp.code == 408 || resp.code == 429 || resp.code >= 500
+                    if (!retryable) throw IllegalStateException("Speech service rejected the audio (${resp.code})")
+                    lastError = IOException("Speech service busy (${resp.code})")
+                }
+            } catch (e: IOException) {
+                lastError = e
+            }
+            attempt++
+            if (attempt < BATCH_ATTEMPTS) delay(1_000L * attempt)
         }
+        throw lastError
     }
 
-    suspend fun awaitOpen() {
-        ready.receive().getOrThrow()
-    }
+    /** True once the socket is open; false on failure or timeout. Never throws: recording must not depend on it. */
+    suspend fun awaitOpen(timeoutMs: Long): Boolean =
+        withTimeoutOrNull(timeoutMs) { ready.receive().isSuccess } ?: false
 
     fun sendPcm(samples: ShortArray) {
-        if (closed.get()) return
+        if (closed.get()) {
+            degraded = true
+            return
+        }
         val bytes = ByteBuffer.allocate(samples.size * 2).order(ByteOrder.LITTLE_ENDIAN)
         samples.forEach { bytes.putShort(it) }
         val payload = bytes.array().toByteString(0, samples.size * 2)
         if (!open.get()) {
             synchronized(pendingLock) {
                 if (!open.get()) {
-                    if (pending.size >= MAX_PENDING) pending.removeFirst()
+                    if (pending.size >= MAX_PENDING) {
+                        pending.removeFirst()
+                        degraded = true
+                    }
                     pending.addLast(payload)
                     return
                 }
@@ -144,11 +195,13 @@ class DeepgramClient {
     }
 
     /**
-     * Finalize → wait for last finals → CloseStream.
+     * Finalize, wait for last finals, CloseStream.
      * Marks this generation done so late onClosed cannot break the next start.
+     * Returns true only when the live transcript is known complete; false means the caller
+     * should re-transcribe the recording (socket never opened, dropped, or the tail never arrived).
      */
-    suspend fun finishAndFlush(waitMs: Long = 1_500) {
-        val ws = socket ?: return
+    suspend fun finishAndFlush(): Boolean {
+        val ws = socket ?: return false
         val gen = generation.get()
         // A one-word dictation can end before the handshake finishes; wait for onOpen
         // to flush the buffered audio instead of discarding it.
@@ -157,22 +210,35 @@ class DeepgramClient {
             delay(25)
             waited += 25
         }
+        val opened = open.get()
         val finalsBefore = finalCount.get()
+        val acksBefore = finalizeAcks.get()
         open.set(false)
         synchronized(pendingLock) { pending.clear() }
-        runCatching { ws.send("""{"type":"Finalize"}""") }
-        var t = 0L
-        while (finalCount.get() == finalsBefore && !closed.get() && t < waitMs) {
-            delay(25)
-            t += 25
+        var acked = false
+        if (opened && !degraded) {
+            runCatching { ws.send("""{"type":"Finalize"}""") }
+            // Give slow links longer only when unfinalized words are known to be in flight.
+            val waitMs = if (interimPending) FLUSH_WAIT_SLOW_MS else FLUSH_WAIT_MS
+            var t = 0L
+            while (t < waitMs && !closed.get()) {
+                if (finalizeAcks.get() != acksBefore || finalCount.get() != finalsBefore) {
+                    acked = true
+                    break
+                }
+                delay(25)
+                t += 25
+            }
+            runCatching { ws.send("""{"type":"CloseStream"}""") }
+            delay(120)
         }
-        runCatching { ws.send("""{"type":"CloseStream"}""") }
-        delay(120)
+        val complete = opened && !degraded && (acked || !interimPending)
         // Invalidate before close so onClosed is ignored.
         generation.compareAndSet(gen, gen + 1)
         runCatching { ws.close(1000, "done") }
         if (socket === ws) socket = null
         closed.set(true)
+        return complete
     }
 
     fun finish() {
@@ -205,6 +271,7 @@ class DeepgramClient {
     private fun parse(raw: String) {
         runCatching {
             val json = JSONObject(raw)
+            if (json.optBoolean("from_finalize", false)) finalizeAcks.incrementAndGet()
             val channel = json.optJSONObject("channel") ?: return
             val alts = channel.optJSONArray("alternatives") ?: return
             if (alts.length() == 0) return
@@ -212,6 +279,7 @@ class DeepgramClient {
             if (transcript.isBlank()) return
             val isFinal = json.optBoolean("is_final", false) || json.optBoolean("speech_final", false)
             if (isFinal) finalCount.incrementAndGet()
+            interimPending = !isFinal
             _chunks.tryEmit(TranscriptChunk(transcript, isFinal))
         }
     }
@@ -235,5 +303,9 @@ class DeepgramClient {
         /** ~2s of 50ms frames while the WebSocket handshake completes. */
         private const val MAX_PENDING = 40
         private const val OPEN_WAIT_MS = 3_000L
+        private const val FLUSH_WAIT_MS = 1_500L
+        private const val FLUSH_WAIT_SLOW_MS = 4_000L
+        private const val BATCH_ATTEMPTS = 3
+        private const val BATCH_BUDGET_MS = 45_000L
     }
 }

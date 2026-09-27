@@ -12,6 +12,8 @@ import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -82,6 +84,8 @@ private val WavePadV = 5.dp
 private val ControlsGap = 8.dp
 /** Extra ~5% on top of the user size setting. */
 private const val WidgetBump = 1.05f
+/** Listening bar (✗ · waves · ✓) sits 5% under the idle mic's scale. */
+private const val ListeningBarScale = 0.95f
 
 @Composable
 fun OverlayCapsule(
@@ -123,9 +127,13 @@ fun OverlayCapsule(
         AnimatedContent(
             targetState = expanded,
             transitionSpec = {
-                // Fade + blur only — no scale/slide, so the right edge never moves.
-                val enter = fadeIn(tween(300, easing = FastOutSlowInEasing))
-                val exit = fadeOut(tween(260, easing = FastOutSlowInEasing))
+                // Quick pop anchored on the right edge (graphicsLayer scale: no layout
+                // change, so the window never thrashes and the right edge stays put).
+                val anchor = TransformOrigin(1f, 0.5f)
+                val enter = fadeIn(tween(190, easing = FastOutSlowInEasing)) +
+                    scaleIn(tween(240, easing = FastOutSlowInEasing), initialScale = 0.9f, transformOrigin = anchor)
+                val exit = fadeOut(tween(170, easing = FastOutSlowInEasing)) +
+                    scaleOut(tween(170, easing = FastOutSlowInEasing), targetScale = 0.94f, transformOrigin = anchor)
                 val opening = targetState
                 // Grow instantly (new content fades in at its final spot); on collapse
                 // keep the wide size until the fade-out ends, then snap to the mic.
@@ -134,10 +142,10 @@ fun OverlayCapsule(
                         snap()
                     } else {
                         keyframes {
-                            durationMillis = 300
+                            durationMillis = 180
                             initial at 0
-                            initial at 299
-                            target at 300
+                            initial at 179
+                            target at 180
                         }
                     }
                 }
@@ -145,7 +153,7 @@ fun OverlayCapsule(
             label = "overlayExpand",
         ) { showControls ->
             val blurP by transition.animateFloat(
-                transitionSpec = { tween(280, easing = FastOutSlowInEasing) },
+                transitionSpec = { tween(200, easing = FastOutSlowInEasing) },
                 label = "overlayBlur",
             ) { s -> if (s == EnterExitState.Visible) 0f else 1f }
             Box(Modifier.blur(14.dp * blurP)) {
@@ -153,7 +161,7 @@ fun OverlayCapsule(
                 ListeningControls(
                     levels = ui.levels,
                     phase = ui.phase,
-                    sizeScale = scale,
+                    sizeScale = scale * ListeningBarScale,
                     surfaceAlpha = alpha,
                     waveScale = waveScale,
                     onCancel = onCancel,
@@ -198,9 +206,8 @@ fun OverlayCapsule(
                         surfaceAlpha = alpha,
                         micColor = micColor,
                         // Mic always starts a fresh listen — also clears a prior error.
-                        onToggle = {
-                            if (showRetryChip) onRetry() else onHoldStart()
-                        },
+                        // Saved-audio retry lives on the Retry chip only.
+                        onToggle = onHoldStart,
                         onDragStart = onDragStart,
                         onDragTo = onDragTo,
                         onDragEnd = onDragEnd,
