@@ -170,7 +170,7 @@ fun SettingsScreen(
                 ToggleRow("Show live transcript", "Show words on the capsule while speaking", settings.liveTranscript) {
                     onToggle("live", it)
                 }
-                ToggleRow("AI enhance", "Clean grammar, fillers, and self-corrections", settings.aiEnhance) {
+                ToggleRow("AI enhance", "Keep your words; clean punctuation, hesitations, and clear corrections", settings.aiEnhance) {
                     onToggle("enhance", it)
                 }
                 ToggleRow("Trailing space", "Add a space after each insertion so you can keep typing", settings.trailingSpace) {

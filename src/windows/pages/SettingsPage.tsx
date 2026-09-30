@@ -700,11 +700,11 @@ export default function SettingsPage({
               <div className="settings-row-desc">
                 {aiEnhance
                   ? enhanceSpeed === "fast"
-                    ? "Fast: lighter cleanup, at least ~20% snappier than Thinking."
+                    ? "Fast: shorter wait; skips AI for recordings under 6.25 seconds."
                     : enhanceSpeed === "ultra"
-                      ? "Ultra: stronger model, slower, more thorough rewrite."
-                      : "Thinking: today’s default enhance (same as before)."
-                  : "Clean grammar, fillers, and self-corrections."}
+                      ? "Ultra: longer timeout; skips AI for recordings under 1.5 seconds."
+                      : "Thinking: standard timeout; skips AI for recordings under 5 seconds."
+                  : "Keep your words; clean punctuation, hesitations, and clear corrections."}
               </div>
             </div>
             <div className="flex items-center gap-2 shrink-0">
