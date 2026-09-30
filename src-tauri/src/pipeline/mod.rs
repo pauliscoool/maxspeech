@@ -1,6 +1,6 @@
 pub mod agent_llm;
 pub mod commands;
-pub mod learn_substitutions;
+pub mod faithful;
 pub mod recovery;
 pub mod tone;
 pub mod vocab;
@@ -23,14 +23,13 @@ const MAX_RECORDING: Duration = Duration::from_secs(120);
 pub struct PipelineState {
     pub active: Mutex<bool>,
     pub last_insertion: Mutex<Option<LastInsertion>>,
-    /// Previous paste text if the new recording started within the learn window.
-    pending_learn_from: Mutex<Option<String>>,
     stop_tx: Mutex<Option<mpsc::Sender<()>>>,
     audio_capture: Mutex<AudioCapture>,
     /// Wall-clock start of the current recording session.
     started_at: Mutex<Option<Instant>>,
     /// Duration of the session that just stopped (for trail / enhance decisions).
     last_session_secs: Mutex<f64>,
+    released_at: Mutex<Option<Instant>>,
     /// Bumped on each start/stop so orphaned max-length timers cannot kill a newer session.
     session_gen: Mutex<u64>,
     /// Bumped only when a *new* recording starts. A finishing enhance/inject from an
@@ -49,11 +48,11 @@ impl Default for PipelineState {
         Self {
             active: Mutex::new(false),
             last_insertion: Mutex::new(None),
-            pending_learn_from: Mutex::new(None),
             stop_tx: Mutex::new(None),
             audio_capture: Mutex::new(AudioCapture::new()),
             started_at: Mutex::new(None),
             last_session_secs: Mutex::new(0.0),
+            released_at: Mutex::new(None),
             session_gen: Mutex::new(0),
             paste_epoch: Mutex::new(0),
             session_pcm: Mutex::new(None),
@@ -288,20 +287,9 @@ pub fn start_dictation(app: &tauri::AppHandle) {
         *epoch
     };
     *state.started_at.lock().unwrap() = Some(Instant::now());
+    *state.released_at.lock().unwrap() = None;
     // Snapshot focus now — enhance/history must not use a later app switch.
     *state.session_fg.lock().unwrap() = context::get_foreground_app();
-    {
-        let last = state.last_insertion.lock().unwrap();
-        let pending = last.as_ref().and_then(|ins| {
-            if learn_substitutions::elapsed_within_window(ins.pasted_at.elapsed()) {
-                Some(ins.text.clone())
-            } else {
-                None
-            }
-        });
-        *state.pending_learn_from.lock().unwrap() = pending;
-    }
-
     let remaining_cap = plan_status
         .as_ref()
         .and_then(|s| s.seconds_remaining)
@@ -573,7 +561,12 @@ pub fn start_dictation(app: &tauri::AppHandle) {
             }
         }
 
-        if let Some(cmd_result) = commands::check_command(&text) {
+        let command = if language_for_pipeline.starts_with("en") && !tone::has_non_latin_script(&text) {
+            commands::check_command(&text)
+        } else {
+            None
+        };
+        if let Some(cmd_result) = command {
             let pipeline_state = app_handle.state::<PipelineState>();
             let still_current = {
                 let epoch = pipeline_state.paste_epoch.lock().unwrap();
@@ -664,16 +657,18 @@ pub fn start_dictation(app: &tauri::AppHandle) {
             // can chop or mangle code-switched transcripts (e.g. Russian→English).
             let multilingual_session =
                 language_for_pipeline == "multi" || tone::has_non_latin_script(&expanded);
-            let corrected = if multilingual_session {
-                expanded.clone()
-            } else {
-                tone::local_self_correct(&expanded)
-            };
-
-            // Whisper Flow–style: remember name fixes from spoken self-corrections.
-            if corrected.trim() != expanded.trim() {
-                vocab::learn_name_corrections(&expanded, &corrected, &store);
-                learn_substitutions::learn_from_edit(&expanded, &corrected, &store);
+            let tone_name = fg
+                .as_ref()
+                .and_then(|a| tone::get_tone_for_app(a, &store))
+                .unwrap_or_else(|| "default".to_string());
+            let corrected = tone::local_cleanup(
+                &expanded,
+                &tone_name,
+                language_for_pipeline.starts_with("en") && !multilingual_session,
+            );
+            if corrected.is_empty() {
+                emit_state_if_current(&app_handle, paste_token, "idle");
+                return;
             }
 
             let has_llm_key = secrets::has_llm_api_key();
@@ -695,7 +690,6 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                 .unwrap();
             let quick_session = session_secs < enhance_speed.quick_skip_secs();
 
-            let word_count = corrected.split_whitespace().count();
             let mut enhance_ran = false;
             // Multilingual / code-switch: keep Deepgram text as-is. The English
             // Grammarly pass was compounding ASR mistakes into fluent wrong prose
@@ -718,10 +712,6 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                 enhance_ran = corrected.trim() != expanded.trim();
                 corrected
             } else if has_llm_key && ai_enhance {
-                let tone_name = fg
-                    .as_ref()
-                    .and_then(|a| tone::get_tone_for_app(a, &store))
-                    .unwrap_or_else(|| "default".to_string());
                 let dict_terms: Vec<String> = store
                     .get_dictionary()
                     .unwrap_or_default()
@@ -731,7 +721,6 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                 match tone::enhance_dictation_ex(
                     &corrected,
                     &tone_name,
-                    word_count >= enhance_speed.long_word_threshold(),
                     multilingual_session,
                     &dict_terms,
                     enhance_speed,
@@ -757,17 +746,6 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                 }
                 corrected
             };
-
-            // Prefer a real sentence end over ASR's trailing comma/semicolon.
-            // Skip multilingual so we don't impose English punctuation habits.
-            if language_for_pipeline != "multi" && !multilingual_session {
-                let tone_for_punct = fg
-                    .as_ref()
-                    .and_then(|a| tone::get_tone_for_app(a, &store))
-                    .unwrap_or_else(|| "default".to_string());
-                final_output =
-                    tone::normalize_terminal_punctuation(&final_output, &tone_for_punct);
-            }
 
             let original_for_toast = expanded.trim().to_string();
             let enhanced_for_toast = final_output.trim().to_string();
@@ -801,13 +779,8 @@ pub fn start_dictation(app: &tauri::AppHandle) {
             let epoch_alive = || paste_still_current(&app_handle, paste_token);
             match inject::inject_text_if(&final_output, epoch_alive) {
                 Ok(ins) => {
-                    let prev = pipeline_state.pending_learn_from.lock().unwrap().take();
-                    if let Some(prev_text) = prev {
-                        learn_substitutions::learn_from_redictate(
-                            &prev_text,
-                            &final_output,
-                            &store,
-                        );
+                    if let Some(released) = *pipeline_state.released_at.lock().unwrap() {
+                        log::info!("Dictation release_to_paste_ms={}", released.elapsed().as_millis());
                     }
                     *pipeline_state.last_insertion.lock().unwrap() = Some(ins);
                 }
@@ -937,6 +910,7 @@ pub fn stop_dictation(app: &tauri::AppHandle) {
     }
     *active = false;
     drop(active);
+    *state.released_at.lock().unwrap() = Some(Instant::now());
     play_sound_cue(app, crate::sound::CueKind::Stop);
 
     let elapsed_secs = state

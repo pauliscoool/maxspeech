@@ -43,15 +43,13 @@ const COMMANDS: &[CommandPattern] = &[
     },
 ];
 
-const REWRITE_PREFIXES: &[&str] = &[
-    "make it ",
-    "make that ",
-    "rewrite as ",
-    "change to ",
-    "make this ",
-];
+// Ordinary imperatives such as "make it work" are dictated content, not rewrite consent.
+const REWRITE_PREFIXES: &[&str] = &["rewrite as "];
 
 pub fn check_command(text: &str) -> Option<CommandResult> {
+    if let Some(command) = super::faithful::formatting_command(text) {
+        return Some(CommandResult::InsertText(command.to_string()));
+    }
     let lower = text.to_lowercase();
     let trimmed = lower.trim().trim_end_matches('.');
 
@@ -74,4 +72,25 @@ pub fn check_command(text: &str) -> Option<CommandResult> {
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ordinary_imperatives_stay_dictation() {
+        for text in [
+            "make it work for everyone",
+            "make that happen tomorrow",
+            "change to the next page",
+            "make this a priority",
+        ] {
+            assert!(check_command(text).is_none());
+        }
+        assert!(matches!(
+            check_command("rewrite as formal"),
+            Some(CommandResult::Rewrite(_))
+        ));
+    }
 }

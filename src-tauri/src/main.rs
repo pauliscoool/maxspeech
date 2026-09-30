@@ -876,28 +876,22 @@ async fn remake_dictation(app: tauri::AppHandle, id: i64) -> Result<String, Stri
         .unwrap_or(true);
 
     let multilingual = language == "multi" || pipeline::tone::has_non_latin_script(&expanded);
-    let corrected = if multilingual {
-        expanded.clone()
-    } else {
-        pipeline::tone::local_self_correct(&expanded)
-    };
-    if corrected.trim() != expanded.trim() {
-        pipeline::vocab::learn_name_corrections(&expanded, &corrected, &store);
-        pipeline::learn_substitutions::learn_from_edit(&expanded, &corrected, &store);
-    }
-
     let fg = context::get_foreground_app();
     let tone_name = fg
         .as_ref()
         .and_then(|a| pipeline::tone::get_tone_for_app(a, &store))
         .unwrap_or_else(|| "default".to_string());
+    let corrected = pipeline::tone::local_cleanup(
+        &expanded,
+        &tone_name,
+        language.starts_with("en") && !multilingual,
+    );
 
     let mut output = if has_llm && ai_enhance {
         let speed = pipeline::tone::EnhanceSpeed::from_store(&store);
         pipeline::tone::enhance_dictation_ex(
             &corrected,
             &tone_name,
-            false,
             multilingual,
             &dict_terms,
             speed,
@@ -941,7 +935,7 @@ async fn remake_dictation(app: tauri::AppHandle, id: i64) -> Result<String, Stri
     Ok(saved)
 }
 
-/// Edit a history entry and persist any name-like corrections into the dictionary.
+/// History edits may change meaning, so they must not teach future dictation vocabulary.
 #[tauri::command]
 async fn update_history_text(
     app: tauri::AppHandle,
@@ -949,13 +943,11 @@ async fn update_history_text(
     text: String,
 ) -> Result<String, String> {
     let store = app.state::<Store>();
-    let entry = store
+    store
         .get_history_by_id(id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Dictation not found".to_string())?;
     let cleaned = text.trim().to_string();
-    pipeline::vocab::learn_name_corrections(&entry.text, &cleaned, &store);
-    pipeline::learn_substitutions::learn_from_edit(&entry.text, &cleaned, &store);
     store
         .update_history_text(id, &cleaned)
         .map_err(|e| e.to_string())?;
@@ -1367,4 +1359,3 @@ pub(crate) fn ensure_overlay_window(app: &tauri::AppHandle) {
         Err(e) => log::warn!("Could not create overlay window: {e}"),
     }
 }
-

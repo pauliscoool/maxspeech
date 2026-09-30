@@ -1,0 +1,533 @@
+[
+  {
+    "name": "unchanged awkward grammar",
+    "input": "we was going to get coffee",
+    "output": "We was going to get coffee.",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "meaningful fillers",
+    "input": "I like this you know just really",
+    "output": "I like this you know just really.",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "hesitations",
+    "input": "um I uh need coffee",
+    "output": "I need coffee.",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "stutter",
+    "input": "I w- want coffee",
+    "output": "I want coffee.",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "emphasis",
+    "input": "I really really want coffee",
+    "output": "I really really want coffee.",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "repetition",
+    "input": "I I want coffee",
+    "output": "I I want coffee.",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "homophones",
+    "input": "better then that to much work",
+    "output": "Better then that to much work.",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "slang",
+    "input": "cuz I dunno tho",
+    "output": "Cuz I dunno tho.",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "numbers",
+    "input": "I have 2 apples at 10 times",
+    "output": "I have 2 apples at 10 times.",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "percent word",
+    "input": "the discount is ten percent",
+    "output": "The discount is ten percent.",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "product guesses",
+    "input": "open Covenant court and get hub",
+    "output": "Open Covenant court and get hub.",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "weekday",
+    "input": "Would you like a trip on Tuesday? Oh no I meant Monday",
+    "output": "Would you like a trip on Monday?",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "name",
+    "input": "Send it to Sarah I mean Sandra",
+    "output": "Send it to Sandra.",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "time",
+    "input": "Meet me at 3pm wait I meant 4pm",
+    "output": "Meet me at 4pm.",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "restatement",
+    "input": "Daniel walked out. I meant Samuel walked out",
+    "output": "Samuel walked out.",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "prefixed restatement",
+    "input": "So Daniel walked out. I meant Samuel walked out",
+    "output": "So Samuel walked out.",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "single name",
+    "input": "Daniel walked out. I meant Samuel",
+    "output": "Samuel walked out.",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "discourse",
+    "input": "The deadline is through Tuesday I mean it can slip",
+    "output": "The deadline is through Tuesday I mean it can slip.",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "ambiguous correction",
+    "input": "Please send the report I meant it can wait",
+    "output": "Please send the report I meant it can wait.",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "literal met",
+    "input": "Daniel walked out. I met Samuel walked out",
+    "output": "Daniel walked out. I met Samuel walked out.",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "literal command",
+    "input": "We discussed the question mark",
+    "output": "We discussed the question mark.",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "literal comma",
+    "input": "I said comma and period",
+    "output": "I said comma and period.",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "question command",
+    "input": "Are you free tomorrow question mark",
+    "output": "Are you free tomorrow?",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "explicit comma",
+    "input": "Hello insert comma Sarah",
+    "output": "Hello, Sarah",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "paragraph",
+    "input": "Hello new paragraph Please send the report",
+    "output": "Hello\n\nPlease send the report",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "literal paragraph",
+    "input": "Start a new paragraph",
+    "output": "Start a new paragraph.",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "list",
+    "input": "number one apples number two bananas number three oranges",
+    "output": "1. Apples\n2. Bananas\n3. Oranges",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "existing paragraphs",
+    "input": "Hello\n\nPlease send the report.",
+    "output": "Hello\n\nPlease send the report.",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "mixed",
+    "input": "Привет uh hello Tuesday I meant Friday",
+    "output": "Привет uh hello Tuesday I meant Friday",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "casual",
+    "input": "hey can you check this later,",
+    "output": "hey can you check this later",
+    "tone": "casual",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "formal words",
+    "input": "hey gonna get that",
+    "output": "Hey gonna get that.",
+    "tone": "formal",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "code words",
+    "input": "use type script and dont change it",
+    "output": "Use type script and dont change it.",
+    "tone": "code",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "fragment",
+    "input": "got it",
+    "output": "Got it",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "empty hesitations",
+    "input": "um uh",
+    "output": "",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "dictionary casing",
+    "input": "open maxspeech today",
+    "output": "Open MaxSpeech today.",
+    "tone": "default",
+    "english": true,
+    "dictionary": [
+      "MaxSpeech"
+    ],
+    "snippets": []
+  },
+  {
+    "name": "snippet",
+    "input": "signature",
+    "output": "Regards, Paul",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": [
+      [
+        "signature",
+        "Regards, Paul"
+      ]
+    ]
+  },
+  {
+    "name": "non English",
+    "input": "hola uh amigo",
+    "output": "hola uh amigo",
+    "tone": "default",
+    "english": false,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "backtrack numeric",
+    "input": "Let us meet at 2 actually 3",
+    "output": "Let us meet at 3.",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "backtrack time units",
+    "input": "Let us meet at 3 pm actually 4 pm",
+    "output": "Let us meet at 4 pm.",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "ambiguous actually",
+    "input": "I actually need 3 apples",
+    "output": "I actually need 3 apples.",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "multiple correction",
+    "input": "Meet on Tuesday I meant Wednesday I meant Friday",
+    "output": "Meet on Friday.",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "ambiguous weekday target",
+    "input": "Meet Tuesday or Wednesday I meant Friday",
+    "output": "Meet Tuesday or Wednesday I meant Friday.",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "negation",
+    "input": "I do not want that",
+    "output": "I do not want that.",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "dictionary boundary",
+    "input": "maxspeechify and maxspeech",
+    "output": "Maxspeechify and MaxSpeech.",
+    "tone": "default",
+    "english": true,
+    "dictionary": [
+      "MaxSpeech"
+    ],
+    "snippets": []
+  },
+  {
+    "name": "accented spelling",
+    "input": "élan is good",
+    "output": "Élan is good.",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "numeric list",
+    "input": "number 1 apples number 2 bananas",
+    "output": "1. Apples\n2. Bananas",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "punctuated list",
+    "input": "1. apples 2. bananas",
+    "output": "1. Apples\n2. Bananas",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "isolated newline",
+    "input": "new line",
+    "output": "\n",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "isolated paragraph",
+    "input": "new paragraph",
+    "output": "\n\n",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "isolated punctuation",
+    "input": "question mark",
+    "output": "?",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "ordinary imperative",
+    "input": "make it work for everyone",
+    "output": "Make it work for everyone.",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "negated command",
+    "input": "Do not insert comma here",
+    "output": "Do not insert comma here.",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "quoted command",
+    "input": "I said \"new paragraph\" today",
+    "output": "I said \"new paragraph\" today.",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "discussed command",
+    "input": "we discussed new paragraph syntax",
+    "output": "We discussed new paragraph syntax.",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "literal hesitation",
+    "input": "The word um appears",
+    "output": "The word um appears.",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "quoted hesitation",
+    "input": "I said \"um\" yesterday",
+    "output": "I said \"um\" yesterday.",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "uppercase acronym",
+    "input": "UM is here",
+    "output": "UM is here.",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  },
+  {
+    "name": "code symbols",
+    "input": "use x- x-axis now",
+    "output": "Use x- x-axis now.",
+    "tone": "default",
+    "english": true,
+    "dictionary": [],
+    "snippets": []
+  }
+]
