@@ -1,103 +1,115 @@
 package com.maxspeech.android.pipeline
 
+import android.util.Log
 import com.maxspeech.android.data.EnhanceSpeed
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import java.io.IOException
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.suspendCancellableCoroutine
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
 import org.json.JSONArray
 import org.json.JSONObject
-import java.util.concurrent.TimeUnit
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
-class EnhanceClient {
-    private val http = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(25, TimeUnit.SECONDS)
-        .build()
-
+class EnhanceClient(
+    private val faithfulPrompt: String,
+    private val http: OkHttpClient = OkHttpClient(),
+    private val endpoint: String = "https://api.openai.com/v1/chat/completions",
+) {
     suspend fun enhance(
         text: String,
         tone: String,
         apiKey: String,
         speed: EnhanceSpeed,
         multilingual: Boolean,
-    ): String = withContext(Dispatchers.IO) {
-        val model = if (speed == EnhanceSpeed.Ultra) "gpt-4o" else "gpt-4o-mini"
-        val temp = when (speed) {
-            EnhanceSpeed.Fast -> 0.0
-            EnhanceSpeed.Thinking -> 0.1
-            EnhanceSpeed.Ultra -> 0.22
-        }
-        val timeoutMs = when (speed) {
-            EnhanceSpeed.Fast -> 12_000L
-            EnhanceSpeed.Thinking -> 15_000L
-            EnhanceSpeed.Ultra -> 20_000L
-        }
-        val body = JSONObject()
-            .put("model", model)
-            .put("temperature", temp)
-            .put("max_tokens", 1024)
-            .put(
-                "messages",
-                JSONArray()
-                    .put(JSONObject().put("role", "system").put("content", systemPrompt(tone, multilingual, speed)))
-                    .put(JSONObject().put("role", "user").put("content", text)),
-            )
-            .toString()
-        val client = http.newBuilder().readTimeout(timeoutMs, TimeUnit.MILLISECONDS).build()
-        val req = Request.Builder()
-            .url("https://api.openai.com/v1/chat/completions")
-            .header("Authorization", "Bearer $apiKey")
-            .post(body.toRequestBody(JSON))
-            .build()
-        client.newCall(req).execute().use { resp ->
-            val raw = resp.body?.string().orEmpty()
-            if (!resp.isSuccessful) {
-                val err = runCatching {
-                    JSONObject(raw).optJSONObject("error")?.optString("message")
-                }.getOrNull() ?: "Enhance failed (${resp.code})"
-                throw IllegalStateException(err)
-            }
-            val content = JSONObject(raw)
-                .getJSONArray("choices")
-                .getJSONObject(0)
-                .getJSONObject("message")
-                .optString("content")
-                .trim()
-                .trim('"')
-            content.ifBlank { text }
+        dictionary: List<String>,
+        deadlineMs: Long,
+    ): String {
+        if (apiKey.isBlank() || deadlineMs <= 0) return text
+        val started = System.nanoTime()
+        return try {
+            val body = JSONObject()
+                .put("model", "gpt-4o-mini")
+                .put("temperature", 0.0)
+                .put("max_tokens", (text.toByteArray(Charsets.UTF_8).size + 128).coerceIn(256, 16_384))
+                .put("messages", JSONArray()
+                    .put(JSONObject().put("role", "system").put("content", systemPrompt(tone, multilingual, dictionary)))
+                    .put(JSONObject().put("role", "user").put("content", text)))
+            val request = Request.Builder().url(endpoint)
+                .header("Authorization", "Bearer $apiKey")
+                .post(body.toString().toRequestBody(JSON)).build()
+            val call = http.newCall(request)
+            call.timeout().timeout(minOf(timeoutMs(speed), deadlineMs), TimeUnit.MILLISECONDS)
+            val candidate = awaitContent(call)
+            val decision = FaithfulDictation.guardOutput(text, candidate)
+            Log.i("MaxSpeech", "Dictation guard reason=${decision.reason} drift=${decision.drift} over_limit=${decision.drift > 0.20} elapsed_ms=${(System.nanoTime() - started) / 1_000_000}")
+            decision.text
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            Log.w("MaxSpeech", "Dictation enhance fallback reason=request_error elapsed_ms=${(System.nanoTime() - started) / 1_000_000}")
+            text
         }
     }
 
-    private fun systemPrompt(tone: String, multilingual: Boolean, speed: EnhanceSpeed): String {
-        val base = when (tone) {
-            "casual" ->
-                "You are a Grammarly-like dictation assistant. Rewrite in a casual, terse chat style. Prefer lowercase; skip a trailing period. Keep it brief. Still fix grammar so it reads cleanly as a message."
-            "formal" ->
-                "You are a Grammarly-like dictation assistant. Rewrite in a professional, formal style suitable for email: proper capitalization, punctuation, and complete sentences."
-            "code" ->
-                "You are a Grammarly-like dictation assistant for a programmer. Clean up grammar and use precise technical terms."
-            "prose" ->
-                "You are a Grammarly-like dictation assistant. Rewrite as clean prose with proper paragraphs, punctuation, and grammar."
-            else ->
-                "You are a Grammarly-like dictation assistant. Clean up grammar, punctuation, and clarity while keeping the original meaning and style."
+    private suspend fun awaitContent(call: Call): String = suspendCancellableCoroutine { continuation ->
+        // Cancelling the coroutine must cancel the socket, not merely stop waiting for it.
+        continuation.invokeOnCancellation { call.cancel() }
+        call.enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                if (continuation.isActive) continuation.resumeWithException(e)
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                response.use {
+                    try {
+                        if (!response.isSuccessful) throw IOException("Enhance HTTP failure")
+                        val choice = JSONObject(response.body?.string().orEmpty()).getJSONArray("choices").getJSONObject(0)
+                        if (choice.optString("finish_reason") != "stop") throw IOException("Incomplete enhance response")
+                        val content = choice.getJSONObject("message").getString("content").trim()
+                        if (content.isBlank()) throw IOException("Empty enhance response")
+                        if (continuation.isActive) continuation.resume(content)
+                    } catch (e: Exception) {
+                        if (continuation.isActive) continuation.resumeWithException(e)
+                    }
+                }
+            }
+        })
+    }
+
+    internal fun systemPrompt(tone: String, multilingual: Boolean, dictionary: List<String>): String {
+        val surface = when (tone) {
+            "casual" -> "Casual surface formatting only; preserve proper names and use lighter terminal punctuation."
+            "prose" -> "Keep paragraph breaks; add paragraphs only for explicit spoken commands."
+            "code" -> "Preserve technical words and symbols; never invent code or comment syntax."
+            else -> "Use normal sentence capitalization and punctuation; preserve incomplete sentences."
         }
-        val extra = when (speed) {
-            EnhanceSpeed.Fast -> " Light, fast cleanup only."
-            EnhanceSpeed.Ultra -> " Thorough pass: restore sentence boundaries, fix run-ons, do not invent facts."
-            EnhanceSpeed.Thinking -> ""
-        }
-        val multi = if (multilingual) {
-            " Preserve every language and script. Do not translate or transliterate."
-        } else {
-            ""
-        }
-        return "$base$extra$multi Fix spoken self-corrections (I meant X). Return ONLY the cleaned text."
+        val language = if (multilingual) "Preserve all languages and scripts. Do not translate or transliterate." else "Preserve the spoken language."
+        val terms = dictionary.map { it.trim() }.filter { it.isNotEmpty() }.take(60)
+        val block = if (terms.isEmpty()) "" else "\n\nPreferred vocabulary (spell and capitalize exactly when the user says these; restore Name's possessives): ${terms.joinToString(", ")}."
+        return "$faithfulPrompt\n$surface\n$language$block"
     }
 
     companion object {
         private val JSON = "application/json; charset=utf-8".toMediaType()
+
+        fun quickSkipSecs(speed: EnhanceSpeed): Double = when (speed) {
+            EnhanceSpeed.Fast -> 6.25
+            EnhanceSpeed.Thinking -> 5.0
+            EnhanceSpeed.Ultra -> 1.5
+        }
+
+        fun timeoutMs(speed: EnhanceSpeed): Long = when (speed) {
+            EnhanceSpeed.Fast -> 12_000L
+            EnhanceSpeed.Thinking -> 15_000L
+            EnhanceSpeed.Ultra -> 20_000L
+        }
     }
 }

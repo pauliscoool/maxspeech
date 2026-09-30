@@ -50,6 +50,12 @@ android {
         buildConfig = true
     }
 
+    sourceSets.getByName("main").assets.srcDir("../../shared/dictation")
+    testOptions.unitTests.isReturnDefaultValues = true
+    testOptions.unitTests.all {
+        it.systemProperty("dictation.fixtures", rootProject.file("../shared/dictation").absolutePath)
+    }
+
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
@@ -58,6 +64,9 @@ android {
 }
 
 dependencies {
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
     val composeBom = platform("androidx.compose:compose-bom:2024.12.01")
     implementation(composeBom)
     implementation("androidx.compose.ui:ui")

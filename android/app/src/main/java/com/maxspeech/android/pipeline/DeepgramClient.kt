@@ -17,7 +17,7 @@ import java.net.URLEncoder
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
-data class TranscriptChunk(val text: String, val isFinal: Boolean)
+data class TranscriptChunk(val text: String, val isFinal: Boolean, val sessionId: Long)
 
 class DeepgramClient {
     private val http = OkHttpClient.Builder()
@@ -29,10 +29,14 @@ class DeepgramClient {
     val chunks = _chunks.asSharedFlow()
 
     private var socket: WebSocket? = null
+    @Volatile private var generation = 0L
+    val sessionId: Long get() = generation
     private val ready = Channel<Result<Unit>>(Channel.BUFFERED)
 
     fun connect(keys: List<String>, language: String, keyterms: List<String>) {
         close()
+        val connection = generation
+        while (ready.tryReceive().isSuccess) { /* A previous socket may have closed after its session ended. */ }
         val key = keys.firstOrNull().orEmpty()
         val url = buildUrl(language, keyterms)
         val req = Request.Builder()
@@ -41,18 +45,22 @@ class DeepgramClient {
             .build()
         socket = http.newWebSocket(req, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
+                if (connection != generation) return
                 ready.trySend(Result.success(Unit))
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
-                parse(text)
+                if (connection != generation) return
+                parse(text, connection)
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                if (connection != generation) return
                 ready.trySend(Result.failure(t))
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                if (connection != generation) return
                 ready.trySend(Result.failure(IllegalStateException(reason.ifBlank { "closed" })))
             }
         })
@@ -70,16 +78,15 @@ class DeepgramClient {
 
     fun finish() {
         socket?.send("""{"type":"CloseStream"}""")
-        socket?.close(1000, "done")
-        socket = null
     }
 
     fun close() {
+        generation++
         socket?.cancel()
         socket = null
     }
 
-    private fun parse(raw: String) {
+    private fun parse(raw: String, connection: Long) {
         runCatching {
             val json = JSONObject(raw)
             val channel = json.optJSONObject("channel") ?: return
@@ -87,8 +94,8 @@ class DeepgramClient {
             if (alts.length() == 0) return
             val transcript = alts.getJSONObject(0).optString("transcript")
             if (transcript.isBlank()) return
-            val isFinal = json.optBoolean("is_final", false) || json.optBoolean("speech_final", false)
-            _chunks.tryEmit(TranscriptChunk(transcript, isFinal))
+            val isFinal = json.optBoolean("is_final", false)
+            _chunks.tryEmit(TranscriptChunk(transcript, isFinal, connection))
         }
     }
 

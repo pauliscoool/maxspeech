@@ -102,6 +102,9 @@ interface DictionaryDao {
 @Dao
 interface SnippetDao {
     @Query("SELECT * FROM snippets ORDER BY trigger")
+    suspend fun all(): List<SnippetEntity>
+
+    @Query("SELECT * FROM snippets ORDER BY trigger")
     fun observe(): Flow<List<SnippetEntity>>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)

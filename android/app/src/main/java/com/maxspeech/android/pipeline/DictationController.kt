@@ -1,6 +1,9 @@
 package com.maxspeech.android.pipeline
 
 import android.content.Context
+import android.content.ClipboardManager
+import android.os.SystemClock
+import android.util.Log
 import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
@@ -12,6 +15,8 @@ import com.maxspeech.android.data.HistoryEntity
 import com.maxspeech.android.data.PlanCalculator
 import com.maxspeech.android.data.SettingsRepository
 import com.maxspeech.android.data.UsageEntity
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -43,22 +48,36 @@ class DictationController(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val audio = AudioCapture()
     private val stt = DeepgramClient()
+    private val enhance = EnhanceClient(context.assets.open("prompt.txt").bufferedReader().use { it.readText() })
+    private val session = DictationSession()
+    private var finishJob: Job? = null
+    private var startedAt = 0L
+    private var sessionLanguage = "en"
+    private var sessionTone = "default"
+    private var sessionDictionary: List<String> = emptyList()
+    private var sessionSnippets: List<Pair<String, String>> = emptyList()
 
     private val _ui = MutableStateFlow(DictationUi())
     val ui = _ui.asStateFlow()
 
     private var listenJob: Job? = null
     private var pcmJob: Job? = null
-    private val finals = StringBuilder()
+    private val transcript = TranscriptAccumulator()
     private var sessionApp: String = ""
     var pasteIntoFocusedApp: Boolean = false
 
     fun start(targetApp: String = "", paste: Boolean = false) {
         if (_ui.value.phase == DictationPhase.Listening) return
+        val token = session.next()
+        confirmToken = null
+        finishJob?.cancel()
+        audio.stop()
+        stt.close()
+        startedAt = SystemClock.elapsedRealtime()
         pasteIntoFocusedApp = paste
         sessionApp = targetApp.ifBlank { TextInjector.foregroundPackage() ?: "MaxSpeech" }
         listenJob?.cancel()
-        finals.clear()
+        transcript.clear()
         listenJob = scope.launch {
             val snap = settings.snapshot()
             val user = auth.current()
@@ -67,7 +86,7 @@ class DictationController(
             if (!plan.canDictate) {
                 _ui.value = DictationUi(phase = DictationPhase.Limit, error = "Weekly word limit reached")
                 delay(2400)
-                _ui.value = DictationUi()
+                if (session.isCurrent(token)) _ui.value = DictationUi()
                 return@launch
             }
             haptic()
@@ -78,26 +97,28 @@ class DictationController(
                 snap.languages.firstOrNull() ?: "en"
             }
             val dict = db.dictionaryDao().all()
+            sessionDictionary = dict
+            sessionLanguage = lang
+            sessionTone = resolveTone(sessionApp, snap.toneOverride)
+            sessionSnippets = db.snippetDao().all().map { it.trigger to expandTemplate(it.expansion) }
+            if (!session.isCurrent(token)) return@launch
             val keys = com.maxspeech.android.data.Secrets.deepgramKeys(snap.deepgramKey.ifBlank { null })
             try {
                 stt.connect(keys, lang, DeepgramClient.BUILTIN_KEYTERMS + dict)
+                val streamToken = stt.sessionId
                 stt.awaitOpen()
                 launch {
                     stt.chunks.collect { chunk ->
-                        if (chunk.isFinal) {
-                            if (finals.isNotEmpty()) finals.append(' ')
-                            finals.append(chunk.text.trim())
-                        }
-                        val shown = if (chunk.isFinal) finals.toString() else listOf(finals.toString(), chunk.text)
-                            .filter { it.isNotBlank() }
-                            .joinToString(" ")
-                        _ui.value = _ui.value.copy(liveText = shown)
+                        if (!session.isCurrent(token) || chunk.sessionId != streamToken) return@collect
+                        transcript.add(chunk.text, chunk.isFinal)
+                        _ui.value = _ui.value.copy(liveText = transcript.text())
                     }
                 }
                 pcmJob = launch {
                     audio.start(
-                        onPcm = { stt.sendPcm(it) },
-                        onLevel = { lvl ->
+                        onPcm = { if (session.isCurrent(token)) stt.sendPcm(it) },
+                        onLevel = onLevel@{ lvl ->
+                            if (!session.isCurrent(token)) return@onLevel
                             val next = _ui.value.levels.toMutableList()
                             next.removeAt(0)
                             next += lvl
@@ -107,20 +128,26 @@ class DictationController(
                 }
                 launch {
                     delay(120_000)
-                    if (_ui.value.phase == DictationPhase.Listening) {
-                        finishInternal(confirmOnly = true)
+                    if (session.isCurrent(token) && _ui.value.phase == DictationPhase.Listening) {
+                        stopAndFinish()
                     }
                 }
                 pcmJob?.join()
-            } catch (e: Throwable) {
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (!session.isCurrent(token) || _ui.value.phase != DictationPhase.Listening) return@launch
                 _ui.value = DictationUi(phase = DictationPhase.Error, error = e.message ?: "Mic / STT failed")
                 delay(2200)
-                _ui.value = DictationUi()
+                if (session.isCurrent(token)) _ui.value = DictationUi()
             }
         }
     }
 
     fun cancel() {
+        session.next()
+        confirmToken = null
+        finishJob?.cancel()
         listenJob?.cancel()
         pcmJob?.cancel()
         audio.stop()
@@ -129,59 +156,98 @@ class DictationController(
     }
 
     fun stopAndFinish() {
-        scope.launch { finishInternal(confirmOnly = true) }
+        if (_ui.value.phase != DictationPhase.Listening) return
+        finishJob = scope.launch { finishInternal(confirmOnly = true) }
     }
 
     fun confirmPaste() {
-        scope.launch {
-            val text = _ui.value.finalText
-            if (text.isNotBlank() && pasteIntoFocusedApp) {
-                TextInjector.insert(context, text)
-            }
-            _ui.value = DictationUi()
+        if (_ui.value.phase != DictationPhase.Confirm) return
+        val token = confirmToken ?: return
+        val text = _ui.value.finalText
+        if (text.isNotEmpty() && pasteIntoFocusedApp && session.claimPaste(token)) {
+            TextInjector.insert(context, confirmInjectionText)
         }
+        _ui.value = DictationUi()
     }
 
+    private var confirmToken: Long? = null
+    private var confirmInjectionText = ""
+
     private suspend fun finishInternal(confirmOnly: Boolean) {
-        val snap = settings.snapshot()
+        val token = session.beginFinish() ?: return
+        val releasedAt = SystemClock.elapsedRealtime()
+        val durationSecs = (releasedAt - startedAt) / 1000.0
+        val target = sessionApp
+        val paste = pasteIntoFocusedApp
+        _ui.value = _ui.value.copy(phase = DictationPhase.Processing)
+        pcmJob?.cancel()
         audio.stop()
         stt.finish()
+        val snap = settings.snapshot()
         delay(280)
-        val raw = _ui.value.liveText.ifBlank { finals.toString() }.trim()
+        if (!session.isCurrent(token)) return
+        stt.close()
+        val raw = transcript.text()
         if (raw.isBlank()) {
             _ui.value = DictationUi()
             return
         }
-        _ui.value = _ui.value.copy(phase = DictationPhase.Processing, originalText = raw)
-        var out = raw
-        delay(420)
-        if (snap.trailingSpace && !out.endsWith(" ")) out = "$out "
-        val enhanced = out.trim() != raw.trim()
+        _ui.value = _ui.value.copy(originalText = raw)
+        val processingStarted = SystemClock.elapsedRealtime()
+        val expanded = FaithfulDictation.expandExplicit(raw, sessionDictionary, sessionSnippets)
+        val multilingual = sessionLanguage == "multi" || FaithfulDictation.hasNonLatinScript(expanded)
+        val local = FaithfulDictation.localCleanup(expanded, sessionTone, sessionLanguage.startsWith("en") && !multilingual)
+        var out = local
+        if (local.isNotBlank() && snap.aiEnhance && snap.llmKey.isNotBlank() && !multilingual &&
+            durationSecs >= EnhanceClient.quickSkipSecs(snap.enhanceSpeed)
+        ) {
+            val remaining = (420 - (SystemClock.elapsedRealtime() - processingStarted)).coerceAtLeast(0)
+            val candidate = withTimeoutOrNull(remaining) {
+                enhance.enhance(local, sessionTone, snap.llmKey, snap.enhanceSpeed, multilingual, sessionDictionary, remaining)
+            }
+            if (candidate == null) Log.w("MaxSpeech", "Dictation enhance fallback reason=deadline")
+            out = candidate ?: local
+        }
+        if (!session.isCurrent(token)) return
+        val enhanced = out != raw
+        if (out.isEmpty()) {
+            _ui.value = DictationUi()
+            return
+        }
+        val isFormattingCommand = sessionLanguage.startsWith("en") && FaithfulDictation.formattingCommand(raw) != null
+        val injectionText = if (snap.trailingSpace && !isFormattingCommand) "$out " else out
         withContext(Dispatchers.IO) {
-            db.historyDao().insert(
-                HistoryEntity(
-                    text = out.trim(),
-                    appName = friendlyApp(sessionApp),
-                    enhanced = enhanced,
-                ),
-            )
+            db.historyDao().insert(HistoryEntity(text = out, appName = friendlyApp(target), enhanced = enhanced))
             db.usageDao().insert(UsageEntity(wordCount = PlanCalculator.wordCount(out)))
         }
-        val confirm = confirmOnly && (snap.overlayConfirm || !pasteIntoFocusedApp)
+        if (!session.isCurrent(token)) return
+        val confirm = confirmOnly && (snap.overlayConfirm || !paste)
+        confirmToken = token
+        confirmInjectionText = injectionText
         _ui.value = _ui.value.copy(
             phase = if (confirm) DictationPhase.Confirm else DictationPhase.Idle,
-            finalText = out.trim(),
+            finalText = out,
             originalText = raw,
-            liveText = out.trim(),
+            liveText = out,
         )
-        if (!confirm && pasteIntoFocusedApp) {
-            TextInjector.insert(context, out.trim())
+        Log.i("MaxSpeech", "Dictation ready release_to_ready_ms=${SystemClock.elapsedRealtime() - releasedAt} processing_ms=${SystemClock.elapsedRealtime() - processingStarted}")
+        if (!confirm && paste && session.claimPaste(token)) {
+            TextInjector.insert(context, injectionText)
             delay(400)
-            _ui.value = DictationUi()
+            if (session.isCurrent(token)) _ui.value = DictationUi()
         }
-        if (!confirm && !pasteIntoFocusedApp) {
-            delay(600)
+    }
+
+    private fun expandTemplate(template: String): String {
+        val now = java.util.Date()
+        var text = template
+        if ("{clipboard}" in text) {
+            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            val value = clipboard.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString().orEmpty()
+            text = text.replace("{clipboard}", value)
         }
+        return text.replace("{date}", java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.ROOT).format(now))
+            .replace("{time}", java.text.SimpleDateFormat("HH:mm", java.util.Locale.ROOT).format(now))
     }
 
     private suspend fun resolveTone(pkg: String, override: String): String {
