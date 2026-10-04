@@ -177,22 +177,22 @@ object TextInjector {
             android.Manifest.permission.RECORD_AUDIO,
         ) == android.content.pm.PackageManager.PERMISSION_GRANTED
 
-    fun notificationGranted(context: Context): Boolean {
-        if (android.os.Build.VERSION.SDK_INT < 33) return true
-        return androidx.core.content.ContextCompat.checkSelfPermission(
-            context,
-            android.Manifest.permission.POST_NOTIFICATIONS,
-        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
-    }
-
     fun foregroundPackage(): String? = InjectAccessibilityService.lastPackage
 
     fun insert(context: Context, text: String): Boolean {
         val svc = InjectAccessibilityService.instance
         if (svc != null && svc.insert(text)) return true
+        if (!copyToClipboard(context, text)) {
+            throw IllegalStateException("MaxSpeech could not paste or copy the transcript.")
+        }
+        return false
+    }
+
+    fun copyToClipboard(context: Context, text: String): Boolean = runCatching {
         val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         cm.setPrimaryClip(ClipData.newPlainText("MaxSpeech", text))
         Toast.makeText(context, "Copied — paste into the app", Toast.LENGTH_SHORT).show()
-        return false
-    }
+        true
+    }.onFailure { Log.e("MaxSpeechA11y", "Could not copy transcript to clipboard", it) }
+        .getOrDefault(false)
 }

@@ -637,4 +637,87 @@ mod tests {
             other => panic!("expected binary, got {other:?}"),
         }
     }
+
+    /// Streams saved 16 kHz mono recordings in real time to Nova-3 (v1) and Flux (v2)
+    /// and reports last-audio -> last-transcript latency. Real API calls.
+    #[tokio::test]
+    #[ignore]
+    async fn model_probe() {
+        let dir = std::path::PathBuf::from(std::env::var("APPDATA").unwrap()).join("MaxSpeech/recordings");
+        let wavs = std::env::var("PROBE_WAVS").unwrap_or_else(|_| "2413.wav,2414.wav,2416.wav".into());
+        let key = secrets::deepgram_key_candidates().into_iter().last().unwrap();
+        let targets = [
+            ("nova-3", "wss://api.deepgram.com/v1/listen?model=nova-3&language=en&punctuate=true&interim_results=true&smart_format=true&numerals=true&endpointing=1100&encoding=linear16&sample_rate=16000&channels=1"),
+            ("flux-en", "wss://api.deepgram.com/v2/listen?model=flux-general-en&encoding=linear16&sample_rate=16000"),
+        ];
+        for wav in wavs.split(',') {
+            let bytes = std::fs::read(dir.join(wav.trim())).unwrap();
+            let pcm = &bytes[44..];
+            for (name, url) in targets {
+                let req = tokio_tungstenite::tungstenite::http::Request::builder()
+                    .uri(url)
+                    .header("Authorization", format!("Token {key}"))
+                    .header("Sec-WebSocket-Key", tokio_tungstenite::tungstenite::handshake::client::generate_key())
+                    .header("Sec-WebSocket-Version", "13")
+                    .header("Connection", "Upgrade")
+                    .header("Upgrade", "websocket")
+                    .header("Host", "api.deepgram.com")
+                    .body(())
+                    .unwrap();
+                let t_conn = std::time::Instant::now();
+                let (ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+                let connect_ms = t_conn.elapsed().as_millis();
+                let (mut w, mut r) = ws.split();
+                let reader = tokio::spawn(async move {
+                    let mut finals: Vec<String> = Vec::new();
+                    let mut last = std::time::Instant::now();
+                    let mut types = std::collections::BTreeMap::<String, u32>::new();
+                    while let Some(Ok(m)) = r.next().await {
+                        if let Message::Text(t) = m {
+                            let v: serde_json::Value = serde_json::from_str(&t).unwrap_or_default();
+                            let ty = v["type"].as_str().unwrap_or("?").to_string();
+                            let ev = v["event"].as_str().unwrap_or("").to_string();
+                            *types.entry(format!("{ty}/{ev}")).or_default() += 1;
+                            if v["is_final"].as_bool() == Some(true) {
+                                finals.push(v["channel"]["alternatives"][0]["transcript"].as_str().unwrap_or("").to_string());
+                                last = std::time::Instant::now();
+                            } else if ev == "EndOfTurn" {
+                                finals.push(v["transcript"].as_str().unwrap_or("").to_string());
+                                last = std::time::Instant::now();
+                            }
+                        } else if let Message::Close(_) = m {
+                            break;
+                        }
+                    }
+                    (finals, last, types)
+                });
+                for chunk in pcm.chunks(2560) {
+                    w.send(Message::Binary(chunk.to_vec().into())).await.unwrap();
+                    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+                }
+                let t_end = std::time::Instant::now();
+                w.send(Message::Text(r#"{"type":"CloseStream"}"#.into())).await.unwrap();
+                let (finals, last, types) = tokio::time::timeout(std::time::Duration::from_secs(8), reader)
+                    .await
+                    .map(|r| r.unwrap())
+                    .unwrap_or_default_probe();
+                let text = finals.join(" ");
+                println!(
+                    "{wav} {name}: connect={connect_ms}ms stop->lastfinal={}ms words={} msgs={types:?}\n   {}",
+                    last.saturating_duration_since(t_end).as_millis(),
+                    text.split_whitespace().count(),
+                    text.chars().take(160).collect::<String>()
+                );
+            }
+        }
+    }
+
+    trait ProbeDefault {
+        fn unwrap_or_default_probe(self) -> (Vec<String>, std::time::Instant, std::collections::BTreeMap<String, u32>);
+    }
+    impl ProbeDefault for Result<(Vec<String>, std::time::Instant, std::collections::BTreeMap<String, u32>), tokio::time::error::Elapsed> {
+        fn unwrap_or_default_probe(self) -> (Vec<String>, std::time::Instant, std::collections::BTreeMap<String, u32>) {
+            self.unwrap_or_else(|_| (vec!["<TIMEOUT 8s>".into()], std::time::Instant::now(), Default::default()))
+        }
+    }
 }

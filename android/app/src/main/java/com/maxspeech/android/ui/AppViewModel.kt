@@ -141,13 +141,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun cancelDictation() = ms.dictation.cancel()
 
-    fun confirmDictation() {
-        viewModelScope.launch {
-            val text = ms.dictation.ui.value.finalText
-            if (text.isNotBlank()) TextInjector.insert(getApplication(), text)
-            ms.dictation.confirmPaste()
-        }
-    }
+    fun confirmDictation() = ms.dictation.confirmPaste()
 
     fun setChip(tone: String) = viewModelScope.launch { ms.settings.setToneOverride(tone.lowercase()) }
 

@@ -24,6 +24,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.maxspeech.android.pipeline.DictationPhase
@@ -49,7 +50,7 @@ fun OverlayCapsule(
     val blur = LocalBlurStrength.current
     val shape = RoundedCornerShape(28.dp)
     when (ui.phase) {
-        DictationPhase.Confirm, DictationPhase.Listening, DictationPhase.Processing -> {
+        DictationPhase.Confirm, DictationPhase.Starting, DictationPhase.Listening, DictationPhase.Processing -> {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -72,7 +73,17 @@ fun OverlayCapsule(
                         .padding(horizontal = 16.dp),
                     contentAlignment = Alignment.Center,
                 ) {
-                    RibbonWaveform(ui.levels)
+                    if (ui.error != null) {
+                        Text(
+                            ui.error,
+                            color = Color(0xFFFFCC80),
+                            fontSize = 12.sp,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    } else {
+                        RibbonWaveform(ui.levels)
+                    }
                 }
                 Box(
                     Modifier
@@ -80,7 +91,11 @@ fun OverlayCapsule(
                         .clip(CircleShape)
                         .background(if (ui.phase == DictationPhase.Confirm) Orange else Turquoise)
                         .clickable {
-                            if (ui.phase == DictationPhase.Confirm) onConfirm() else onHoldEnd()
+                            when (ui.phase) {
+                                DictationPhase.Confirm -> onConfirm()
+                                DictationPhase.Starting -> onCancel()
+                                else -> onHoldEnd()
+                            }
                         },
                     contentAlignment = Alignment.Center,
                 ) {
@@ -110,6 +125,8 @@ fun OverlayCapsule(
                     text = ui.liveText.ifBlank { ui.error ?: "Tap a field, then hold to speak" },
                     color = Color.White.copy(alpha = 0.92f),
                     fontSize = 16.sp,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
                 Icon(Icons.Filled.Mic, contentDescription = "Microphone", tint = Color.White)

@@ -209,7 +209,7 @@ class OverlayService : LifecycleService(), SavedStateRegistryOwner, ViewModelSto
                     val overOtherApp = focus.editable && focus.packageName != null &&
                         focus.packageName != packageName
                     val fromOverlay = dictating && MaxSpeechApp.instance.dictation.pasteIntoFocusedApp
-                    val visible = overOtherApp || fromOverlay
+                    val visible = overOtherApp || fromOverlay || ui.phase == DictationPhase.Error
                     MaxSpeechTheme(
                         theme = settings.theme,
                         glassAlpha = settings.glassAlpha,
@@ -230,7 +230,10 @@ class OverlayService : LifecycleService(), SavedStateRegistryOwner, ViewModelSto
                                     notifyRecording(this@OverlayService, true)
                                     MaxSpeechApp.instance.dictation.start(pkg, paste = true)
                                 },
-                                onHoldEnd = { MaxSpeechApp.instance.dictation.stopAndFinish() },
+                                onHoldEnd = {
+                                    notifyRecording(this@OverlayService, false)
+                                    MaxSpeechApp.instance.dictation.stopAndFinish()
+                                },
                                 onCancel = {
                                     MaxSpeechApp.instance.dictation.cancel()
                                     notifyRecording(this@OverlayService, false)
@@ -262,6 +265,11 @@ class OverlayService : LifecycleService(), SavedStateRegistryOwner, ViewModelSto
         placeJob = lifecycleScope.launch {
             combine(app.dictation.ui, TextInjector.inputFocus) { ui, focus -> ui to focus }
                 .collect { (ui, focus) ->
+                    val isListening = ui.phase == DictationPhase.Listening
+                    if (recording != isListening) {
+                        recording = isListening
+                        promoteForeground()
+                    }
                     val params = layoutParams ?: return@collect
                     val dm = resources.displayMetrics
                     val overlayH = (68 * dm.density).toInt()

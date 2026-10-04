@@ -46,6 +46,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.maxspeech.android.data.HistoryEntity
@@ -163,7 +164,8 @@ fun HomeScreen(
             }
             Box(Modifier.align(Alignment.BottomCenter).padding(horizontal = 8.dp)) {
                 when (ui.phase) {
-                    DictationPhase.Listening, DictationPhase.Processing, DictationPhase.Confirm -> {
+                    DictationPhase.Starting, DictationPhase.Listening, DictationPhase.Processing,
+                    DictationPhase.Confirm -> {
                         ConfirmRow(ui, onCancel, onConfirm, onHoldEnd)
                     }
                     else -> {
@@ -298,7 +300,17 @@ private fun ConfirmRow(
             contentAlignment = Alignment.Center,
         ) {
             Box(Modifier.padding(horizontal = 12.dp), contentAlignment = Alignment.Center) {
-                RibbonWaveform(ui.levels)
+                if (ui.error != null) {
+                    Text(
+                        ui.error,
+                        color = c.error,
+                        fontSize = 11.sp,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                } else {
+                    RibbonWaveform(ui.levels)
+                }
             }
         }
         Box(
@@ -308,7 +320,11 @@ private fun ConfirmRow(
                 .background(Orange)
                 .pointerInput(ui.phase) {
                     detectTapGestures {
-                        if (ui.phase == DictationPhase.Confirm) onConfirm() else onHoldEnd()
+                        when (ui.phase) {
+                            DictationPhase.Confirm -> onConfirm()
+                            DictationPhase.Starting -> onCancel()
+                            else -> onHoldEnd()
+                        }
                     }
                 },
             contentAlignment = Alignment.Center,

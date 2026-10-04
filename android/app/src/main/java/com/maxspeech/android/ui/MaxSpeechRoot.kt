@@ -3,7 +3,6 @@ package com.maxspeech.android.ui
 import android.Manifest
 import android.content.Intent
 import android.net.Uri
-import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -85,10 +84,6 @@ fun MaxSpeechRoot(vm: AppViewModel) {
         ) { granted ->
             micOk = granted || TextInjector.micGranted(ctx)
         }
-        val notifLauncher = rememberLauncherForActivityResult(
-            ActivityResultContracts.RequestPermission(),
-        ) { }
-
         fun refreshPerms() {
             micOk = TextInjector.micGranted(ctx)
             overlayOk = TextInjector.overlayGranted(ctx)
@@ -107,9 +102,8 @@ fun MaxSpeechRoot(vm: AppViewModel) {
         LaunchedEffect(state.settings.overlayEnabled, overlayOk, a11yOk, state.settings.onboarded) {
             val want = state.settings.overlayEnabled && overlayOk && a11yOk && state.settings.onboarded
             if (want) {
-                if (Build.VERSION.SDK_INT >= 33 && !TextInjector.notificationGranted(ctx)) {
-                    notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                }
+                // Keep the service foreground for reliability without requesting permission
+                // for its notification. Android 13+ still exposes the service in Task Manager.
                 OverlayService.start(ctx)
             } else {
                 OverlayService.stop(ctx)
@@ -117,6 +111,9 @@ fun MaxSpeechRoot(vm: AppViewModel) {
         }
         LaunchedEffect(state.toast) {
             state.toast?.let { snack.showSnackbar(it) }
+        }
+        LaunchedEffect(state.dictation.error) {
+            state.dictation.error?.let { snack.showSnackbar(it) }
         }
 
         val signedIn = state.user != null && state.user?.local != true
@@ -264,7 +261,8 @@ fun MaxSpeechRoot(vm: AppViewModel) {
                             GlassScrim(Modifier.fillMaxWidth().height(28.dp))
                             GlassTabBar(
                                 current = tab,
-                                dictating = state.dictation.phase == DictationPhase.Listening ||
+                                dictating = state.dictation.phase == DictationPhase.Starting ||
+                                    state.dictation.phase == DictationPhase.Listening ||
                                     state.dictation.phase == DictationPhase.Processing,
                                 onSelect = { tab = it },
                                 onDictate = {

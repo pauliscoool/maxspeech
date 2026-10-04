@@ -1,5 +1,6 @@
 package com.maxspeech.android.pipeline
 
+import java.io.IOException
 import com.maxspeech.android.data.Secrets
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.channels.Channel
@@ -32,11 +33,15 @@ class DeepgramClient {
     @Volatile private var generation = 0L
     val sessionId: Long get() = generation
     private val ready = Channel<Result<Unit>>(Channel.BUFFERED)
+    private val failures = Channel<Throwable>(Channel.CONFLATED)
+    private val closed = Channel<Unit>(Channel.CONFLATED)
 
     fun connect(keys: List<String>, language: String, keyterms: List<String>) {
         close()
         val connection = generation
         while (ready.tryReceive().isSuccess) { /* A previous socket may have closed after its session ended. */ }
+        while (failures.tryReceive().isSuccess) { /* Discard failures from the previous session. */ }
+        while (closed.tryReceive().isSuccess) { /* Discard close events from the previous session. */ }
         val key = keys.firstOrNull().orEmpty()
         val url = buildUrl(language, keyterms)
         val req = Request.Builder()
@@ -56,12 +61,23 @@ class DeepgramClient {
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 if (connection != generation) return
-                ready.trySend(Result.failure(t))
+                val failure = if (response != null) {
+                    IOException("Transcription service returned HTTP ${response.code}.", t)
+                } else {
+                    t
+                }
+                ready.trySend(Result.failure(failure))
+                failures.trySend(failure)
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 if (connection != generation) return
-                ready.trySend(Result.failure(IllegalStateException(reason.ifBlank { "closed" })))
+                val failure = IOException(
+                    reason.ifBlank { "Transcription connection closed (code $code)." },
+                )
+                ready.trySend(Result.failure(failure))
+                failures.trySend(failure)
+                closed.trySend(Unit)
             }
         })
     }
@@ -70,14 +86,24 @@ class DeepgramClient {
         ready.receive().getOrThrow()
     }
 
-    fun sendPcm(samples: ShortArray) {
-        val bytes = ByteBuffer.allocate(samples.size * 2).order(ByteOrder.LITTLE_ENDIAN)
-        samples.forEach { bytes.putShort(it) }
-        socket?.send(bytes.array().toByteString(0, samples.size * 2))
+    suspend fun awaitFailure(): Throwable = failures.receive()
+
+    suspend fun awaitClosed() {
+        closed.receive()
     }
 
-    fun finish() {
-        socket?.send("""{"type":"CloseStream"}""")
+    fun sendPcm(samples: ShortArray) {
+        val current = socket ?: throw IOException("Transcription connection is not open.")
+        val bytes = ByteBuffer.allocate(samples.size * 2).order(ByteOrder.LITTLE_ENDIAN)
+        samples.forEach { bytes.putShort(it) }
+        if (!current.send(bytes.array().toByteString(0, samples.size * 2))) {
+            throw IOException("Transcription connection stopped accepting audio.")
+        }
+    }
+
+    fun finish(): Boolean {
+        val current = socket ?: return false
+        return current.send("""{"type":"CloseStream"}""")
     }
 
     fun close() {
