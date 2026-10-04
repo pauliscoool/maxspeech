@@ -1273,6 +1273,10 @@ fn main() {
                     .unwrap_or(false);
                 if show_at_login {
                     open_window(&handle, "settings", "MaxSpeech", 935, 612);
+                } else {
+                    // Tray-only login: build the window hidden so opening it later is instant.
+                    let warm = handle.clone();
+                    let _ = handle.run_on_main_thread(move || warm_settings_window(&warm));
                 }
             } else {
                 open_window(&handle, "settings", "MaxSpeech", 935, 612);
@@ -1367,6 +1371,22 @@ fn open_window(app: &tauri::AppHandle, label: &str, title: &str, width: u32, hei
         log::error!("{msg}");
         append_crash_log(&msg);
         show_native_error("MaxSpeech window error", &msg);
+    }
+}
+
+fn warm_settings_window(app: &tauri::AppHandle) {
+    if app.get_webview_window("settings").is_some() {
+        return;
+    }
+    let built = WebviewWindowBuilder::new(app, "settings", WebviewUrl::default())
+        .title("MaxSpeech")
+        .inner_size(935.0, 612.0)
+        .center()
+        .visible(false)
+        .background_color(tauri::window::Color(0, 0, 0, 255))
+        .build();
+    if let Err(e) = built {
+        log::warn!("Could not pre-build settings window: {e}");
     }
 }
 
