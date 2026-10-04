@@ -5,6 +5,7 @@
 use std::time::Duration;
 
 use tauri::{Emitter, Manager};
+use tauri_plugin_notification::NotificationExt;
 
 use crate::recording::{self, MAX_REMAKE_RECORDINGS, WAV_SAMPLE_RATE};
 use crate::store::Store;
@@ -15,8 +16,11 @@ const WINDOW_MS: usize = 100;
 /// Ambient room noise sits well under this; speech is far above it.
 const VOICE_RMS: f64 = 350.0;
 const MIN_VOICE_WINDOWS: usize = 3;
+/// Soft-spoken speech on a low-gain mic still clears this; a silent room does not.
+const QUIET_VOICE_RMS: f64 = 220.0;
 const ATTEMPTS: usize = 2;
-const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(45);
+const AUTO_RETRIES: usize = 3;
+const AUTO_RETRY_DELAY: Duration = Duration::from_secs(5);
 const RETRY_BACKOFF: Duration = Duration::from_millis(1500);
 
 fn rms(window: &[i16]) -> f64 {
@@ -41,6 +45,19 @@ pub fn has_speech(pcm: &[i16]) -> bool {
         >= MIN_VOICE_WINDOWS
 }
 
+/// Quieter, shorter bar than [has_speech]: ~200ms above a low floor. Used to
+/// dismiss the overlay instantly when the user said nothing at all.
+pub fn heard_voice(pcm: &[i16]) -> bool {
+    let window = WAV_SAMPLE_RATE as usize * WINDOW_MS / 1000;
+    if window == 0 {
+        return false;
+    }
+    pcm.chunks(window).filter(|w| rms(w) > QUIET_VOICE_RMS).count() >= 2
+}
+
+/// [retry_transcribe] error when the audio really has no words (not a network failure).
+pub const NO_SPEECH: &str = "No speech recognized";
+
 /// Re-transcribe the session audio with the batch API. Retries network/API
 /// errors once; an empty transcript is final (the audio really has no words).
 pub async fn retry_transcribe(
@@ -53,14 +70,16 @@ pub async fn retry_transcribe(
         .map_err(|e| format!("Could not save the recording: {e}"))?;
     let path_str = path.to_string_lossy().into_owned();
 
-    let mut last = String::from("No speech recognized");
+    // Outer deadline covers the batch client's own retry: 2 requests plus backoff.
+    let attempt_timeout = batch::request_timeout(pcm.len() * 2) * 2 + Duration::from_secs(5);
+    let mut last = String::from(NO_SPEECH);
     for attempt in 0..ATTEMPTS {
         let call = batch::transcribe_with_language_and_keyterms(&path_str, language, keyterms);
-        match tokio::time::timeout(ATTEMPT_TIMEOUT, call).await {
+        match tokio::time::timeout(attempt_timeout, call).await {
             Ok(Ok(result)) => {
                 let text = result.text.trim().to_string();
                 if text.is_empty() {
-                    last = "No speech recognized".into();
+                    last = NO_SPEECH.into();
                     break;
                 }
                 recording::delete_recording_file(&path_str);
@@ -79,15 +98,18 @@ pub async fn retry_transcribe(
 }
 
 /// Save the audio as a failed History entry (shows at the top with a Retry button).
-pub fn save_failed(app: &tauri::AppHandle, app_name: &str, reason: &str, pcm: &[i16]) {
-    let Some(store) = app.try_state::<Store>() else {
-        return;
-    };
+pub fn save_failed(
+    app: &tauri::AppHandle,
+    app_name: &str,
+    reason: &str,
+    pcm: &[i16],
+) -> Option<i64> {
+    let store = app.try_state::<Store>()?;
     let hid = match store.add_failed_history(reason, app_name) {
         Ok(id) => id,
         Err(e) => {
             log::error!("Could not record failed dictation: {e}");
-            return;
+            return None;
         }
     };
     let path = recording::wav_path_for_history_id(hid);
@@ -104,6 +126,50 @@ pub fn save_failed(app: &tauri::AppHandle, app_name: &str, reason: &str, pcm: &[
         "history-failed",
         serde_json::json!({ "id": hid, "text": reason, "app_name": app_name }),
     );
+    Some(hid)
+}
+
+/// Native toast so a failure is visible even when the overlay pill is gone.
+pub fn notify(app: &tauri::AppHandle, title: &str, body: &str) {
+    if let Err(e) = app.notification().builder().title(title).body(body).show() {
+        log::warn!("Could not show notification: {e}");
+    }
+}
+
+/// Re-run a failed dictation from its saved recording every few seconds, telling the
+/// user how each attempt went. Gives up after [`AUTO_RETRIES`] and leaves it in History.
+pub fn spawn_auto_retry(app: tauri::AppHandle, history_id: i64, target_exe: Option<String>) {
+    // If the user dictates again before this lands, copy instead of pasting mid-session.
+    let epoch = super::current_paste_epoch(&app);
+    tauri::async_runtime::spawn(async move {
+        for attempt in 1..=AUTO_RETRIES {
+            tokio::time::sleep(AUTO_RETRY_DELAY).await;
+            let auto = target_exe.as_deref().map(|exe| (exe, epoch));
+            match crate::remake_core(&app, history_id, auto).await {
+                Ok((_, pasted)) => {
+                    let body = if pasted {
+                        "Transcribed and pasted."
+                    } else {
+                        "Transcribed. Copied to your clipboard, press Ctrl+V."
+                    };
+                    notify(&app, "Recovered your dictation", body);
+                    let _ = app.emit("history-updated", history_id);
+                    return;
+                }
+                Err(e) => {
+                    log::warn!("Auto-retry {attempt}/{AUTO_RETRIES} failed: {e}");
+                    if attempt < AUTO_RETRIES {
+                        notify(&app, "Still couldn't transcribe", "Retrying again in 5 seconds.");
+                    }
+                }
+            }
+        }
+        notify(
+            &app,
+            "Couldn't transcribe",
+            "Your recording is saved in History. Tap Remake to try again.",
+        );
+    });
 }
 
 #[cfg(test)]

@@ -2,7 +2,8 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, SampleFormat, SupportedStreamConfig};
 use serde::Serialize;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Instant;
 use tauri::Emitter;
 
 const TARGET_RATE: u32 = 16000;
@@ -39,6 +40,8 @@ struct SttGate {
     open: bool,
     peak: f32,
     hangover_samples: u32,
+    /// This frame is speech now. Unlike `open`, it ignores the hangover.
+    voiced: bool,
 }
 
 impl SttGate {
@@ -47,6 +50,7 @@ impl SttGate {
             open: false,
             peak: STT_GATE_START_PEAK,
             hangover_samples: 0,
+            voiced: false,
         }
     }
 }
@@ -55,6 +59,21 @@ impl SttGate {
 pub const MIC_DEVICE_DEFAULT: &str = "default";
 
 static FRAME: AtomicU64 = AtomicU64::new(0);
+
+/// Ms since `VOICE_EPOCH` (+1, so 0 = never) of the last frame the gate heard as speech.
+static LAST_VOICE_MS: AtomicU64 = AtomicU64::new(0);
+static VOICE_EPOCH: OnceLock<Instant> = OnceLock::new();
+
+fn voice_clock_ms() -> u64 {
+    VOICE_EPOCH.get_or_init(Instant::now).elapsed().as_millis() as u64 + 1
+}
+
+/// True once the mic has been quiet for `ms` (or no speech was heard this take).
+/// Lets the hotkey-release trail end as soon as the speaker has actually stopped.
+pub fn silent_for(ms: u64) -> bool {
+    let last = LAST_VOICE_MS.load(Ordering::Relaxed);
+    last == 0 || voice_clock_ms().saturating_sub(last) >= ms
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct MicDeviceInfo {
@@ -106,6 +125,7 @@ impl AudioCapture {
         let config: cpal::StreamConfig = supported.clone().into();
         self.sample_rate = native_rate;
         FRAME.store(0, Ordering::Relaxed);
+        LAST_VOICE_MS.store(0, Ordering::Relaxed);
 
         log::info!(
             "Audio: {:?} @ {}Hz {}ch {:?} (preferred={:?})",
@@ -121,8 +141,10 @@ impl AudioCapture {
         let buffer_clone = buffer.clone();
         self.pcm_buffer = Some(buffer);
         self.pcm_tx = Some(sender.clone());
-        let resample_state = Arc::new(Mutex::new(0.0f64));
-        let resample_state_clone = resample_state.clone();
+        let resampler = Arc::new(Mutex::new(Resampler::new(
+            native_rate as f64 / TARGET_RATE as f64,
+        )));
+        let resampler_clone = resampler.clone();
         let agc_gain = Arc::new(Mutex::new(1.0f32));
         let agc_gain_clone = agc_gain.clone();
         // Low starter peak so the *first* utterance opens on the absolute floor
@@ -144,7 +166,7 @@ impl AudioCapture {
                             data,
                             channels,
                             ratio,
-                            &resample_state_clone,
+                            &resampler_clone,
                             &agc_gain_clone,
                             &gate_clone,
                             &buffer_clone,
@@ -168,7 +190,7 @@ impl AudioCapture {
                             &f32_data,
                             channels,
                             ratio,
-                            &resample_state_clone,
+                            &resampler_clone,
                             &agc_gain_clone,
                             &gate_clone,
                             &buffer_clone,
@@ -194,7 +216,7 @@ impl AudioCapture {
                             &f32_data,
                             channels,
                             ratio,
-                            &resample_state_clone,
+                            &resampler_clone,
                             &agc_gain_clone,
                             &gate_clone,
                             &buffer_clone,
@@ -220,7 +242,7 @@ impl AudioCapture {
                             &f32_data,
                             channels,
                             ratio,
-                            &resample_state_clone,
+                            &resampler_clone,
                             &agc_gain_clone,
                             &gate_clone,
                             &buffer_clone,
@@ -380,7 +402,7 @@ fn process_f32(
     data: &[f32],
     channels: u16,
     ratio: f64,
-    resample_pos: &Arc<Mutex<f64>>,
+    resampler: &Arc<Mutex<Resampler>>,
     agc_gain: &Arc<Mutex<f32>>,
     gate: &Arc<Mutex<SttGate>>,
     buffer: &Arc<Mutex<Vec<i16>>>,
@@ -410,7 +432,7 @@ fn process_f32(
             .map(|&s| (s.clamp(-1.0, 1.0) * 32767.0) as i16)
             .collect()
     } else {
-        resample_linear(&gained, ratio, resample_pos)
+        resampler.lock().unwrap().process(&gained)
     };
 
     let mut buf = buffer.lock().unwrap();
@@ -429,7 +451,11 @@ fn apply_near_field_gate(
     sample_rate: u32,
 ) -> Vec<f32> {
     let mut g = gate.lock().unwrap();
-    apply_near_field_gate_inner(samples, &mut g, sample_rate)
+    let out = apply_near_field_gate_inner(samples, &mut g, sample_rate);
+    if g.voiced {
+        LAST_VOICE_MS.store(voice_clock_ms(), Ordering::Relaxed);
+    }
+    out
 }
 
 fn apply_near_field_gate_inner(
@@ -484,6 +510,7 @@ fn apply_near_field_gate_inner(
     }
 
     let pass = gate.open;
+    gate.voiced = pass && level >= close_thresh;
     if pass {
         samples.to_vec()
     } else {
@@ -575,21 +602,85 @@ fn apply_soft_agc(samples: &[f32], gain_state: &Arc<Mutex<f32>>) -> Vec<f32> {
         .collect()
 }
 
-fn resample_linear(input: &[f32], ratio: f64, pos: &Arc<Mutex<f64>>) -> Vec<i16> {
-    let mut p = pos.lock().unwrap();
-    let mut out = Vec::new();
-    while *p < input.len() as f64 - 1.0 {
-        let i = *p as usize;
-        let frac = (*p - i as f64) as f32;
-        let sample = input[i] * (1.0 - frac) + input[i + 1] * frac;
-        out.push((sample.clamp(-1.0, 1.0) * 32767.0) as i16);
-        *p += ratio;
+const RESAMPLE_ZERO_CROSSINGS: f64 = 14.0;
+/// Fraction of the lower Nyquist kept flat; the rest is the filter's transition band.
+const RESAMPLE_CUTOFF: f64 = 0.95;
+const RESAMPLE_OVERSAMPLE: usize = 64;
+
+/// Streaming windowed-sinc resampler to `TARGET_RATE`. Linear interpolation folds
+/// everything above 8 kHz (fan noise, sibilant harmonics) back into the speech
+/// band; low-passing at the kernel stage removes it before decimation.
+struct Resampler {
+    ratio: f64,
+    half: usize,
+    kernel: Vec<f32>,
+    buf: Vec<f32>,
+    pos: f64,
+}
+
+impl Resampler {
+    fn new(ratio: f64) -> Self {
+        let g = RESAMPLE_CUTOFF * ratio.recip().min(1.0);
+        let half = (RESAMPLE_ZERO_CROSSINGS / g).ceil() as usize;
+        let steps = half * RESAMPLE_OVERSAMPLE;
+        let kernel = (0..=steps + 1)
+            .map(|i| {
+                let x = i as f64 / RESAMPLE_OVERSAMPLE as f64;
+                let z = std::f64::consts::PI * g * x;
+                let sinc = if z.abs() < 1e-9 { 1.0 } else { z.sin() / z };
+                let t = (x / half as f64).min(1.0);
+                let w = 0.35875
+                    + 0.48829 * (std::f64::consts::PI * t).cos()
+                    + 0.14128 * (2.0 * std::f64::consts::PI * t).cos()
+                    + 0.01168 * (3.0 * std::f64::consts::PI * t).cos();
+                (g * sinc * w) as f32
+            })
+            .collect();
+        Self {
+            ratio,
+            half,
+            kernel,
+            // Leading zeros stand in for the signal before the first sample.
+            buf: vec![0.0; half],
+            pos: half as f64,
+        }
     }
-    *p -= input.len() as f64;
-    if *p < 0.0 {
-        *p = 0.0;
+
+    fn process(&mut self, input: &[f32]) -> Vec<i16> {
+        self.buf.extend_from_slice(input);
+        let half = self.half as f64;
+        let len = self.buf.len() as f64;
+        let os = RESAMPLE_OVERSAMPLE;
+        let mut out = Vec::with_capacity((input.len() as f64 / self.ratio) as usize + 2);
+        while self.pos + half < len {
+            // The sub-sample phase is the same for every tap on one side of
+            // the output point, so the kernel interpolation weight is hoisted.
+            let i0 = self.pos.floor();
+            let pf = self.pos - i0;
+            let i0 = i0 as usize;
+            let mut acc = 0.0f32;
+
+            let a = pf * os as f64;
+            let (ai, af) = (a as usize, (a - a.floor()) as f32);
+            for k in 0..=(half - pf).floor() as usize {
+                let i = ai + k * os;
+                acc += self.buf[i0 - k] * (self.kernel[i] + (self.kernel[i + 1] - self.kernel[i]) * af);
+            }
+            let b = (1.0 - pf) * os as f64;
+            let (bi, bf) = (b as usize, (b - b.floor()) as f32);
+            for k in 0..=(half - 1.0 + pf).floor() as usize {
+                let i = bi + k * os;
+                acc += self.buf[i0 + 1 + k] * (self.kernel[i] + (self.kernel[i + 1] - self.kernel[i]) * bf);
+            }
+
+            out.push((acc.clamp(-1.0, 1.0) * 32767.0).round() as i16);
+            self.pos += self.ratio;
+        }
+        let drop = (self.pos - half).floor().max(0.0) as usize;
+        self.buf.drain(..drop);
+        self.pos -= drop as f64;
+        out
     }
-    out
 }
 
 fn compute_bars(samples: &[f32], n: usize, frame: u64) -> Vec<f32> {
@@ -756,6 +847,19 @@ mod gate_tests {
     }
 
     #[test]
+    fn voiced_drops_at_once_when_speech_stops_even_inside_the_hangover() {
+        let mut gate = SttGate::new();
+        let speech = tone(160, 0.3);
+        let _ = apply_near_field_gate_inner(&speech, &mut gate, 16000);
+        assert!(gate.voiced, "loud speech frame is voiced");
+        let silence = vec![0.0f32; 160];
+        let out = apply_near_field_gate_inner(&silence, &mut gate, 16000);
+        assert!(gate.open, "hangover keeps the gate open");
+        assert!(!passed(&out) || !gate.voiced);
+        assert!(!gate.voiced, "but the frame is no longer speech");
+    }
+
+    #[test]
     fn quieter_continuation_stays_open_after_loud_start() {
         let mut gate = SttGate::new();
         let loud = tone(160, 0.55);
@@ -851,5 +955,142 @@ mod gate_tests {
             bars.iter().any(|&v| v > 0.2),
             "close-mic speech should drive a live waveform, got {bars:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod resample_tests {
+    use super::*;
+    use std::time::Instant;
+
+    /// The previous linear-interpolation path, kept only as the comparison baseline.
+    fn linear_baseline(input: &[f32], ratio: f64, pos: &mut f64) -> Vec<i16> {
+        let mut out = Vec::new();
+        while *pos < input.len() as f64 - 1.0 {
+            let i = *pos as usize;
+            let frac = (*pos - i as f64) as f32;
+            let s = input[i] * (1.0 - frac) + input[i + 1] * frac;
+            out.push((s.clamp(-1.0, 1.0) * 32767.0) as i16);
+            *pos += ratio;
+        }
+        *pos -= input.len() as f64;
+        if *pos < 0.0 {
+            *pos = 0.0;
+        }
+        out
+    }
+
+    fn sine(rate: u32, hz: f64, secs: f64, amp: f32) -> Vec<f32> {
+        (0..(rate as f64 * secs) as usize)
+            .map(|i| amp * (2.0 * std::f64::consts::PI * hz * i as f64 / rate as f64).sin() as f32)
+            .collect()
+    }
+
+    fn rms_db(s: &[i16], skip: usize) -> f64 {
+        let body = &s[skip..s.len() - skip];
+        let ms = body.iter().map(|&v| (v as f64 / 32768.0).powi(2)).sum::<f64>() / body.len() as f64;
+        10.0 * ms.max(1e-20).log10()
+    }
+
+    fn run_new(rate: u32, x: &[f32]) -> Vec<i16> {
+        Resampler::new(rate as f64 / TARGET_RATE as f64).process(x)
+    }
+
+    fn run_old(rate: u32, x: &[f32]) -> Vec<i16> {
+        linear_baseline(x, rate as f64 / TARGET_RATE as f64, &mut 0.0)
+    }
+
+    #[test]
+    fn passband_is_flat() {
+        for rate in [48_000u32, 44_100, 32_000] {
+            for hz in [200.0, 1000.0, 3000.0, 5000.0, 6500.0] {
+                let x = sine(rate, hz, 1.0, 0.5);
+                let want = 20.0 * (0.5f64 / 2f64.sqrt()).log10();
+                let got = rms_db(&run_new(rate, &x), 400);
+                assert!((got - want).abs() < 0.3, "{rate}Hz {hz}Hz: {got:.2} dB vs {want:.2} dB");
+            }
+        }
+    }
+
+    #[test]
+    fn out_of_band_tones_do_not_alias() {
+        for rate in [48_000u32, 44_100] {
+            for hz in [10_000.0, 12_000.0, 15_000.0, 20_000.0, 22_000.0] {
+                let x = sine(rate, hz, 1.0, 0.5);
+                let new = rms_db(&run_new(rate, &x), 400);
+                let old = rms_db(&run_old(rate, &x), 400);
+                println!("{rate}Hz in, {hz:>7.0}Hz tone: linear {old:>7.1} dB -> sinc {new:>7.1} dB");
+                assert!(new < -70.0, "{rate}Hz {hz}Hz leaked at {new:.1} dB");
+            }
+        }
+    }
+
+    #[test]
+    fn chunked_stream_matches_one_shot() {
+        let x: Vec<f32> = (0..48_000)
+            .map(|i| 0.3 * ((i as f32 * 0.07).sin() + (i as f32 * 0.91).sin()))
+            .collect();
+        for rate_ratio in [3.0, 2.75625] {
+            let whole = Resampler::new(rate_ratio).process(&x);
+            let mut r = Resampler::new(rate_ratio);
+            let mut chunked = Vec::new();
+            let mut i = 0;
+            let mut n = 1;
+            while i < x.len() {
+                let end = (i + n).min(x.len());
+                chunked.extend(r.process(&x[i..end]));
+                i = end;
+                n = (n * 7 + 3) % 1500 + 1;
+            }
+            // Trim points move the f64 position by an ulp, so allow 1 LSB.
+            assert_eq!(whole.len(), chunked.len(), "ratio {rate_ratio}");
+            let worst = whole.iter().zip(&chunked).map(|(a, b)| (*a as i32 - *b as i32).abs()).max();
+            assert!(worst <= Some(1), "ratio {rate_ratio}: worst diff {worst:?}");
+        }
+    }
+
+    #[test]
+    fn output_length_tracks_input() {
+        let out = run_new(48_000, &vec![0.1; 48_000]);
+        assert!((out.len() as i64 - 16_000).abs() <= 20, "{}", out.len());
+    }
+
+    /// cargo test --release resample_bench -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn resample_bench() {
+        for rate in [48_000u32, 44_100] {
+            let secs = 60.0;
+            let mut x = sine(rate, 440.0, secs, 0.3);
+            for (i, v) in x.iter_mut().enumerate() {
+                *v += 0.05 * ((i as f32 * 12.9898).sin() * 43758.545).fract();
+            }
+            let chunk = (rate / 100) as usize; // 10 ms audio callback
+            let ratio = rate as f64 / TARGET_RATE as f64;
+
+            let mut pos = 0.0;
+            let t = Instant::now();
+            let mut n_old = 0;
+            for c in x.chunks(chunk) {
+                n_old += linear_baseline(c, ratio, &mut pos).len();
+            }
+            let old = t.elapsed();
+
+            let mut r = Resampler::new(ratio);
+            let t = Instant::now();
+            let mut n_new = 0;
+            let mut worst = std::time::Duration::ZERO;
+            for c in x.chunks(chunk) {
+                let s = Instant::now();
+                n_new += r.process(c).len();
+                worst = worst.max(s.elapsed());
+            }
+            let new = t.elapsed();
+            println!(
+                "{rate}Hz, {secs}s audio: linear {old:?} ({:.4}% of one core) | sinc {new:?} ({:.4}% of one core), worst 10ms callback {worst:?} | out {n_old}/{n_new} samples",
+                old.as_secs_f64() / secs * 100.0,
+                new.as_secs_f64() / secs * 100.0,
+            );
+        }
     }
 }

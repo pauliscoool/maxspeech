@@ -4,6 +4,18 @@ pub struct ForegroundApp {
     pub title: String,
 }
 
+/// Raw foreground window handle (0 when unknown / not Windows).
+#[cfg(windows)]
+pub fn foreground_hwnd() -> isize {
+    use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+    unsafe { GetForegroundWindow().0 as isize }
+}
+
+#[cfg(not(windows))]
+pub fn foreground_hwnd() -> isize {
+    0
+}
+
 #[cfg(windows)]
 pub fn get_foreground_app() -> Option<ForegroundApp> {
     use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;

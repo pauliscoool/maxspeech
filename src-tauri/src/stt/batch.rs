@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::time::Duration;
 
 use crate::secrets;
 
@@ -14,6 +15,47 @@ pub struct TranscriptionResult {
 pub struct SpeakerSegment {
     pub speaker: String,
     pub text: String,
+}
+
+const BATCH_ATTEMPTS: u32 = 2;
+
+/// Per-request deadline: a fixed floor plus time to upload the WAV on a slow link.
+pub fn request_timeout(bytes: usize) -> Duration {
+    let audio_secs = (bytes / 32_000) as u64;
+    Duration::from_secs((20 + audio_secs / 2).min(90))
+}
+
+/// POST the audio, retrying network errors, 408, 429 and 5xx once so a flaky
+/// connection doesn't fail a dictation that would succeed a second later.
+async fn send_with_retry(
+    client: &reqwest::Client,
+    url: &str,
+    api_key: &str,
+    mime: &str,
+    data: &[u8],
+) -> Result<reqwest::Response, reqwest::Error> {
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        let res = client
+            .post(url)
+            .header("Authorization", format!("Token {}", api_key))
+            .header("Content-Type", mime)
+            .body(data.to_vec())
+            .send()
+            .await;
+        let retryable = match &res {
+            Ok(r) => {
+                let c = r.status().as_u16();
+                c == 408 || c == 429 || c >= 500
+            }
+            Err(_) => true,
+        };
+        if !retryable || attempt >= BATCH_ATTEMPTS {
+            return res;
+        }
+        tokio::time::sleep(Duration::from_secs(attempt as u64)).await;
+    }
 }
 
 pub async fn transcribe(
@@ -67,18 +109,15 @@ pub async fn transcribe_with_language_and_keyterms(
         url.push_str(&urlenc(t));
     }
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(request_timeout(data.len()))
+        .build()?;
     let mut last_err: Option<String> = None;
     let mut body: Option<serde_json::Value> = None;
 
     for (i, api_key) in secrets::deepgram_key_candidates().into_iter().enumerate() {
-        let resp = client
-            .post(&url)
-            .header("Authorization", format!("Token {}", api_key))
-            .header("Content-Type", mime)
-            .body(data.clone())
-            .send()
-            .await;
+        let resp = send_with_retry(&client, &url, &api_key, mime, &data).await;
 
         match resp {
             Ok(resp) => {

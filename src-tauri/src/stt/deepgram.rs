@@ -1,6 +1,8 @@
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 
@@ -10,6 +12,8 @@ use crate::secrets;
 static LAST_GOOD_KEY: Mutex<Option<String>> = Mutex::new(None);
 
 /// High-value English terms that ASR often mangles; merged with the user dictionary as keyterms.
+/// Only distinctive names belong here. Boosting everyday words ("get"→Git, "cloud",
+/// "react", "rust", "percent") makes Deepgram hear them when the speaker never said them.
 /// NOTE: deliberately does NOT include "MaxSpeech" — boosting the app's own name
 /// biases ASR toward hearing it for near-homophones (e.g. "Maximus Dev" → "MaxSpeech").
 const BUILTIN_KEYTERMS: &[&str] = &[
@@ -19,7 +23,6 @@ const BUILTIN_KEYTERMS: &[&str] = &[
     "Claude",
     "ChatGPT",
     // Version control — ASR loves "Git" → "get"
-    "Git",
     "GitHub",
     "GitLab",
     "gitignore",
@@ -45,11 +48,9 @@ const BUILTIN_KEYTERMS: &[&str] = &[
     "Docker",
     "Kubernetes",
     "AWS",
-    "React",
     "Next.js",
     "Node.js",
     "Python",
-    "Rust",
     "VS Code",
     "Copilot",
     "Anthropic",
@@ -58,29 +59,17 @@ const BUILTIN_KEYTERMS: &[&str] = &[
     "MongoDB",
     "npm",
     "Vite",
-    "Windows",
     "macOS",
     "Linux",
     "Notion",
-    "Slack",
     "Discord",
     "Figma",
-    "Linear",
-    // Gaming / mods — before Cursor so "curse forge" isn't biased to "Cursor".
+    // Gaming / mods.
     "CurseForge",
-    "Curse Forge",
-    "Forge",
-    // Percents — ASR often hears "percent" as "times".
-    "percent",
-    "percentage",
-    "%",
-    "Cursor",
     // Product — ASR hears "Covenant Core" as Court / Corner.
     "Covenant Core",
-    "CovenantCore",
     // Product — ASR hears "Tailscale" as "tail scale" / "tale scale".
     "Tailscale",
-    "Tail Scale",
 ];
 
 #[derive(Debug, Clone)]
@@ -93,7 +82,7 @@ pub struct DeepgramConfig {
 
 /// Merge user dictionary terms with built-in keyterms (deduped, capped for URL size).
 /// User terms come first so personal names win; builtins always get reserved slots
-/// so a large dictionary cannot drop Git / TypeScript / CurseForge / etc.
+/// so a large dictionary cannot drop GitHub / TypeScript / CurseForge / etc.
 pub fn merge_keyterms(user: Vec<String>) -> Vec<String> {
     const MAX: usize = 80;
     let mut out: Vec<String> = Vec::new();
@@ -273,6 +262,7 @@ struct DgResponse {
     channel: Option<DgChannel>,
     is_final: Option<bool>,
     speech_final: Option<bool>,
+    from_finalize: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -290,6 +280,9 @@ pub struct TranscriptChunk {
     pub text: String,
     pub is_final: bool,
 }
+
+/// Longest wait for the last results after release before falling back to the recording.
+const STOP_DRAIN_CAP_MS: u64 = 3_500;
 
 type WsStream = tokio_tungstenite::WebSocketStream<
     tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
@@ -409,12 +402,34 @@ async fn connect_with_fallback(
     Err(last_err.unwrap_or_else(|| "Deepgram connect failed".into()))
 }
 
+/// Keep consuming mic audio until the user stops. When the connection is down the
+/// session must still last until release, otherwise the pipeline would finish
+/// (and paste a partial transcript) while the user is still talking.
+async fn drain_until_stop(
+    audio_rx: &mut mpsc::UnboundedReceiver<Vec<i16>>,
+    stop_rx: &mut mpsc::Receiver<()>,
+) {
+    loop {
+        tokio::select! {
+            chunk = audio_rx.recv() => {
+                if chunk.is_none() {
+                    break;
+                }
+            }
+            _ = stop_rx.recv() => break,
+        }
+    }
+}
+
+/// Streams mic audio to Deepgram. Returns `Ok(true)` only when the live transcript
+/// is known complete; `Ok(false)` means the connection dropped or the tail never
+/// arrived and the caller should re-transcribe the recording.
 pub async fn stream_audio(
     mut config: DeepgramConfig,
     mut audio_rx: mpsc::UnboundedReceiver<Vec<i16>>,
     transcript_tx: mpsc::UnboundedSender<TranscriptChunk>,
     mut stop_rx: mpsc::Receiver<()>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
     let mut candidates = if config.api_key.is_empty() {
         secrets::deepgram_key_candidates()
     } else {
@@ -438,13 +453,29 @@ pub async fn stream_audio(
 
     // Drain mic PCM *during* TLS/WS so the first seconds are not sitting
     // unconsumed (and never dropped) while the handshake runs.
+    let started = Instant::now();
     let mut pending: Vec<Vec<i16>> = Vec::new();
-    let connect = connect_with_fallback(&mut config, candidates);
+    let connect = tokio::time::timeout(
+        Duration::from_secs(8),
+        connect_with_fallback(&mut config, candidates),
+    );
     tokio::pin!(connect);
     let ws_stream = loop {
         tokio::select! {
             biased;
-            res = &mut connect => break res?,
+            res = &mut connect => {
+                match res {
+                    Ok(Ok(ws)) => break ws,
+                    Ok(Err(e)) => {
+                        drain_until_stop(&mut audio_rx, &mut stop_rx).await;
+                        return Err(e);
+                    }
+                    Err(_) => {
+                        drain_until_stop(&mut audio_rx, &mut stop_rx).await;
+                        return Err("Deepgram connection timed out".into());
+                    }
+                }
+            }
             Some(chunk) = audio_rx.recv() => pending.push(chunk),
         }
     };
@@ -456,22 +487,43 @@ pub async fn stream_audio(
         );
     }
 
+    let connect_ms = started.elapsed().as_millis() as u64;
     let (mut write, mut read) = ws_stream.split();
+    // Milliseconds since `started`; 0 = not reached. Only feeds the timing log line.
+    let stop_at = Arc::new(AtomicU64::new(0));
 
-    let send_task = tokio::spawn(async move {
+    let stop_requested = Arc::new(AtomicBool::new(false));
+    let degraded = Arc::new(AtomicBool::new(false));
+    let finalize_ack = Arc::new(AtomicBool::new(false));
+    let interim_pending = Arc::new(AtomicBool::new(false));
+
+    let send_task = {
+        let stop_requested = stop_requested.clone();
+        let degraded = degraded.clone();
+        let stop_at = stop_at.clone();
+        tokio::spawn(async move {
+        let mut offline = false;
         for chunk in pending {
             if write.send(pcm_binary(&chunk)).await.is_err() {
-                return;
+                offline = true;
+                degraded.store(true, Ordering::SeqCst);
+                break;
             }
         }
         loop {
             tokio::select! {
                 Some(audio_chunk) = audio_rx.recv() => {
-                    if write.send(pcm_binary(&audio_chunk)).await.is_err() {
-                        break;
+                    if !offline && write.send(pcm_binary(&audio_chunk)).await.is_err() {
+                        offline = true;
+                        degraded.store(true, Ordering::SeqCst);
                     }
                 }
                 _ = stop_rx.recv() => {
+                    stop_requested.store(true, Ordering::SeqCst);
+                    stop_at.store((started.elapsed().as_millis() as u64).max(1), Ordering::SeqCst);
+                    if offline {
+                        break;
+                    }
                     // Drain trailing PCM (hotkey-release trail + in-flight chunks)
                     // before Finalize so Deepgram still hears word endings.
                     loop {
@@ -483,20 +535,16 @@ pub async fn stream_audio(
                         {
                             Ok(Some(audio_chunk)) => {
                                 if write.send(pcm_binary(&audio_chunk)).await.is_err() {
+                                    degraded.store(true, Ordering::SeqCst);
                                     break;
                                 }
                             }
                             Ok(None) | Err(_) => break,
                         }
                     }
-                    // Ask Deepgram to flush finals for the last utterance, wait
-                    // briefly for them on the read side, then close.
-                    let _ = write
-                        .send(Message::Text(r#"{"type":"Finalize"}"#.into()))
-                        .await;
-                    // Finalize is not instant — last-word Results often arrive
-                    // after ~endpointing, not in the first hundred milliseconds.
-                    tokio::time::sleep(std::time::Duration::from_millis(750)).await;
+                    // CloseStream alone flushes every remaining result before Deepgram closes
+                    // the socket. Measured ~110ms vs ~270ms for Finalize + waiting on its ack,
+                    // and it still returns the whole transcript behind an audio backlog.
                     let _ = write
                         .send(Message::Text(r#"{"type":"CloseStream"}"#.into()))
                         .await;
@@ -504,17 +552,39 @@ pub async fn stream_audio(
                 }
             }
         }
-    });
+        })
+    };
 
-    while let Some(msg) = read.next().await {
+    loop {
+        let next = if stop_requested.load(Ordering::SeqCst) {
+            let since_stop = (started.elapsed().as_millis() as u64)
+                .saturating_sub(stop_at.load(Ordering::SeqCst));
+            let left = STOP_DRAIN_CAP_MS.saturating_sub(since_stop);
+            match tokio::time::timeout(Duration::from_millis(left), read.next()).await {
+                Ok(next) => next,
+                Err(_) => {
+                    // A dead link must not hold the paste forever; the caller re-transcribes.
+                    log::warn!("Deepgram did not finish within {STOP_DRAIN_CAP_MS}ms of stop");
+                    degraded.store(true, Ordering::SeqCst);
+                    break;
+                }
+            }
+        } else {
+            read.next().await
+        };
+        let Some(msg) = next else { break };
         match msg {
             Ok(Message::Text(text)) => {
                 if let Ok(resp) = serde_json::from_str::<DgResponse>(&text) {
+                    if resp.from_finalize == Some(true) {
+                        finalize_ack.store(true, Ordering::SeqCst);
+                    }
                     if let Some(channel) = resp.channel {
                         if let Some(alt) = channel.alternatives.first() {
                             if !alt.transcript.is_empty() {
                                 let is_final = resp.is_final.unwrap_or(false)
                                     || resp.speech_final.unwrap_or(false);
+                                interim_pending.store(!is_final, Ordering::SeqCst);
                                 let _ = transcript_tx.send(TranscriptChunk {
                                     text: alt.transcript.clone(),
                                     is_final,
@@ -527,14 +597,32 @@ pub async fn stream_audio(
             Ok(Message::Close(_)) => break,
             Err(e) => {
                 log::error!("Deepgram WS error: {e}");
+                degraded.store(true, Ordering::SeqCst);
                 break;
             }
             _ => {}
         }
     }
 
-    send_task.abort();
-    Ok(())
+    // The socket ended before the user stopped: keep the session (and the local
+    // recording) alive until release so the caller can re-transcribe everything.
+    if !stop_requested.load(Ordering::SeqCst) {
+        degraded.store(true, Ordering::SeqCst);
+        let _ = send_task.await;
+    } else {
+        send_task.abort();
+    }
+    let stop_ms = stop_at.load(Ordering::SeqCst);
+    if stop_ms > 0 {
+        let drain_ms = (started.elapsed().as_millis() as u64).saturating_sub(stop_ms);
+        #[cfg(test)]
+        eprintln!("TIMING connect={connect_ms}ms stop->done={drain_ms}ms");
+        log::info!("Deepgram timing: connect={connect_ms}ms stop->done={drain_ms}ms");
+    }
+    let complete = stop_requested.load(Ordering::SeqCst)
+        && !degraded.load(Ordering::SeqCst)
+        && (finalize_ack.load(Ordering::SeqCst) || !interim_pending.load(Ordering::SeqCst));
+    Ok(complete)
 }
 
 fn urlenc(s: &str) -> String {
@@ -599,10 +687,13 @@ mod tests {
     fn merge_keyterms_includes_builtins() {
         let merged = merge_keyterms(vec![]);
         let lower: Vec<String> = merged.iter().map(|s| s.to_lowercase()).collect();
-        assert!(lower.iter().any(|s| s == "git"));
+        assert!(lower.iter().any(|s| s == "github"));
         assert!(lower.iter().any(|s| s == "typescript"));
         assert!(lower.iter().any(|s| s == "curseforge"));
-        assert!(lower.iter().any(|s| s == "percent"));
+        // Everyday words must not be boosted — they get "heard" when never said.
+        for common in ["git", "percent", "forge", "react", "rust", "cursor", "windows"] {
+            assert!(!lower.iter().any(|s| s == common), "{common} should not be a keyterm");
+        }
         assert!(lower.iter().any(|s| s == "postgres"));
         assert!(lower.iter().any(|s| s == "covenant core"));
         assert!(lower.iter().any(|s| s == "tailscale"));
@@ -624,7 +715,7 @@ mod tests {
         let merged = merge_keyterms(user);
         assert!(merged.len() <= 80);
         let lower: Vec<String> = merged.iter().map(|s| s.to_lowercase()).collect();
-        assert!(lower.iter().any(|s| s == "git"));
+        assert!(lower.iter().any(|s| s == "github"));
         assert!(lower.iter().any(|s| s == "curseforge"));
         assert!(lower.iter().any(|s| s == "name0"));
     }
@@ -718,6 +809,144 @@ mod tests {
     impl ProbeDefault for Result<(Vec<String>, std::time::Instant, std::collections::BTreeMap<String, u32>), tokio::time::error::Elapsed> {
         fn unwrap_or_default_probe(self) -> (Vec<String>, std::time::Instant, std::collections::BTreeMap<String, u32>) {
             self.unwrap_or_else(|_| (vec!["<TIMEOUT 8s>".into()], std::time::Instant::now(), Default::default()))
+        }
+    }
+}
+
+#[cfg(test)]
+mod latency_probe {
+    use super::*;
+
+    fn read_wav_pcm(path: &std::path::Path) -> Vec<i16> {
+        let bytes = std::fs::read(path).expect("read wav");
+        bytes[44..]
+            .chunks_exact(2)
+            .map(|b| i16::from_le_bytes([b[0], b[1]]))
+            .collect()
+    }
+
+    fn word_edit_distance(a: &[String], b: &[String]) -> usize {
+        let mut prev: Vec<usize> = (0..=b.len()).collect();
+        for i in 1..=a.len() {
+            let mut cur = vec![i; b.len() + 1];
+            for j in 1..=b.len() {
+                let cost = usize::from(a[i - 1] != b[j - 1]);
+                cur[j] = (prev[j] + 1).min(cur[j - 1] + 1).min(prev[j - 1] + cost);
+            }
+            prev = cur;
+        }
+        prev[b.len()]
+    }
+
+    /// Same recording through the live stream and through batch (prerecorded) Nova-3.
+    /// PROBE_WAVS=2225.wav cargo test --release --bin maxspeech compare_stream_vs_batch -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn compare_stream_vs_batch() {
+        let names = std::env::var("PROBE_WAVS").unwrap_or_else(|_| "2225.wav".into());
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        for name in names.split(',') {
+            let path = crate::recording::recordings_dir().join(name.trim());
+            let pcm = read_wav_pcm(&path);
+            let keyterms = merge_keyterms(Vec::new());
+            let (stream_text, batch_text, batch_ms) = rt.block_on(async {
+                let (audio_tx, audio_rx) = mpsc::unbounded_channel::<Vec<i16>>();
+                let (transcript_tx, mut transcript_rx) = mpsc::unbounded_channel::<TranscriptChunk>();
+                let (stop_tx, stop_rx) = mpsc::channel::<()>(1);
+                let config = DeepgramConfig { keywords: keyterms.clone(), ..Default::default() };
+                let handle = tokio::spawn(stream_audio(config, audio_rx, transcript_tx, stop_rx));
+                // Faster than real time: the transcript, not the pacing, is under test here.
+                for chunk in pcm.chunks(800) {
+                    let _ = audio_tx.send(chunk.to_vec());
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+                drop(audio_tx);
+                let _ = stop_tx.send(()).await;
+                let _ = handle.await;
+                let mut stream_text = String::new();
+                while let Ok(c) = transcript_rx.try_recv() {
+                    if c.is_final {
+                        stream_text.push_str(c.text.trim());
+                        stream_text.push(' ');
+                    }
+                }
+                let t = Instant::now();
+                let batch = crate::stt::batch::transcribe_with_language_and_keyterms(
+                    path.to_str().unwrap(),
+                    "en",
+                    &keyterms,
+                )
+                .await
+                .expect("batch");
+                (stream_text.trim().to_string(), batch.text, t.elapsed().as_millis())
+            });
+            let words = |t: &str| -> Vec<String> {
+                t.split_whitespace()
+                    .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase())
+                    .filter(|w| !w.is_empty())
+                    .collect()
+            };
+            let (a, b) = (words(&stream_text), words(&batch_text));
+            println!(
+                "CMP {name}: {:.1}s audio | stream {} words | batch {} words | word edit distance {} | batch took {batch_ms} ms",
+                pcm.len() as f64 / 16000.0,
+                a.len(),
+                b.len(),
+                word_edit_distance(&a, &b)
+            );
+            println!("CMP_STREAM {name}: {stream_text}");
+            println!("CMP_BATCH  {name}: {batch_text}");
+        }
+    }
+
+    /// Streams saved recordings in real time, releases, and times the drain.
+    /// Live network + the app's own key lookup; ignored by default.
+    /// PROBE_WAVS=2214.wav,2217.wav cargo test --release --bin maxspeech latency_probe -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn stream_recording_and_time_finalize() {
+        let names = std::env::var("PROBE_WAVS").unwrap_or_else(|_| "2214.wav".into());
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        for name in names.split(',') {
+            let path = crate::recording::recordings_dir().join(name.trim());
+            let pcm = read_wav_pcm(&path);
+            rt.block_on(async {
+                let (audio_tx, audio_rx) = mpsc::unbounded_channel::<Vec<i16>>();
+                let (transcript_tx, mut transcript_rx) = mpsc::unbounded_channel::<TranscriptChunk>();
+                let (stop_tx, stop_rx) = mpsc::channel::<()>(1);
+                let config = DeepgramConfig {
+                    keywords: merge_keyterms(Vec::new()),
+                    ..Default::default()
+                };
+                let handle = tokio::spawn(stream_audio(config, audio_rx, transcript_tx, stop_rx));
+
+                let mut tick = tokio::time::interval(Duration::from_millis(50));
+                for chunk in pcm.chunks(800) {
+                    tick.tick().await;
+                    let _ = audio_tx.send(chunk.to_vec());
+                }
+                // Same order as the app: capture stops (senders drop), then stop signal.
+                drop(audio_tx);
+                let released = Instant::now();
+                let _ = stop_tx.send(()).await;
+                let complete = handle.await.unwrap().unwrap_or(false);
+                let drain = released.elapsed();
+
+                let mut text = String::new();
+                while let Ok(c) = transcript_rx.try_recv() {
+                    if c.is_final {
+                        text.push_str(c.text.trim());
+                        text.push(' ');
+                    }
+                }
+                println!(
+                    "PROBE {name}: {:.1}s audio | release->transcript-complete {} ms | complete={complete} | {} chars",
+                    pcm.len() as f64 / 16000.0,
+                    drain.as_millis(),
+                    text.trim().len()
+                );
+                println!("PROBE_TEXT {name}: {}", text.trim());
+            });
         }
     }
 }

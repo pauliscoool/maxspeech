@@ -642,6 +642,19 @@ fn set_overlay_pill_clip(app: tauri::AppHandle, apply: bool) -> Result<(), Strin
     Ok(())
 }
 
+/// Overlay ✓ (toggle mode): finish and paste into the window dictated into.
+#[tauri::command]
+fn overlay_finish(app: tauri::AppHandle) {
+    pipeline::refocus_session_window(&app);
+    pipeline::stop_dictation(&app);
+}
+
+#[tauri::command]
+fn overlay_cancel(app: tauri::AppHandle) {
+    pipeline::refocus_session_window(&app);
+    pipeline::cancel_dictation(&app);
+}
+
 /// Park the overlay off-screen in one main-thread step (no white dismiss flash).
 #[tauri::command]
 fn park_overlay_idle(app: tauri::AppHandle) -> Result<(), String> {
@@ -831,6 +844,25 @@ async fn download_and_run_installer(app: tauri::AppHandle, url: String) -> Resul
 /// WebView scrolls the history list via Space key events).
 #[tauri::command]
 async fn remake_dictation(app: tauri::AppHandle, id: i64) -> Result<String, String> {
+    match remake_core(&app, id, None).await {
+        Ok((text, _)) => Ok(text),
+        Err(e) => {
+            pipeline::recovery::notify(&app, "Remake failed", &e);
+            Err(e)
+        }
+    }
+}
+
+/// Re-transcribe a saved recording and put the text where the user was dictating.
+/// `auto_target` is the exe that had focus during the original dictation plus the paste
+/// epoch at failure (auto-retry): if focus moved elsewhere, or the user dictated again,
+/// the text goes to the clipboard instead of a random app or a newer dictation.
+/// Returns the text and whether it was pasted.
+async fn remake_core(
+    app: &tauri::AppHandle,
+    id: i64,
+    auto_target: Option<(&str, u64)>,
+) -> Result<(String, bool), String> {
     let store = app.state::<Store>();
     let entry = store
         .get_history_by_id(id)
@@ -923,16 +955,21 @@ async fn remake_dictation(app: tauri::AppHandle, id: i64) -> Result<String, Stri
         })
         .unwrap_or(true);
 
-    if fg_is_self {
+    let target_moved = auto_target.is_some_and(|(t, epoch)| {
+        !fg.as_ref().is_some_and(|a| a.exe.eq_ignore_ascii_case(t))
+            || pipeline::dictation_moved_on(app, epoch)
+    });
+    if fg_is_self || target_moved {
         // Clicking Remake focuses MaxSpeech — don't type into the WebView.
         inject::copy_text(&saved).map_err(|e| e.to_string())?;
+        return Ok((saved, false));
     } else {
         tokio::time::sleep(std::time::Duration::from_millis(350)).await;
         let inserted = inject::inject_text(&output).map_err(|e| e.to_string())?;
         let pipeline_state = app.state::<pipeline::PipelineState>();
         *pipeline_state.last_insertion.lock().unwrap() = Some(inserted);
     }
-    Ok(saved)
+    Ok((saved, true))
 }
 
 /// History edits may change meaning, so they must not teach future dictation vocabulary.
@@ -1116,6 +1153,8 @@ fn main() {
             open_plans_modal,
             set_overlay_pill_clip,
             park_overlay_idle,
+            overlay_finish,
+            overlay_cancel,
             set_overlay_click_through,
             preview_sound_cue,
             win_update::download_and_run_installer,
@@ -1340,7 +1379,7 @@ pub(crate) fn ensure_overlay_window(app: &tauri::AppHandle) {
     }
     let builder = WebviewWindowBuilder::new(app, "overlay", WebviewUrl::App("index.html?window=overlay".into()))
         .title("MaxSpeech Overlay")
-        .inner_size(148.0, 36.0)
+        .inner_size(overlay_win::PILL_W, overlay_win::PILL_H)
         .decorations(false)
         .transparent(true)
         .always_on_top(true)

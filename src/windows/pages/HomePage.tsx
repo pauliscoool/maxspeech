@@ -147,6 +147,7 @@ export default function HomePage({
     let unlistenFocus: (() => void) | undefined;
     let unlistenHistory: (() => void) | undefined;
     let unlistenFailed: (() => void) | undefined;
+    let unlistenUpdated: (() => void) | undefined;
     void getCurrentWindow()
       .onFocusChanged(({ payload: focused }) => {
         if (focused) {
@@ -170,6 +171,12 @@ export default function HomePage({
     }).then((fn) => {
       unlistenFailed = fn;
     });
+    void listen("history-updated", () => {
+      reloadHistory();
+      onChanged();
+    }).then((fn) => {
+      unlistenUpdated = fn;
+    });
 
     // Immediate refresh on mount (e.g. navigating back to Home).
     reloadHistory();
@@ -180,6 +187,7 @@ export default function HomePage({
       unlistenFocus?.();
       unlistenHistory?.();
       unlistenFailed?.();
+      unlistenUpdated?.();
     };
   }, [search, onChanged]);
 
@@ -221,7 +229,7 @@ export default function HomePage({
     } catch {
       // ignore
     }
-    const wait = Math.max(0, 450 - (Date.now() - started));
+    const wait = Math.max(0, 120 - (Date.now() - started));
     await new Promise((r) => setTimeout(r, wait));
     setCopyState((s) => ({ ...s, [id]: "ok" }));
     setTimeout(() => {

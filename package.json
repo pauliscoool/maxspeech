@@ -1,6 +1,6 @@
 {
   "name": "maxspeech",
-  "version": "0.1.73",
+  "version": "0.3.0-beta",
   "private": true,
   "type": "module",
   "scripts": {
@@ -17,6 +17,7 @@
     "@tauri-apps/plugin-opener": "^2.2.0",
     "@tauri-apps/plugin-process": "^2.3.1",
     "@tauri-apps/plugin-updater": "^2.10.1",
+    "lucide-react": "^1.48.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   },

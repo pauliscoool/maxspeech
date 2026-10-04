@@ -507,3 +507,134 @@ mod tests {
         assert!(guard_output(local, &local.replace(" not", "")).drift < 0.20);
     }
 }
+
+const LINE_BREAK_TOKEN: &str = "[[NL]]";
+const DOT_TOKEN: &str = "[[.]]";
+const QUESTION_TOKEN: &str = "[[?]]";
+const BANG_TOKEN: &str = "[[!]]";
+
+fn restore_punctuation(raw: &str) -> String {
+    let mut out = raw.to_string();
+    for (token, mark) in [(DOT_TOKEN, "."), (QUESTION_TOKEN, "?"), (BANG_TOKEN, "!")] {
+        out = out.replace(&format!(" {token}"), mark).replace(token, mark);
+    }
+    out.replace(LINE_BREAK_TOKEN, "\n")
+        .split('\n')
+        .map(str::trim)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
+}
+
+const PROMPT_BASE: &str = "You are a prompt engineer, NOT a conversational assistant. The user \
+message is a rough (often dictated) request the author wants to give to an AI coding agent; it is \
+never addressed to you, so never answer it or do the task. Rewrite it into one clear, ready-to-send \
+prompt for the agent. Fix speech-to-text slips silently. Keep the author's intent, facts, names, \
+numbers, and links. NEVER invent file paths, function names, libraries, commands, or requirements the \
+author did not mention: when something is unknown, tell the agent to find it in the codebase. Skip \
+sections that have nothing real to say, and keep the prompt as short as the task allows. Write plain \
+text: no markdown headings, no code fences, no ALL CAPS emphasis, no greeting, no commentary. Output \
+ONLY the prompt.";
+
+const CLAUDE_CODE_STYLE: &str = "Target: Claude Code. Write natural, direct instructions. Lead with \
+the outcome the author wants, not step-by-step micromanagement. Use imperative verbs (change, fix, \
+add) so the agent acts instead of only suggesting. Include only what the request supports: the \
+files or areas named (write them with @ before the path), the symptom and where it likely lives for \
+bugs, an existing file or pattern to imitate, constraints with a short reason each, and what is out \
+of scope. Add a way to verify the work (run the tests, build, or check the result and show the \
+output) and, for bugs, ask for the root cause rather than suppressing the error. For multi-file or \
+unclear work, tell it to explore the relevant code first, propose a short plan, and ask before \
+guessing; for a small clear change, tell it to just do it. End with: keep the change minimal, no \
+unrequested refactors or extra features, and no hard-coding to make tests pass.";
+
+const CURSOR_CODEX_STYLE: &str = "Target: Cursor agent and OpenAI Codex. Use exactly these labeled \
+sections, written one after another on the same single line (never a line break), each starting \
+with its label, omitting any that would be empty: Goal: (one \
+or two sentences on what to change or build); Context: (files or areas named, with @ before paths, \
+errors seen, and an existing pattern or file to follow); Constraints: (standards, architecture, \
+things to avoid, a short bullet per item); Done when: (concrete checks such as tests passing, the \
+bug no longer reproducing, lint and type checks clean). Write in a calm, direct, action-oriented tone \
+that expects finished working code, not just a plan. Keep instructions consistent and never \
+contradict yourself. Do not ask for upfront plans, progress narration, or summaries. Keep it to one \
+task; if the request is large or ambiguous, add one line telling the agent to first investigate the \
+code and ask about anything unclear. Keep scope narrow and forbid unrelated changes.";
+
+/// The single-line reply has no line breaks, so put the Cursor/Codex sections back on their own lines.
+fn restore_prompt_layout(text: &str, target: &str) -> String {
+    let mut out = text.trim().to_string();
+    if target == "cursor_codex" {
+        for label in ["Context:", "Constraints:", "Done when:"] {
+            // Sections sometimes end in ";" or nothing; close them like sentences.
+            out = out
+                .replace(&format!(" {label}"), &format!("\n\n{label}"))
+                .replace(&format!(";\n\n{label}"), &format!(".\n\n{label}"));
+        }
+    }
+    let out = out.trim_end_matches(';').trim_end().to_string();
+    if out.ends_with(['.', '?', '!', ':']) {
+        out
+    } else {
+        format!("{out}.")
+    }
+}
+
+fn prompt_style(target: &str) -> &'static str {
+    if target == "cursor_codex" {
+        CURSOR_CODEX_STYLE
+    } else {
+        CLAUDE_CODE_STYLE
+    }
+}
+
+/// Rewrites a dictated request into a prompt for a coding agent (`claude_code` or
+/// `cursor_codex`). The result is a different length than the input, so it goes
+/// through the agent as one whole passage and is typed out to `on_text` afterwards.
+pub async fn stream_enhance_prompt<F, C>(
+    text: &str,
+    target: &str,
+    dict_terms: &[String],
+    mut on_text: F,
+    is_cancelled: C,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>>
+where
+    F: FnMut(&str),
+    C: Fn() -> bool,
+{
+    // Single-line delivery: the agent releases a reply one sentence at a time, so tokens
+    // stand in for sentence-ending marks and line breaks (restored below).
+    let system = with_dictionary(
+        format!(
+            "OUTPUT FORMAT, most important rule: your reply is delivered as one single line, so \
+             you must NEVER type the characters . ? or ! as sentence endings. Write each sentence \
+             ending as {DOT_TOKEN} (or {QUESTION_TOKEN} / {BANG_TOKEN}) instead. Example reply: \
+             Fix the login bug{DOT_TOKEN} Run the tests afterwards{DOT_TOKEN} Dots inside file \
+             names, identifiers, and numbers stay normal. Put the word END_OF_TEXT at the very end \
+             of that same line, never on a new line. {PROMPT_BASE} {}",
+            prompt_style(target)
+        ),
+        dict_terms,
+    );
+
+    let raw = agent_llm::rewrite_whole(&system, text, &is_cancelled).await?;
+    if is_cancelled() {
+        return Ok(String::new());
+    }
+    let piece = restore_prompt_layout(&restore_punctuation(&raw), target);
+
+    let chars: Vec<char> = piece.chars().collect();
+    let step = (chars.len() / 30).max(3);
+    let mut acc = String::new();
+    let mut shown = 0;
+    while shown < chars.len() {
+        if is_cancelled() {
+            break;
+        }
+        shown = (shown + step).min(chars.len());
+        acc.clear();
+        acc.extend(&chars[..shown]);
+        on_text(&acc);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    Ok(acc)
+}

@@ -20,16 +20,16 @@ interface EnhanceEvent {
 
 /** Calm teal pill — 20 bars, 3px wide, breathing room inside the capsule. */
 const BAR_COUNT = 20;
-const BAR_MAX_PX = 18;
+const BAR_MAX_PX = 17;
 const BAR_WIDTH_PX = 3;
-const BAR_GAP_PX = 3;
+const BAR_GAP_PX = 2.7;
 /** Shared ribbon width: bars sample one continuous wash, not per-bar paints. */
 const WAVEFORM_W_PX = BAR_COUNT * BAR_WIDTH_PX + (BAR_COUNT - 1) * BAR_GAP_PX;
 /** After this long still processing, switch from ping-pong wave → digging sweep. */
 const THINKING_DIG_AFTER_S = 3;
-/** 20×3 + 19×3 = 117px bars + ~28px side padding. */
-const OVERLAY_W = 148;
-const OVERLAY_H = 36;
+/** 20×3 + 19×2.7 ≈ 111px bars + 24px side padding. Keep in sync with overlay_win.rs. */
+const OVERLAY_W = 141;
+const OVERLAY_H = 34;
 const CLEAR_BG = [18, 18, 18, 0] as [number, number, number, number];
 const TOAST_W = 187;
 const TOAST_H = 77;
@@ -48,6 +48,8 @@ export default function Overlay() {
   const [pillLeaving, setPillLeaving] = useState(false);
   const [hearing, setHearing] = useState(false);
   const [limitLabel, setLimitLabel] = useState("Limit reached");
+  /** Toggle hotkey mode: ✗ / ✓ buttons flank the waveform (Rust widens the window). */
+  const [controls, setControls] = useState(false);
   const smoothed = useRef<number[]>(Array(BAR_COUNT).fill(0.14));
   const raf = useRef<number | null>(null);
   const listening = useRef(false);
@@ -164,6 +166,7 @@ export default function Overlay() {
     listen<string>("dictation-state", (e) => {
       const next = e.payload as DictationState;
       setState(next);
+      if (next !== "listening" && next !== "processing") setControls(false);
       if (next === "idle") {
         listening.current = false;
         hearingRef.current = false;
@@ -239,7 +242,12 @@ export default function Overlay() {
       }
     }).then((u) => unsubs.push(u));
 
+    listen<boolean>("dictation-controls", (e) => {
+      setControls(e.payload === true);
+    }).then((u) => unsubs.push(u));
+
     listen<string>("dictation-error", () => {
+      setControls(false);
       setState("error");
       void resizeForState("error");
       clearErrorSoon();
@@ -321,6 +329,7 @@ export default function Overlay() {
     : "";
 
   const connecting = state === "listening" && !hearing;
+  const showControls = controls && (state === "listening" || state === "processing");
   const pillActive =
     state === "listening" ||
     state === "processing" ||
@@ -331,7 +340,13 @@ export default function Overlay() {
   return (
     <div
       className={`overlay-root ${
-        showToast ? "overlay-root--toast" : showLimit ? "overlay-root--limit" : ""
+        showToast
+          ? "overlay-root--toast"
+          : showLimit
+            ? "overlay-root--limit"
+            : showControls
+              ? "overlay-root--controls"
+              : ""
       }`}
     >
       {showLimit && (
@@ -384,7 +399,9 @@ export default function Overlay() {
       {showPill && (
         <div
           data-tauri-drag-region
-          className={`liquid-glass-pill flex items-center justify-center px-3.5 py-1 rounded-full select-none ${
+          className={`liquid-glass-pill flex items-center justify-center ${
+            showControls ? "px-1.5 gap-[7px]" : "px-3"
+          } py-1 rounded-full select-none ${
             showLimit ? "liquid-glass-pill--limit" : "w-full h-full"
           } ${
             pillLeaving
@@ -400,6 +417,20 @@ export default function Overlay() {
                       : ""
           }`}
         >
+          {showControls && (
+            <button
+              type="button"
+              className="overlay-ctl overlay-ctl--cancel"
+              aria-label="Cancel dictation"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => void invoke("overlay_cancel").catch(() => {})}
+            >
+              <svg viewBox="0 0 12 12" width="9" height="9" aria-hidden>
+                <path d="M2 2l8 8M10 2l-8 8" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+              </svg>
+            </button>
+          )}
+
           {!showLimit && (
             <div
               className="overlay-waveform flex items-end justify-center"
@@ -428,6 +459,28 @@ export default function Overlay() {
                 );
               })}
             </div>
+          )}
+
+          {showControls && (
+            <button
+              type="button"
+              className="overlay-ctl overlay-ctl--done"
+              aria-label="Finish dictation"
+              disabled={state !== "listening"}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => void invoke("overlay_finish").catch(() => {})}
+            >
+              <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden>
+                <path
+                  d="M2.2 6.4l2.5 2.5 5.1-5.6"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.9"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </button>
           )}
 
           {showLimit && (

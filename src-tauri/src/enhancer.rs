@@ -14,8 +14,8 @@ use crate::pipeline::{self, tone};
 use crate::store::Store;
 
 const LABEL: &str = "enhancer";
-const WIDGET_W: f64 = 440.0;
-const WIDGET_H: f64 = 330.0;
+const WIDGET_W: f64 = 352.0;
+const WIDGET_H: f64 = 264.0;
 const GAP_PX: i32 = 14;
 const DEFAULT_FORMALITY: &str = "neutral";
 
@@ -24,6 +24,7 @@ struct Session {
     result: String,
     error: Option<String>,
     target_hwnd: isize,
+    suggested: Option<&'static str>,
 }
 
 static SESSION: Mutex<Session> = Mutex::new(Session {
@@ -31,6 +32,7 @@ static SESSION: Mutex<Session> = Mutex::new(Session {
     result: String::new(),
     error: None,
     target_hwnd: 0,
+    suggested: None,
 });
 /// Bumped on every new stream / close so stale streams stop emitting.
 static RUN: AtomicU64 = AtomicU64::new(0);
@@ -61,8 +63,29 @@ fn normalize_formality(raw: &str) -> &'static str {
         "casual" => "casual",
         "professional" => "professional",
         "formal" => "formal",
+        "claude_code" => "claude_code",
+        "cursor_codex" => "cursor_codex",
         _ => DEFAULT_FORMALITY,
     }
+}
+
+/// Coding agents are recognised by app or window title (Claude Code runs inside a terminal).
+fn detect_agent_mode() -> Option<&'static str> {
+    let app = crate::context::get_foreground_app()?;
+    let exe = app.exe.to_lowercase();
+    let title = app.title.to_lowercase();
+    if title.contains("claude code") || (exe.starts_with("claude") && title.contains("code")) {
+        Some("claude_code")
+    } else if exe.starts_with("cursor") || exe.starts_with("codex") || title.contains("codex") {
+        Some("cursor_codex")
+    } else {
+        None
+    }
+}
+
+/// Modes that rewrite the text into a coding-agent prompt instead of editing its tone.
+fn is_prompt_mode(mode: &str) -> bool {
+    matches!(mode, "claude_code" | "cursor_codex")
 }
 
 fn stored_formality(app: &AppHandle) -> String {
@@ -152,6 +175,30 @@ fn make_no_activate(w: &tauri::WebviewWindow) {
 #[cfg(not(windows))]
 fn make_no_activate(_w: &tauri::WebviewWindow) {}
 
+/// Blur whatever is behind the widget; the CSS tint keeps it readable when
+/// the OS can't (older Windows just gets the tint).
+#[cfg(windows)]
+fn apply_glass(app: &AppHandle, w: &tauri::WebviewWindow) {
+    // Tint follows the app theme so the glass matches Dark / Gray / Light.
+    let tint = match app
+        .state::<Store>()
+        .get_setting("ui_theme")
+        .ok()
+        .flatten()
+        .as_deref()
+    {
+        Some("light") => (238, 240, 244, 90),
+        Some("gray") => (40, 40, 44, 80),
+        _ => (6, 6, 8, 80),
+    };
+    if let Err(e) = window_vibrancy::apply_acrylic(w, Some(tint)) {
+        log::warn!("Acrylic backdrop unavailable: {e}");
+    }
+}
+
+#[cfg(not(windows))]
+fn apply_glass(_app: &AppHandle, _w: &tauri::WebviewWindow) {}
+
 /// Place the widget above the caret (or mouse pointer), clamped to its monitor.
 fn position_widget(app: &AppHandle, w: &tauri::WebviewWindow, target: isize) {
     let (ax, ay) = caret_anchor(target).unwrap_or_else(|| {
@@ -187,6 +234,7 @@ fn position_widget(app: &AppHandle, w: &tauri::WebviewWindow, target: isize) {
 
 fn show_widget(app: &AppHandle, target: isize) {
     if let Some(w) = app.get_webview_window(LABEL) {
+        apply_glass(app, &w);
         position_widget(app, &w, target);
         let _ = w.show();
         let _ = w.set_always_on_top(true);
@@ -207,11 +255,12 @@ fn show_widget(app: &AppHandle, target: isize) {
     .visible(false)
     .focused(false)
     .shadow(true)
-    .background_color(tauri::window::Color(24, 24, 27, 255))
+    .transparent(true)
     .build();
     match built {
         Ok(w) => {
             make_no_activate(&w);
+            apply_glass(app, &w);
             position_widget(app, &w, target);
             let _ = w.show();
         }
@@ -235,12 +284,14 @@ pub fn trigger(app: &AppHandle) {
             }
         }
 
+        let suggested = detect_agent_mode();
         let captured = inject::capture_selection();
         RUN.fetch_add(1, Ordering::SeqCst);
         {
             let mut s = lock_session();
             s.result.clear();
             s.target_hwnd = target;
+            s.suggested = suggested;
             match captured {
                 Ok(text) => {
                     s.original = text;
@@ -262,7 +313,7 @@ pub fn enhancer_session(app: AppHandle) -> SessionInfo {
     let s = lock_session();
     SessionInfo {
         original: s.original.clone(),
-        formality: stored_formality(&app),
+        formality: s.suggested.map(String::from).unwrap_or_else(|| stored_formality(&app)),
         error: s.error.clone(),
     }
 }
@@ -276,7 +327,10 @@ pub async fn enhancer_run(app: AppHandle, formality: String) -> Result<u64, Stri
     }
 
     let store = app.state::<Store>();
-    let _ = store.set_setting("enhancer_formality", formality);
+    // Agent prompt modes are picked per app, so they never become the saved default.
+    if !is_prompt_mode(formality) {
+        let _ = store.set_setting("enhancer_formality", formality);
+    }
     let dict_terms: Vec<String> = store
         .get_dictionary()
         .unwrap_or_default()
@@ -304,19 +358,18 @@ pub async fn enhancer_run(app: AppHandle, formality: String) -> Result<u64, Stri
         let cancelled = move || superseded() || STOP_RUN.load(Ordering::SeqCst) == run;
 
         emit("", "streaming", None);
-        let streamed = tone::stream_enhance_selection(
-            &original,
-            formality,
-            &dict_terms,
-            |text| {
-                if !superseded() {
-                    lock_session().result = text.to_string();
-                    emit(text, "streaming", None);
-                }
-            },
-            cancelled,
-        )
-        .await;
+        let on_text = |text: &str| {
+            if !superseded() {
+                lock_session().result = text.to_string();
+                emit(text, "streaming", None);
+            }
+        };
+        let streamed = if is_prompt_mode(formality) {
+            tone::stream_enhance_prompt(&original, formality, &dict_terms, on_text, cancelled).await
+        } else {
+            tone::stream_enhance_selection(&original, formality, &dict_terms, on_text, cancelled)
+                .await
+        };
 
         if superseded() {
             return;

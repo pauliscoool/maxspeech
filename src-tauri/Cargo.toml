@@ -1,6 +1,6 @@
 [package]
 name = "maxspeech"
-version = "0.1.73"
+version = "0.3.0-beta"
 edition = "2021"
 
 [dependencies]
@@ -38,6 +38,7 @@ futures-util = "0.3"
 
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.38"
+window-vibrancy = "0.6"
 windows = { version = "0.61", features = [
   "Win32_UI_WindowsAndMessaging",
   "Win32_UI_Controls",

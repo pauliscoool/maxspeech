@@ -599,6 +599,33 @@ impl Store {
         Ok(())
     }
 
+    /// Enabled profiles whose exe pattern is contained in `exe_lower`, in match-priority
+    /// order. Same rows the tone matcher would keep, without loading every seeded rule.
+    pub fn get_app_profiles_for_exe(
+        &self,
+        exe_lower: &str,
+    ) -> Result<Vec<AppProfile>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, exe_pattern, title_pattern, tone, enabled FROM app_profiles
+             WHERE enabled = 1 AND exe_pattern <> '' AND instr(?1, lower(exe_pattern)) > 0
+             ORDER BY
+               CASE WHEN title_pattern = '' THEN 1 ELSE 0 END,
+               length(title_pattern) DESC,
+               exe_pattern COLLATE NOCASE",
+        )?;
+        let rows = stmt.query_map(params![exe_lower], |row| {
+            Ok(AppProfile {
+                id: row.get(0)?,
+                exe_pattern: row.get(1)?,
+                title_pattern: row.get(2)?,
+                tone: row.get(3)?,
+                enabled: row.get::<_, i32>(4)? != 0,
+            })
+        })?;
+        rows.collect()
+    }
+
     pub fn get_app_profiles(&self) -> Result<Vec<AppProfile>, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
