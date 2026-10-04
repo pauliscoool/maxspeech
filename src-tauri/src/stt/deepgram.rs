@@ -1,8 +1,8 @@
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 
@@ -281,6 +281,9 @@ pub struct TranscriptChunk {
     pub is_final: bool,
 }
 
+/// Longest wait for the last results after release before falling back to the recording.
+const STOP_DRAIN_CAP_MS: u64 = 3_500;
+
 type WsStream = tokio_tungstenite::WebSocketStream<
     tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
 >;
@@ -450,6 +453,7 @@ pub async fn stream_audio(
 
     // Drain mic PCM *during* TLS/WS so the first seconds are not sitting
     // unconsumed (and never dropped) while the handshake runs.
+    let started = Instant::now();
     let mut pending: Vec<Vec<i16>> = Vec::new();
     let connect = tokio::time::timeout(
         Duration::from_secs(8),
@@ -483,7 +487,10 @@ pub async fn stream_audio(
         );
     }
 
+    let connect_ms = started.elapsed().as_millis() as u64;
     let (mut write, mut read) = ws_stream.split();
+    // Milliseconds since `started`; 0 = not reached. Only feeds the timing log line.
+    let stop_at = Arc::new(AtomicU64::new(0));
 
     let stop_requested = Arc::new(AtomicBool::new(false));
     let degraded = Arc::new(AtomicBool::new(false));
@@ -493,8 +500,7 @@ pub async fn stream_audio(
     let send_task = {
         let stop_requested = stop_requested.clone();
         let degraded = degraded.clone();
-        let finalize_ack = finalize_ack.clone();
-        let interim_pending = interim_pending.clone();
+        let stop_at = stop_at.clone();
         tokio::spawn(async move {
         let mut offline = false;
         for chunk in pending {
@@ -514,6 +520,7 @@ pub async fn stream_audio(
                 }
                 _ = stop_rx.recv() => {
                     stop_requested.store(true, Ordering::SeqCst);
+                    stop_at.store((started.elapsed().as_millis() as u64).max(1), Ordering::SeqCst);
                     if offline {
                         break;
                     }
@@ -535,27 +542,9 @@ pub async fn stream_audio(
                             Ok(None) | Err(_) => break,
                         }
                     }
-                    // Ask Deepgram to flush finals for the last utterance, wait
-                    // briefly for them on the read side, then close.
-                    let _ = write
-                        .send(Message::Text(r#"{"type":"Finalize"}"#.into()))
-                        .await;
-                    // Finalize is not instant — last-word Results often arrive
-                    // after ~endpointing, not in the first hundred milliseconds.
-                    // Leave early once Deepgram acknowledges; wait longer (slow link)
-                    // only when unfinalized words are known to be in flight.
-                    let mut waited_ms = 0u64;
-                    loop {
-                        if finalize_ack.load(Ordering::SeqCst) {
-                            break;
-                        }
-                        let cap = if interim_pending.load(Ordering::SeqCst) { 3_000 } else { 750 };
-                        if waited_ms >= cap {
-                            break;
-                        }
-                        tokio::time::sleep(Duration::from_millis(25)).await;
-                        waited_ms += 25;
-                    }
+                    // CloseStream alone flushes every remaining result before Deepgram closes
+                    // the socket. Measured ~110ms vs ~270ms for Finalize + waiting on its ack,
+                    // and it still returns the whole transcript behind an audio backlog.
                     let _ = write
                         .send(Message::Text(r#"{"type":"CloseStream"}"#.into()))
                         .await;
@@ -566,7 +555,24 @@ pub async fn stream_audio(
         })
     };
 
-    while let Some(msg) = read.next().await {
+    loop {
+        let next = if stop_requested.load(Ordering::SeqCst) {
+            let since_stop = (started.elapsed().as_millis() as u64)
+                .saturating_sub(stop_at.load(Ordering::SeqCst));
+            let left = STOP_DRAIN_CAP_MS.saturating_sub(since_stop);
+            match tokio::time::timeout(Duration::from_millis(left), read.next()).await {
+                Ok(next) => next,
+                Err(_) => {
+                    // A dead link must not hold the paste forever; the caller re-transcribes.
+                    log::warn!("Deepgram did not finish within {STOP_DRAIN_CAP_MS}ms of stop");
+                    degraded.store(true, Ordering::SeqCst);
+                    break;
+                }
+            }
+        } else {
+            read.next().await
+        };
+        let Some(msg) = next else { break };
         match msg {
             Ok(Message::Text(text)) => {
                 if let Ok(resp) = serde_json::from_str::<DgResponse>(&text) {
@@ -605,6 +611,13 @@ pub async fn stream_audio(
         let _ = send_task.await;
     } else {
         send_task.abort();
+    }
+    let stop_ms = stop_at.load(Ordering::SeqCst);
+    if stop_ms > 0 {
+        let drain_ms = (started.elapsed().as_millis() as u64).saturating_sub(stop_ms);
+        #[cfg(test)]
+        eprintln!("TIMING connect={connect_ms}ms stop->done={drain_ms}ms");
+        log::info!("Deepgram timing: connect={connect_ms}ms stop->done={drain_ms}ms");
     }
     let complete = stop_requested.load(Ordering::SeqCst)
         && !degraded.load(Ordering::SeqCst)
@@ -713,6 +726,144 @@ mod tests {
         match msg {
             Message::Binary(b) => assert_eq!(&b[..], &[0x34, 0x12, 0xFE, 0xFF]),
             other => panic!("expected binary, got {other:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod latency_probe {
+    use super::*;
+
+    fn read_wav_pcm(path: &std::path::Path) -> Vec<i16> {
+        let bytes = std::fs::read(path).expect("read wav");
+        bytes[44..]
+            .chunks_exact(2)
+            .map(|b| i16::from_le_bytes([b[0], b[1]]))
+            .collect()
+    }
+
+    fn word_edit_distance(a: &[String], b: &[String]) -> usize {
+        let mut prev: Vec<usize> = (0..=b.len()).collect();
+        for i in 1..=a.len() {
+            let mut cur = vec![i; b.len() + 1];
+            for j in 1..=b.len() {
+                let cost = usize::from(a[i - 1] != b[j - 1]);
+                cur[j] = (prev[j] + 1).min(cur[j - 1] + 1).min(prev[j - 1] + cost);
+            }
+            prev = cur;
+        }
+        prev[b.len()]
+    }
+
+    /// Same recording through the live stream and through batch (prerecorded) Nova-3.
+    /// PROBE_WAVS=2225.wav cargo test --release --bin maxspeech compare_stream_vs_batch -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn compare_stream_vs_batch() {
+        let names = std::env::var("PROBE_WAVS").unwrap_or_else(|_| "2225.wav".into());
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        for name in names.split(',') {
+            let path = crate::recording::recordings_dir().join(name.trim());
+            let pcm = read_wav_pcm(&path);
+            let keyterms = merge_keyterms(Vec::new());
+            let (stream_text, batch_text, batch_ms) = rt.block_on(async {
+                let (audio_tx, audio_rx) = mpsc::unbounded_channel::<Vec<i16>>();
+                let (transcript_tx, mut transcript_rx) = mpsc::unbounded_channel::<TranscriptChunk>();
+                let (stop_tx, stop_rx) = mpsc::channel::<()>(1);
+                let config = DeepgramConfig { keywords: keyterms.clone(), ..Default::default() };
+                let handle = tokio::spawn(stream_audio(config, audio_rx, transcript_tx, stop_rx));
+                // Faster than real time: the transcript, not the pacing, is under test here.
+                for chunk in pcm.chunks(800) {
+                    let _ = audio_tx.send(chunk.to_vec());
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+                drop(audio_tx);
+                let _ = stop_tx.send(()).await;
+                let _ = handle.await;
+                let mut stream_text = String::new();
+                while let Ok(c) = transcript_rx.try_recv() {
+                    if c.is_final {
+                        stream_text.push_str(c.text.trim());
+                        stream_text.push(' ');
+                    }
+                }
+                let t = Instant::now();
+                let batch = crate::stt::batch::transcribe_with_language_and_keyterms(
+                    path.to_str().unwrap(),
+                    "en",
+                    &keyterms,
+                )
+                .await
+                .expect("batch");
+                (stream_text.trim().to_string(), batch.text, t.elapsed().as_millis())
+            });
+            let words = |t: &str| -> Vec<String> {
+                t.split_whitespace()
+                    .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase())
+                    .filter(|w| !w.is_empty())
+                    .collect()
+            };
+            let (a, b) = (words(&stream_text), words(&batch_text));
+            println!(
+                "CMP {name}: {:.1}s audio | stream {} words | batch {} words | word edit distance {} | batch took {batch_ms} ms",
+                pcm.len() as f64 / 16000.0,
+                a.len(),
+                b.len(),
+                word_edit_distance(&a, &b)
+            );
+            println!("CMP_STREAM {name}: {stream_text}");
+            println!("CMP_BATCH  {name}: {batch_text}");
+        }
+    }
+
+    /// Streams saved recordings in real time, releases, and times the drain.
+    /// Live network + the app's own key lookup; ignored by default.
+    /// PROBE_WAVS=2214.wav,2217.wav cargo test --release --bin maxspeech latency_probe -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn stream_recording_and_time_finalize() {
+        let names = std::env::var("PROBE_WAVS").unwrap_or_else(|_| "2214.wav".into());
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        for name in names.split(',') {
+            let path = crate::recording::recordings_dir().join(name.trim());
+            let pcm = read_wav_pcm(&path);
+            rt.block_on(async {
+                let (audio_tx, audio_rx) = mpsc::unbounded_channel::<Vec<i16>>();
+                let (transcript_tx, mut transcript_rx) = mpsc::unbounded_channel::<TranscriptChunk>();
+                let (stop_tx, stop_rx) = mpsc::channel::<()>(1);
+                let config = DeepgramConfig {
+                    keywords: merge_keyterms(Vec::new()),
+                    ..Default::default()
+                };
+                let handle = tokio::spawn(stream_audio(config, audio_rx, transcript_tx, stop_rx));
+
+                let mut tick = tokio::time::interval(Duration::from_millis(50));
+                for chunk in pcm.chunks(800) {
+                    tick.tick().await;
+                    let _ = audio_tx.send(chunk.to_vec());
+                }
+                // Same order as the app: capture stops (senders drop), then stop signal.
+                drop(audio_tx);
+                let released = Instant::now();
+                let _ = stop_tx.send(()).await;
+                let complete = handle.await.unwrap().unwrap_or(false);
+                let drain = released.elapsed();
+
+                let mut text = String::new();
+                while let Ok(c) = transcript_rx.try_recv() {
+                    if c.is_final {
+                        text.push_str(c.text.trim());
+                        text.push(' ');
+                    }
+                }
+                println!(
+                    "PROBE {name}: {:.1}s audio | release->transcript-complete {} ms | complete={complete} | {} chars",
+                    pcm.len() as f64 / 16000.0,
+                    drain.as_millis(),
+                    text.trim().len()
+                );
+                println!("PROBE_TEXT {name}: {}", text.trim());
+            });
         }
     }
 }

@@ -1,11 +1,16 @@
 export default function TransformsPage() {
   const transforms = [
     { say: "make it formal", does: "Rewrites the last dictation in a professional tone" },
-    { say: "make it shorter", does: "Condenses the last insertion" },
+    { say: "make it shorter", does: "Condenses the last insertion to its key points" },
     { say: "make it casual", does: "Loosens tone for chat apps" },
+    { say: "bullet that", does: "Turns the last insertion into a bulleted list" },
+    { say: "fix grammar", does: "Corrects spelling, grammar and punctuation only — wording stays yours" },
+    { say: "summarize that", does: "Boils the last insertion down to one or two sentences" },
+    { say: "make it an email", does: "Formats it as a short email with greeting and sign-off" },
+    { say: "translate to Spanish", does: "Translates it — works with 40+ languages, like French or Japanese" },
+    { say: "all caps", does: "Uppercases the last insertion — say “all lowercase” to flip it back" },
     { say: "scratch that", does: "Deletes the last insertion" },
-    { say: "new line", does: "Inserts a line break" },
-    { say: "bullet that", does: "Coming soon — formats as a list" },
+    { say: "new line", does: "Inserts a line break — “new paragraph” adds a blank line" },
   ];
 
   return (
@@ -47,6 +52,13 @@ export default function TransformsPage() {
           </div>
         ))}
       </div>
+
+      <p className="text-xs text-[var(--ms-text-dim)] leading-relaxed">
+        Also works: make it longer, clearer, more polite, more direct or more confident. Say the
+        command on its own right after dictating — rewrites need your AI key, and your original
+        text is kept if a rewrite fails. Commands stop applying five minutes after the last
+        insertion.
+      </p>
     </div>
   );
 }

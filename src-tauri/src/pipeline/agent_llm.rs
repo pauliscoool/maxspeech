@@ -20,9 +20,14 @@ const THINK_MODEL: &str = "gpt-4.1-mini";
 const SESSION_TIMEOUT: Duration = Duration::from_secs(60);
 /// The agent speaks (and sends) its reply one sentence at a time and signals
 /// "audio done" after the first, so the model ends with this marker instead.
+/// 120 ms of 16 kHz mono linear16 silence, one per poll tick.
+const SILENCE_FRAME_BYTES: usize = 3840;
 const END_MARKER: &str = "END_OF_TEXT";
 /// Fallback when the model forgets the marker: this long after the last sentence.
 const REPLY_IDLE: Duration = Duration::from_millis(8000);
+/// Whole-passage replies arrive at speaking pace, so the end marker itself can trail the last
+/// sentence by that long; wait longer before assuming the model forgot it.
+const REPLY_IDLE_WHOLE: Duration = Duration::from_millis(15000);
 
 type BoxErr = Box<dyn std::error::Error + Send + Sync>;
 type WsStream = tokio_tungstenite::WebSocketStream<
@@ -71,10 +76,31 @@ pub async fn rewrite<C>(system: &str, text: &str, is_cancelled: C) -> Result<Str
 where
     C: Fn() -> bool,
 {
+    rewrite_with(system, text, is_cancelled, true).await
+}
+
+/// Like `rewrite`, but for edits that change the length (shorten, expand, translate, list):
+/// only the end marker ends the reply, never "the reply is about as long as the input".
+pub async fn rewrite_whole<C>(system: &str, text: &str, is_cancelled: C) -> Result<String, BoxErr>
+where
+    C: Fn() -> bool,
+{
+    rewrite_with(system, text, is_cancelled, false).await
+}
+
+async fn rewrite_with<C>(
+    system: &str,
+    text: &str,
+    is_cancelled: C,
+    early_finish: bool,
+) -> Result<String, BoxErr>
+where
+    C: Fn() -> bool,
+{
     let mut last_err: BoxErr = "Deepgram key not available".into();
     for key in secrets::deepgram_key_candidates() {
         match connect(&key).await {
-            Ok(ws) => return run_session(ws, system, text, &is_cancelled).await,
+            Ok(ws) => return run_session(ws, system, text, &is_cancelled, early_finish).await,
             Err(e) => {
                 log::warn!("Deepgram agent connect failed: {e}");
                 last_err = e;
@@ -89,6 +115,7 @@ async fn run_session<C>(
     system: &str,
     text: &str,
     is_cancelled: &C,
+    early_finish: bool,
 ) -> Result<String, BoxErr>
 where
     C: Fn() -> bool,
@@ -97,6 +124,8 @@ where
     let input_chars = text.chars().count();
     let mut out = String::new();
     let mut last_chunk_at: Option<Instant> = None;
+    let mut listening = false;
+    let idle_limit = if early_finish { REPLY_IDLE } else { REPLY_IDLE_WHOLE };
 
     let result: Result<(), BoxErr> = loop {
         if is_cancelled() {
@@ -107,7 +136,17 @@ where
         }
         let msg = match tokio::time::timeout(Duration::from_millis(120), ws.next()).await {
             Err(_) => {
-                if last_chunk_at.is_some_and(|t| t.elapsed() > REPLY_IDLE) {
+                if last_chunk_at.is_some_and(|t| t.elapsed() > idle_limit) {
+                    break Ok(());
+                }
+                // The agent releases its reply at speaking pace and drops a session that
+                // hears no audio for ~12s (CLIENT_MESSAGE_TIMEOUT), so stream silence.
+                if listening
+                    && ws
+                        .send(Message::Binary(vec![0u8; SILENCE_FRAME_BYTES].into()))
+                        .await
+                        .is_err()
+                {
                     break Ok(());
                 }
                 continue;
@@ -132,6 +171,7 @@ where
                         }
                     }
                     "SettingsApplied" => {
+                        listening = true;
                         let inject = serde_json::json!({
                             "type": "InjectUserMessage",
                             "content": text
@@ -150,7 +190,9 @@ where
                             // An edit is about as long as its input, so a reply that size is
                             // complete — no need to wait out the rest of the agent's speech.
                             let reply_chars = out.replace(END_MARKER, "").trim().chars().count();
-                            if out.contains(END_MARKER) || reply_chars * 100 >= input_chars * 85 {
+                            if out.contains(END_MARKER)
+                                || (early_finish && reply_chars * 100 >= input_chars * 85)
+                            {
                                 break Ok(());
                             }
                         }
@@ -320,7 +362,19 @@ pub fn split_chunks(text: &str) -> Vec<(String, String)> {
 
 /// The reply must be roughly the input's size — anything else is the model
 /// answering, summarizing, or inventing rather than editing.
-fn size_ok(input: &str, reply: &str) -> bool {
+/// Reply length bounds as a percentage of the input's length.
+#[derive(Clone, Copy)]
+pub struct SizeBounds {
+    pub min_pct: usize,
+    pub max_pct: usize,
+}
+
+impl SizeBounds {
+    /// A plain grammar / tone edit stays about as long as the original.
+    pub const EDIT: Self = Self { min_pct: 70, max_pct: 200 };
+}
+
+fn size_ok(input: &str, reply: &str, bounds: SizeBounds) -> bool {
     let (i, r) = (input.chars().count(), reply.chars().count());
     if r == 0 {
         return false;
@@ -328,11 +382,23 @@ fn size_ok(input: &str, reply: &str) -> bool {
     if i < 30 {
         return r <= i * 4 + 20;
     }
-    r * 10 >= i * 7 && r * 10 <= i * 20
+    r * 100 >= i * bounds.min_pct && r * 100 <= i * bounds.max_pct
 }
 
 /// Edit one chunk, retrying once when the reply is missing or the wrong size.
 pub async fn rewrite_chunk<C>(system: &str, body: &str, is_cancelled: &C) -> Result<String, BoxErr>
+where
+    C: Fn() -> bool,
+{
+    rewrite_chunk_bounded(system, body, is_cancelled, SizeBounds::EDIT).await
+}
+
+pub async fn rewrite_chunk_bounded<C>(
+    system: &str,
+    body: &str,
+    is_cancelled: &C,
+    bounds: SizeBounds,
+) -> Result<String, BoxErr>
 where
     C: Fn() -> bool,
 {
@@ -345,7 +411,7 @@ where
         match res {
             Ok(reply) => {
                 let reply = reply.trim().to_string();
-                if is_cancelled() || size_ok(body, &reply) {
+                if is_cancelled() || size_ok(body, &reply, bounds) {
                     return Ok(reply);
                 }
                 log::warn!(
@@ -395,6 +461,22 @@ mod tests {
         let text = "привет мир это очень длинное предложение без знаков препинания которое нужно разрезать на несколько частей потому что оно слишком длинное для одного запроса";
         let joined: String = split_chunks(text).iter().map(|(b, s)| format!("{b}{s}")).collect();
         assert_eq!(words(&joined), words(text));
+    }
+
+    /// Live check of the coding-agent prompt modes. Run with:
+    /// cargo test agent_live_prompt -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore]
+    async fn agent_live_prompt() {
+        let dictated = "so um the login page is broken after the session times out like you get a blank screen instead of going back to the sign in form I think its something in the token refresh in the auth folder can you fix it and make sure the tests still pass";
+        for target in ["claude_code", "cursor_codex"] {
+            let started = std::time::Instant::now();
+            let out = crate::pipeline::tone::stream_enhance_prompt(dictated, target, &[], |_| {}, || false)
+                .await
+                .expect("prompt rewrite failed");
+            println!("--- {target} [{:.2}s]\n{out}\n", started.elapsed().as_secs_f32());
+            assert!(!out.is_empty());
+        }
     }
 
     /// Live check against Deepgram. Run with:

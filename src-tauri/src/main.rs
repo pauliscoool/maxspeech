@@ -764,7 +764,7 @@ async fn remake_core(
     } else {
         pipeline::tone::local_self_correct(&expanded)
     };
-    if corrected.trim() != expanded.trim() {
+    if corrected.trim() != expanded.trim() && pipeline::tone::spoken_correction_applied(&expanded) {
         pipeline::vocab::learn_name_corrections(&expanded, &corrected, &store);
         pipeline::learn_substitutions::learn_from_edit(&expanded, &corrected, &store);
     }

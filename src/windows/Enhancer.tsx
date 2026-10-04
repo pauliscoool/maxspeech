@@ -1,8 +1,25 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import {
+  Briefcase,
+  Check,
+  ChevronDown,
+  CircleAlert,
+  Coffee,
+  Feather,
+  Landmark,
+  Replace,
+  Sparkles,
+  Square,
+  X,
+  type LucideIcon,
+} from "lucide-react";
+import { loadAndApplyTheme } from "../lib/theme";
+import { ClaudeIcon, CursorCodexIcon } from "./brandIcons";
 
-type Formality = "casual" | "neutral" | "professional" | "formal";
+type Formality = "casual" | "neutral" | "professional" | "formal" | "claude_code" | "cursor_codex";
+type BrandIcon = (props: { size?: number; className?: string }) => ReactElement;
 type Phase = "loading" | "streaming" | "done" | "stopped" | "error";
 
 interface SessionInfo {
@@ -18,12 +35,53 @@ interface UpdateEvent {
   error: string | null;
 }
 
-const FORMALITIES: { id: Formality; label: string; hint: string }[] = [
-  { id: "casual", label: "Casual", hint: "Relaxed, chatty" },
-  { id: "neutral", label: "Neutral", hint: "Your voice, cleaned up" },
-  { id: "professional", label: "Professional", hint: "Polished work email" },
-  { id: "formal", label: "Formal", hint: "No contractions" },
+interface Option {
+  id: Formality;
+  label: string;
+  hint: string;
+  Icon?: LucideIcon;
+  Brand?: BrandIcon;
+  brand?: "claude" | "duo";
+}
+
+const FORMALITIES: Option[] = [
+  { id: "casual", label: "Casual", hint: "Relaxed, chatty", Icon: Coffee },
+  { id: "neutral", label: "Neutral", hint: "Your voice, cleaned up", Icon: Feather },
+  { id: "professional", label: "Professional", hint: "Polished work email", Icon: Briefcase },
+  { id: "formal", label: "Formal", hint: "No contractions", Icon: Landmark },
 ];
+
+const AGENT_PROMPTS: Option[] = [
+  {
+    id: "claude_code",
+    label: "Claude Code",
+    hint: "Optimized coding prompt",
+    Brand: ClaudeIcon,
+    brand: "claude",
+  },
+  {
+    id: "cursor_codex",
+    label: "Cursor / Codex",
+    hint: "Goal, context, done-when",
+    Brand: CursorCodexIcon,
+    brand: "duo",
+  },
+];
+
+const ALL_OPTIONS = [...FORMALITIES, ...AGENT_PROMPTS];
+
+function OptionIcon({ opt, size }: { opt: Option; size: number }) {
+  const { Icon, Brand } = opt;
+  return (
+    <span className={`enh-ico${opt.brand ? ` is-${opt.brand}` : ""}`}>
+      {Brand ? (
+        <Brand size={size} />
+      ) : (
+        Icon && <Icon size={size} strokeWidth={2} aria-hidden="true" />
+      )}
+    </span>
+  );
+}
 
 function errText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
@@ -60,6 +118,7 @@ export default function Enhancer() {
     setText("");
     setError(null);
     setMenuOpen(false);
+    void loadAndApplyTheme();
     invoke<SessionInfo>("enhancer_session")
       .then((s) => {
         setFormality(s.formality);
@@ -112,7 +171,29 @@ export default function Enhancer() {
 
   const streaming = phase === "streaming";
   const canReplace = (phase === "done" || phase === "stopped") && text.trim() !== "";
-  const current = FORMALITIES.find((f) => f.id === formality) ?? FORMALITIES[1];
+  const current = ALL_OPTIONS.find((f) => f.id === formality) ?? FORMALITIES[1];
+
+  function renderItem(f: Option) {
+    return (
+      <button
+        key={f.id}
+        type="button"
+        role="option"
+        aria-selected={f.id === formality}
+        className={`enh-menu-item${f.id === formality ? " is-active" : ""}`}
+        onClick={() => pickFormality(f.id)}
+      >
+        <OptionIcon opt={f} size={16} />
+        <span className="enh-menu-text">
+          <span className="enh-menu-label">{f.label}</span>
+          <span className="enh-menu-hint">{f.hint}</span>
+        </span>
+        {f.id === formality && (
+          <Check size={15} strokeWidth={2.4} className="enh-menu-check" aria-hidden="true" />
+        )}
+      </button>
+    );
+  }
 
   return (
     <div className="enh-root">
@@ -125,41 +206,39 @@ export default function Enhancer() {
             aria-haspopup="listbox"
             aria-expanded={menuOpen}
           >
+            <OptionIcon opt={current} size={15} />
             <span>{current.label}</span>
-            <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
-              <path
-                d="M2.5 4.5 6 8l3.5-3.5"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.6"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
+            <ChevronDown
+              size={14}
+              strokeWidth={2.2}
+              aria-hidden="true"
+              className={`enh-chevron${menuOpen ? " is-open" : ""}`}
+            />
           </button>
           {menuOpen && (
             <div className="enh-menu" role="listbox">
-              {FORMALITIES.map((f) => (
-                <button
-                  key={f.id}
-                  type="button"
-                  role="option"
-                  aria-selected={f.id === formality}
-                  className={`enh-menu-item${f.id === formality ? " is-active" : ""}`}
-                  onClick={() => pickFormality(f.id)}
-                >
-                  <span className="enh-menu-label">{f.label}</span>
-                  <span className="enh-menu-hint">{f.hint}</span>
-                </button>
-              ))}
+              {FORMALITIES.map(renderItem)}
+              <div className="enh-menu-group" role="presentation">
+                For coding agents
+              </div>
+              {AGENT_PROMPTS.map(renderItem)}
             </div>
           )}
         </div>
-        <span className="enh-status" data-tauri-drag-region>
-          {phase === "loading" && "Reading your text…"}
+        <span
+          className={`enh-status${streaming || phase === "loading" ? " is-live" : ""}`}
+          data-tauri-drag-region
+        >
+          {phase === "error" ? (
+            <CircleAlert size={13} strokeWidth={2.2} aria-hidden="true" />
+          ) : (
+            <Sparkles size={13} strokeWidth={2.2} aria-hidden="true" />
+          )}
+          {phase === "loading" &&"Reading your text…"}
           {streaming && "Enhancing…"}
           {phase === "done" && "Ready"}
           {phase === "stopped" && "Stopped"}
+          {phase === "error" && "Error"}
         </span>
       </div>
 
@@ -177,6 +256,7 @@ export default function Enhancer() {
 
       <div className="enh-footer">
         <button type="button" className="enh-btn enh-btn-ghost" onClick={() => void invoke("enhancer_close")}>
+          <X size={15} strokeWidth={2.2} aria-hidden="true" />
           Close
         </button>
         <div className="enh-action">
@@ -187,7 +267,7 @@ export default function Enhancer() {
             disabled={!streaming}
             tabIndex={streaming ? 0 : -1}
           >
-            <span className="enh-stop-icon" />
+            <Square size={11} strokeWidth={0} fill="currentColor" className="enh-stop-icon" aria-hidden="true" />
             Stop
           </button>
           <button
@@ -197,6 +277,7 @@ export default function Enhancer() {
             disabled={!canReplace}
             tabIndex={canReplace ? 0 : -1}
           >
+            <Replace size={15} strokeWidth={2.2} aria-hidden="true" />
             Replace
           </button>
         </div>

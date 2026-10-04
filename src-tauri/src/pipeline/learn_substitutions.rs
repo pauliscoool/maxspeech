@@ -96,17 +96,19 @@ pub fn substitutions_from_redictate(previous: &str, next: &str) -> Vec<Substitut
         return Vec::new();
     }
 
-    if a.len() == b.len() {
-        return equal_length_subs(&a, &b);
-    }
-
-    // Erase-then-redictate the replacement word(s) only: last 1–2 tokens of the
-    // previous paste vs a short new utterance. No key capture — paste texts only.
-    if b.len() <= MAX_CHANGED_TOKENS && a.len() > b.len() {
-        return suffix_replacement_subs(&a, &b);
-    }
-
-    Vec::new()
+    let subs = if a.len() == b.len() {
+        equal_length_subs(&a, &b)
+    } else if b.len() <= MAX_CHANGED_TOKENS && a.len() > b.len() {
+        // Erase-then-redictate the replacement word(s) only: last 1–2 tokens of the
+        // previous paste vs a short new utterance. No key capture — paste texts only.
+        suffix_replacement_subs(&a, &b)
+    } else {
+        Vec::new()
+    };
+    // A bare rule on an everyday word ("then" → "Than") would rewrite every dictation.
+    subs.into_iter()
+        .filter(|sub| sub.from.contains(' ') || !super::vocab::is_common_word(&sub.from))
+        .collect()
 }
 
 fn equal_length_subs(a: &[String], b: &[String]) -> Vec<Substitution> {
@@ -280,7 +282,7 @@ fn looks_like_name_term(word: &str) -> bool {
 
 fn looks_like_name_shape(word: &str) -> bool {
     let w = word.trim();
-    if w.len() < 2 || w.len() > 40 {
+    if w.len() < 2 || w.len() > 40 || w.contains('\'') || w.contains('\u{2019}') {
         return false;
     }
     let Some(first) = w.chars().next() else {
@@ -292,16 +294,7 @@ fn looks_like_name_shape(word: &str) -> bool {
 }
 
 fn is_stop_word(lower: &str) -> bool {
-    const STOP: &[&str] = &[
-        "a", "an", "the", "and", "or", "but", "to", "of", "in", "on", "for",
-        "with", "at", "by", "from", "as", "is", "it", "this", "that", "i",
-        "you", "he", "she", "we", "they", "my", "your", "me", "him", "her",
-        "monday", "tuesday", "wednesday", "thursday", "friday", "saturday",
-        "sunday", "today", "tomorrow", "yesterday", "please", "thanks",
-        "yes", "no", "ok", "okay", "um", "uh", "like", "just", "really",
-        "hello", "hi", "hey", "thank", "sorry", "actually",
-    ];
-    STOP.contains(&lower)
+    super::vocab::is_common_word(lower)
 }
 
 fn looks_like_secret(s: &str) -> bool {
@@ -392,6 +385,13 @@ fn replace_phrase_ci(text: &str, from: &str, to: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn never_learns_a_bare_rule_on_an_everyday_word() {
+        // This exact rule ("then" -> "Than") once rewrote every "then" a user dictated.
+        assert!(substitutions_from_redictate("then", "Than").is_empty());
+        assert!(substitutions_from_redictate("go then", "go Than").is_empty());
+    }
 
     #[test]
     fn learns_court_to_core_in_bigram() {

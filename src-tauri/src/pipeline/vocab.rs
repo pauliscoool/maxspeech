@@ -65,10 +65,19 @@ fn expand_template_vars(expansion: &str) -> String {
 /// Learns tokens that look like proper names / jargon when the user (or
 /// self-correction) changes one word into another.
 pub fn learn_name_corrections(before: &str, after: &str, store: &Store) {
+    for w in name_corrections(before, after) {
+        if store.add_dict_word(&w, 1.0).is_ok() {
+            log::info!("Learned name correction: {w}");
+        }
+    }
+}
+
+/// Terms worth adding to the dictionary after `before` became `after`.
+fn name_corrections(before: &str, after: &str) -> Vec<String> {
     let before_t = before.trim();
     let after_t = after.trim();
     if before_t.is_empty() || after_t.is_empty() || before_t == after_t {
-        return;
+        return Vec::new();
     }
 
     let strip = |s: &str| -> Vec<String> {
@@ -84,8 +93,24 @@ pub fn learn_name_corrections(before: &str, after: &str, store: &Store) {
     let a = strip(before_t);
     let b = strip(after_t);
     if a.is_empty() || b.is_empty() {
-        return;
+        return Vec::new();
     }
+    // ASR capitalizes the first word of every sentence; that says nothing about a name.
+    let mut sentence_start: Vec<bool> = Vec::with_capacity(b.len());
+    let mut at_start = true;
+    for raw in after_t.split_whitespace() {
+        let core = raw.trim_matches(|c: char| {
+            matches!(c, ',' | '.' | '!' | '?' | ';' | ':' | '"' | '\'')
+        });
+        if !core.is_empty() {
+            sentence_start.push(at_start);
+        }
+        at_start = raw.ends_with(['.', '!', '?']);
+    }
+    let is_name = |idx: usize, w: &str| {
+        looks_like_name_term(w)
+            && (!sentence_start.get(idx).copied().unwrap_or(false) || has_strong_name_shape(w))
+    };
 
     // Align from the end: self-corrections usually replace the last N words.
     let mut i = a.len();
@@ -99,37 +124,27 @@ pub fn learn_name_corrections(before: &str, after: &str, store: &Store) {
         }
     }
     // Tokens that differ at the end of `after` are the corrections.
-    let n_changed = b.len().saturating_sub(j);
-    let changed: Vec<&str> = b[j..]
+    let changed: Vec<String> = b[j..]
         .iter()
-        .map(|s| s.as_str())
-        .filter(|w| {
-            // Single-token swaps (classic name fix) are always candidates;
-            // multi-word corrections only keep name-like tokens.
-            if n_changed == 1 {
-                looks_like_learnable_term(w)
-            } else {
-                looks_like_name_term(w)
-            }
-        })
+        .enumerate()
+        .filter(|(k, w)| is_name(j + k, w))
+        .map(|(_, w)| w.clone())
         .collect();
+    if !changed.is_empty() {
+        return changed;
+    }
 
     // Also pick up mid-sentence single-token diffs of equal length.
-    if changed.is_empty() && a.len() == b.len() {
-        for (wa, wb) in a.iter().zip(b.iter()) {
-            if !wa.eq_ignore_ascii_case(wb) && looks_like_name_term(wb) {
-                let _ = store.add_dict_word(wb, 1.0);
-                log::info!("Learned name correction from edit: {wa} → {wb}");
-            }
-        }
-        return;
+    if a.len() == b.len() {
+        return a
+            .iter()
+            .zip(b.iter())
+            .enumerate()
+            .filter(|(k, (wa, wb))| !wa.eq_ignore_ascii_case(wb) && is_name(*k, wb))
+            .map(|(_, (_, wb))| wb.clone())
+            .collect();
     }
-
-    for w in changed {
-        if store.add_dict_word(w, 1.0).is_ok() {
-            log::info!("Learned name correction: {w}");
-        }
-    }
+    Vec::new()
 }
 
 fn looks_like_learnable_term(word: &str) -> bool {
@@ -150,23 +165,62 @@ fn looks_like_name_term(word: &str) -> bool {
     if !looks_like_learnable_term(w) {
         return false;
     }
+    // Contractions and possessives ("It's", "Look's") are grammar, not names.
+    if w.contains('\'') || w.contains('\u{2019}') {
+        return false;
+    }
     let first = w.chars().next().unwrap();
-    first.is_uppercase()
-        || w.contains('-')
-        || (w.len() <= 6 && w.chars().all(|c| c.is_ascii_uppercase()))
+    has_strong_name_shape(w) || first.is_uppercase()
+}
+
+/// Everyday English. Boosting or force-casing one of these (or learning a bare rule
+/// that rewrites it) changes every dictation, not just the one that taught the app.
+const COMMON_WORDS: &str = "\
+a about above across actually add after afterwards again against ago all almost alone along already also \
+although always am among an and another any anyone anything anyway anywhere are around as ask at away back \
+be became because become been before behind being below beside besides best better between beyond both but \
+by call came can cannot care case change check clear click close come comes could day days did do does doing \
+done down drop during each either else end enough especially even ever every everyone everything everywhere \
+except few find first five for four from further get gets getting give given go goes going gone good got great \
+had has have having he hello help hence her here hers herself hey hi him himself his how however hundred i if \
+in indeed instead into is it its itself just keep keeps kept kind know last later least leave less let like \
+likely little long look looks made make makes many may maybe me mean might mind mine more moreover most mostly \
+move much must my myself near need needs neither never new next nine no nobody none nor not note nothing now \
+nowhere number of off often oh ok okay old on once one only onto open or other others otherwise our ours \
+ourselves out over own part past people per perhaps person place please point press problem put quite rather \
+read really remove right run said same say says see seem seems send set seven several shall she should show \
+side since six so some someone something sometimes somewhere sorry start still stop such sure take tell ten \
+than thank thanks that the their theirs them themselves then there therefore these they thing things think \
+this those though three through throughout thus till time to today together tomorrow too took toward towards \
+try turn two under underneath until up upon us use used using very want wants was way we week well went were \
+what whatever when whenever where whereas whether which while who whoever whole whom whose why will with within \
+without word words work would write yes yesterday yet you your yours yourself yourselves \
+activity app apps answer bug button code company copy cut data delete desktop download edit email example \
+file files fix folder home house idea issue item items line lines list menu message messages name names \
+office option options page paste plan project question reason release result results save screen section \
+seconds settings step steps system task tasks team test tests text undo update upload user users version \
+window yeah yep \
+monday tuesday wednesday thursday friday saturday sunday um uh";
+
+pub(super) fn is_common_word(lower: &str) -> bool {
+    static SET: std::sync::OnceLock<std::collections::HashSet<&'static str>> =
+        std::sync::OnceLock::new();
+    SET.get_or_init(|| COMMON_WORDS.split_whitespace().collect())
+        .contains(lower)
 }
 
 fn is_stop_word(lower: &str) -> bool {
-    const STOP: &[&str] = &[
-        "a", "an", "the", "and", "or", "but", "to", "of", "in", "on", "for",
-        "with", "at", "by", "from", "as", "is", "it", "this", "that", "i",
-        "you", "he", "she", "we", "they", "my", "your", "me", "him", "her",
-        "monday", "tuesday", "wednesday", "thursday", "friday", "saturday",
-        "sunday", "today", "tomorrow", "yesterday", "please", "thanks",
-        "yes", "no", "ok", "okay", "um", "uh", "like", "just", "really",
-        "hello", "hi", "hey", "thanks", "thank", "sorry", "actually",
-    ];
-    STOP.contains(&lower)
+    is_common_word(lower)
+}
+
+/// Shapes that carry a name/term signal beyond a leading capital: inner capitals
+/// (WhisperFlow), acronyms (VPS), hyphens, digits. Sentence-initial "If"/"So" have none.
+fn has_strong_name_shape(w: &str) -> bool {
+    let inner_upper = w.chars().skip(1).any(|c| c.is_uppercase());
+    let acronym = (2..=6).contains(&w.len()) && w.chars().all(|c| c.is_ascii_uppercase());
+    let mixed_digit =
+        w.chars().any(|c| c.is_ascii_digit()) && w.chars().any(|c| c.is_alphabetic());
+    inner_upper || acronym || mixed_digit || w.contains('-')
 }
 
 /// Restore `Name's` when the dictionary has `Name` and ASR emitted `Names`.
@@ -371,6 +425,9 @@ fn following_token(chars: &[char], at: usize) -> String {
 
 fn replace_phrase_ci(text: &str, from: &str, to: &str) -> String {
     let from_lower = from.to_lowercase();
+    if from_lower.is_empty() || !text.to_lowercase().contains(&from_lower) {
+        return text.to_string();
+    }
     let from_chars: Vec<char> = from_lower.chars().collect();
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::with_capacity(text.len());
@@ -399,6 +456,9 @@ fn replace_phrase_ci(text: &str, from: &str, to: &str) -> String {
 /// Replace whole-word matches of `want` (case-insensitive) with the exact `want` spelling.
 fn replace_whole_word_ci(text: &str, want: &str) -> String {
     let want_lower = want.to_lowercase();
+    if want_lower.is_empty() || !text.to_lowercase().contains(&want_lower) {
+        return text.to_string();
+    }
     let want_chars: Vec<char> = want_lower.chars().collect();
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::with_capacity(text.len());
@@ -427,6 +487,47 @@ fn replace_whole_word_ci(text: &str, want: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{apply_learned_possessives, fix_common_asr, replace_whole_word_ci};
+
+    #[test]
+    fn everyday_words_are_never_learned_as_names() {
+        // Real junk that ended up in a user dictionary, biasing ASR and force-casing text.
+        for w in [
+            "If", "So", "Then", "Than", "Also", "Do", "What", "When", "Which", "Who", "Why", "Not",
+            "Next", "Look", "Make", "Keep", "Sure", "Right", "Instead", "Press", "Side", "Drop",
+            "Delete", "It's", "That's", "There's", "Look's", "Everything's", "Where's",
+        ] {
+            assert!(!super::looks_like_name_term(w), "{w} must not look like a name");
+        }
+    }
+
+    #[test]
+    fn real_names_and_terms_are_still_learned() {
+        for w in ["Sarah", "Supabase", "WhisperFlow", "OpenCloud", "VPS", "AI", "Vercel", "Covenant"] {
+            assert!(super::looks_like_name_term(w), "{w} should look like a name");
+        }
+    }
+
+    #[test]
+    fn local_cleanup_and_sentence_starts_teach_nothing() {
+        // Contraction fix (local_asr_cleanup) changes the text but teaches no names.
+        assert!(super::name_corrections("its a good day", "It's a good day").is_empty());
+        assert!(super::name_corrections("look whats here", "Look what's here").is_empty());
+        // Capitalized only because a sentence starts there.
+        assert!(super::name_corrections("we go. instead we stay", "We go. Instead we stay").is_empty());
+        assert!(super::name_corrections("send it then", "Send it. Then").is_empty());
+    }
+
+    #[test]
+    fn spoken_name_correction_still_learns_the_name() {
+        assert_eq!(
+            super::name_corrections("send it to Sarah I mean Sandra", "send it to Sandra"),
+            vec!["Sandra".to_string()]
+        );
+        assert_eq!(
+            super::name_corrections("send it to Sarah now", "send it to Sandra now"),
+            vec!["Sandra".to_string()]
+        );
+    }
 
     #[test]
     fn replaces_whole_word_casing() {

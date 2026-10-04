@@ -229,7 +229,7 @@ export default function HomePage({
     } catch {
       // ignore
     }
-    const wait = Math.max(0, 450 - (Date.now() - started));
+    const wait = Math.max(0, 120 - (Date.now() - started));
     await new Promise((r) => setTimeout(r, wait));
     setCopyState((s) => ({ ...s, [id]: "ok" }));
     setTimeout(() => {

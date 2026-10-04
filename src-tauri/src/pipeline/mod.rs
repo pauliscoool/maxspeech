@@ -21,6 +21,11 @@ use tokio::sync::mpsc;
 /// Hard cap for a single push-to-talk session.
 const MAX_RECORDING: Duration = Duration::from_secs(120);
 
+/// Never cut the mic sooner than this after release (capture + WASAPI buffer latency).
+const TRAIL_MIN_MS: u64 = 150;
+/// Silence after release that means the speaker is finished.
+const TRAIL_QUIET_MS: u64 = 200;
+
 pub struct PipelineState {
     pub active: Mutex<bool>,
     pub last_insertion: Mutex<Option<LastInsertion>>,
@@ -50,6 +55,8 @@ pub struct PipelineState {
     /// Paste token of a session the user cancelled or that held no speech; its
     /// pipeline must end silently (no paste, no history, no failure toast).
     discarded_paste: Mutex<u64>,
+    /// Hotkey release of the take being processed (release->paste timing log only).
+    released_at: Mutex<Option<Instant>>,
 }
 
 impl Default for PipelineState {
@@ -69,6 +76,7 @@ impl Default for PipelineState {
             session_hwnd: Mutex::new(0),
             heard_text: AtomicBool::new(false),
             discarded_paste: Mutex::new(0),
+            released_at: Mutex::new(None),
         }
     }
 }
@@ -665,20 +673,39 @@ pub fn start_dictation(app: &tauri::AppHandle) {
             match cmd_result {
                 commands::CommandResult::ScratchThat => {
                     let last = pipeline_state.last_insertion.lock().unwrap();
-                    if let Some(ins) = last.as_ref() {
-                        let _ = inject::undo_insertion(ins);
+                    match last.as_ref() {
+                        Some(ins) if insertion_is_fresh(ins) => {
+                            let _ = inject::undo_insertion(ins);
+                        }
+                        Some(_) => log::info!("Scratch that ignored: last insertion is stale"),
+                        None => log::info!("Scratch that ignored: nothing inserted yet"),
                     }
                 }
-                commands::CommandResult::Rewrite(instruction) => {
+                cmd @ (commands::CommandResult::Rewrite(_) | commands::CommandResult::Local(_)) => {
                     let old_text = {
                         let last = pipeline_state.last_insertion.lock().unwrap();
-                        last.as_ref().map(|ins| (ins.text.clone(), ins.char_count))
+                        last.as_ref()
+                            .filter(|ins| insertion_is_fresh(ins))
+                            .map(|ins| (ins.text.clone(), ins.char_count))
                     };
                     if let Some((old, count)) = old_text {
+                        let body = old.trim_end();
+                        let trailing = &old[body.len()..];
                         // Rewrite first — never delete the prior paste until we have
                         // something to replace it with (LLM failure used to wipe text).
-                        match tone::rewrite_with_llm(&old, &instruction).await {
+                        let produced: Result<String, String> = match &cmd {
+                            commands::CommandResult::Rewrite(request) => {
+                                emit_state_if_current(&app_handle, paste_token, "processing");
+                                tone::rewrite_with_llm(body, request)
+                                    .await
+                                    .map_err(|e| e.to_string())
+                            }
+                            commands::CommandResult::Local(edit) => Ok(edit(body)),
+                            _ => unreachable!("outer pattern only admits Rewrite/Local"),
+                        };
+                        match produced {
                             Ok(rewritten) => {
+                                let rewritten = format!("{}{}", rewritten.trim_end(), trailing);
                                 if !epoch_alive() {
                                     log::info!(
                                         "Skipping rewrite inject for stale paste={paste_token}"
@@ -715,14 +742,31 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                             }
                             Err(e) => {
                                 log::warn!("Rewrite LLM failed; leaving original text: {e}");
+                                let _ = app_handle.emit(
+                                    "dictation-error",
+                                    "Couldn't rewrite — original text kept",
+                                );
                             }
                         }
+                    } else {
+                        log::info!("Transform ignored: no recent insertion to edit");
                     }
                 }
                 commands::CommandResult::InsertText(t) => {
                     match inject::inject_text_if(&t, epoch_alive) {
                         Ok(ins) => {
-                            *pipeline_state.last_insertion.lock().unwrap() = Some(ins);
+                            let mut last = pipeline_state.last_insertion.lock().unwrap();
+                            // Keep the dictation this extends so "make it formal" / "scratch
+                            // that" after "new line" still act on it, not on the bare break.
+                            let merged = match last.take() {
+                                Some(prev) if insertion_is_fresh(&prev) => LastInsertion {
+                                    text: format!("{}{}", prev.text, ins.text),
+                                    char_count: prev.char_count + ins.char_count,
+                                    pasted_at: ins.pasted_at,
+                                },
+                                _ => ins,
+                            };
+                            *last = Some(merged);
                         }
                         Err(e) if e.to_string().contains("cancelled") => {
                             log::info!(
@@ -748,7 +792,7 @@ pub fn start_dictation(app: &tauri::AppHandle) {
             };
 
             // Whisper Flow–style: remember name fixes from spoken self-corrections.
-            if corrected.trim() != expanded.trim() {
+            if corrected.trim() != expanded.trim() && tone::spoken_correction_applied(&expanded) {
                 vocab::learn_name_corrections(&expanded, &corrected, &store);
                 learn_substitutions::learn_from_edit(&expanded, &corrected, &store);
             }
@@ -883,6 +927,9 @@ pub fn start_dictation(app: &tauri::AppHandle) {
             let epoch_alive = || paste_still_current(&app_handle, paste_token);
             match inject::inject_text_if(&final_output, epoch_alive) {
                 Ok(ins) => {
+                    if let Some(t) = pipeline_state.released_at.lock().unwrap().take() {
+                        log::info!("Dictation timing: release->paste {} ms", t.elapsed().as_millis());
+                    }
                     let prev = pipeline_state.pending_learn_from.lock().unwrap().take();
                     if let Some(prev_text) = prev {
                         learn_substitutions::learn_from_redictate(
@@ -964,6 +1011,14 @@ pub fn start_dictation(app: &tauri::AppHandle) {
         hide_overlay_if_current(&app_handle, paste_token);
         emit_state_if_current(&app_handle, paste_token, "idle");
     });
+}
+
+/// Backspace-based undo/rewrite is only safe while the cursor is still right after our paste;
+/// after this long the user has likely clicked or typed elsewhere.
+const LAST_INSERTION_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+
+fn insertion_is_fresh(ins: &LastInsertion) -> bool {
+    ins.pasted_at.elapsed() < LAST_INSERTION_TTL
 }
 
 /// True while this paste token is still the newest recording start (even if ✗ discarded it).
@@ -1053,15 +1108,26 @@ pub fn stop_dictation(app: &tauri::AppHandle) {
         *gen
     };
 
-    // Keep capturing after hotkey-up. People release during the last syllable,
-    // and 140–280ms was still chopping endings. Snappy paste matters less than
-    // hearing the full phrase.
-    let trail_ms: u64 = if elapsed_secs < 5.0 { 520 } else { 800 };
+    // Keep capturing after hotkey-up: people release during the last syllable. A fixed
+    // wait either chops endings or makes every take pay for the worst case, so stop as
+    // soon as the mic has been quiet for TRAIL_QUIET_MS (after TRAIL_MIN_MS), capped.
+    let trail_max_ms: u64 = if elapsed_secs < 5.0 { 450 } else { 550 };
+    *state.released_at.lock().unwrap() = Some(Instant::now());
 
     let stop_tx = state.stop_tx.lock().unwrap().take();
     let app_trail = app.clone();
     tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(trail_ms)).await;
+        let released = Instant::now();
+        loop {
+            let waited = released.elapsed().as_millis() as u64;
+            if waited >= trail_max_ms
+                || (waited >= TRAIL_MIN_MS && crate::audio::silent_for(TRAIL_QUIET_MS))
+            {
+                log::info!("Trail ended {waited}ms after release");
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(15)).await;
+        }
         let state = app_trail.state::<PipelineState>();
         // Don't tear down a newer session that started during the trail.
         if !*state.active.lock().unwrap() && *state.session_gen.lock().unwrap() == stop_gen {
@@ -1072,7 +1138,7 @@ pub fn stop_dictation(app: &tauri::AppHandle) {
         }
     });
 
-    log::info!("Dictation stopped after {elapsed_secs:.1}s ({trail_ms}ms trail)");
+    log::info!("Dictation stopped after {elapsed_secs:.1}s (trail up to {trail_max_ms}ms)");
     let paste_token = *state.paste_epoch.lock().unwrap();
     // Nothing said: no voice on the mic and no words from Deepgram. Vanish now
     // instead of spinning the thinking wave while the stream drains.
@@ -1358,5 +1424,97 @@ mod interim_merge_tests {
         ]);
         assert!(text.contains("first ten seconds"));
         assert!(text.contains("after the pause"));
+    }
+}
+
+#[cfg(test)]
+mod local_step_bench {
+    use super::*;
+
+    /// Times the synchronous post-transcript steps against the real local DB (read-only calls).
+    /// cargo test --release --bin maxspeech local_step_bench -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn time_local_steps() {
+        let store = Store::new().expect("store");
+        let text = "So I was thinking that we should probably move the meeting to Thursday, um, actually no wait, Friday, because Sarah is out and the numbers are not ready yet. We can also look at the quarterly report and I mean the budget forecast for the next three months, and then send a summary to the whole team by end of day.";
+        let app = context::ForegroundApp { exe: "chrome.exe".into(), title: "Gmail - Inbox - Google Chrome".into() };
+        let n = 50u32;
+        let time = |label: &str, f: &dyn Fn()| {
+            f(); // warm
+            let t = Instant::now();
+            for _ in 0..n {
+                f();
+            }
+            println!("STEP {label}: {:.3} ms/call", t.elapsed().as_secs_f64() * 1000.0 / n as f64);
+        };
+        println!("STEP app_profiles rows: {}", store.get_app_profiles().unwrap().len());
+        let dict = store.get_dictionary().unwrap();
+        println!("STEP dictionary rows: {}", dict.len());
+        println!("STEP dictionary: {:?}", dict.iter().map(|d| d.word.clone()).collect::<Vec<_>>());
+        println!("STEP macros rows: {}", store.get_macros().unwrap().len());
+        let subs = store.get_substitutions().unwrap();
+        println!("STEP substitutions rows: {}", subs.len());
+        println!("STEP substitutions: {:?}", subs);
+        for sample in [
+            "so i think if we go then it is right and also do it because what you said is sure not the next thing",
+            "there are people in the rooms and it failed after seconds so look at the side of the desktop",
+        ] {
+            println!("STEP EXPAND in : {sample}");
+            println!("STEP EXPAND out: {}", vocab::expand_macros(sample, &store));
+        }
+        // The SQL-filtered lookup must pick exactly what the old load-everything loop picked.
+        let reference = |app: &context::ForegroundApp| -> Option<String> {
+            let exe = app.exe.to_lowercase();
+            let title = app.title.to_lowercase();
+            let mut best: Option<(usize, String)> = None;
+            for p in store.get_app_profiles().unwrap() {
+                if !p.enabled { continue; }
+                let pe = p.exe_pattern.to_lowercase();
+                if pe.is_empty() || !exe.contains(&pe) { continue; }
+                let pt = p.title_pattern.to_lowercase();
+                if !(pt.is_empty() || title.contains(&pt)) { continue; }
+                let score = if pt.is_empty() { 0 } else { 1_000 + pt.len() };
+                match best {
+                    Some((b, _)) if score <= b => {}
+                    _ => best = Some((score, p.tone.clone())),
+                }
+            }
+            best.map(|(_, t)| t)
+        };
+        for (exe, title) in [
+            ("chrome.exe", "Gmail - Inbox - Google Chrome"),
+            ("chrome.exe", "ChatGPT - Google Chrome"),
+            ("Code.exe", "main.rs - Visual Studio Code"),
+            ("slack.exe", "general - Slack"),
+            ("WINWORD.EXE", "Document1 - Word"),
+            ("notepad.exe", "Untitled - Notepad"),
+            ("claude.exe", "Claude"),
+            ("unknownapp.exe", "x"),
+        ] {
+            let app = context::ForegroundApp { exe: exe.into(), title: title.into() };
+            assert_eq!(tone::get_tone_for_app(&app, &store), reference(&app), "{exe} / {title}");
+        }
+        println!("STEP tone lookup matches reference for all sample apps");
+        time("expand_macros", &|| {
+            let _ = vocab::expand_macros(text, &store);
+        });
+        time("local_self_correct", &|| {
+            let _ = tone::local_self_correct(text);
+        });
+        time("get_tone_for_app", &|| {
+            let _ = tone::get_tone_for_app(&app, &store);
+        });
+        time("normalize_terminal_punctuation", &|| {
+            let _ = tone::normalize_terminal_punctuation(text, "default");
+        });
+        time("get_plan_status", &|| {
+            let _ = store.get_plan_status();
+        });
+        time("get_setting x4", &|| {
+            for k in ["ai_enhance", "trailing_space", "enhance_speed", "sound_cue_volume"] {
+                let _ = store.get_setting(k);
+            }
+        });
     }
 }
