@@ -22,9 +22,9 @@ use tokio::sync::mpsc;
 const MAX_RECORDING: Duration = Duration::from_secs(120);
 
 /// Never cut the mic sooner than this after release (capture + WASAPI buffer latency).
-const TRAIL_MIN_MS: u64 = 150;
+const TRAIL_MIN_MS: u64 = 120;
 /// Silence after release that means the speaker is finished.
-const TRAIL_QUIET_MS: u64 = 200;
+const TRAIL_QUIET_MS: u64 = 130;
 
 pub struct PipelineState {
     pub active: Mutex<bool>,
@@ -807,7 +807,6 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                 .unwrap();
             let quick_session = session_secs < enhance_speed.quick_skip_secs();
 
-            let mut enhance_ran = false;
             // Multilingual / code-switch: keep Deepgram text as-is. The English
             // Grammarly pass was compounding ASR mistakes into fluent wrong prose
             // ("build function" stayed "blood function" or got rewritten further).
@@ -826,7 +825,6 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                 log::info!(
                     "Quick session ({session_secs:.1}s) — local cleanup only, skip LLM"
                 );
-                enhance_ran = corrected.trim() != expanded.trim();
                 corrected
             } else if has_llm_key && ai_enhance {
                 let dict_terms: Vec<String> = store
@@ -846,27 +844,20 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                 {
                     Ok(out) => {
                         log::info!("AI enhance ok ({} → {} chars)", corrected.len(), out.len());
-                        enhance_ran = true;
                         out
                     }
                     Err(e) => {
                         log::warn!("AI enhance failed, using local correction: {e}");
                         // Local cleanup still counts when enhance is on
-                        enhance_ran = corrected.trim() != expanded.trim();
                         corrected
                     }
                 }
             } else {
                 if !has_llm_key && ai_enhance {
                     log::info!("AI enhance on but no LLM key — local self-correct only");
-                    enhance_ran = corrected.trim() != expanded.trim();
                 }
                 corrected
             };
-
-            let original_for_toast = expanded.trim().to_string();
-            let enhanced_for_toast = final_output.trim().to_string();
-            let text_changed = original_for_toast != enhanced_for_toast;
 
             let trailing = store
                 .get_setting("trailing_space")
@@ -925,20 +916,8 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                 }
             }
 
-            // Grammarly-like toast before WAV I/O so it isn't delayed by Remake save.
-            let show_enhance_toast = ai_enhance && enhance_ran && text_changed;
-            if show_enhance_toast {
-                let _ = app_handle.emit(
-                    "dictation-enhanced",
-                    serde_json::json!({
-                        "original": original_for_toast,
-                        "enhanced": enhanced_for_toast,
-                    }),
-                );
-            } else {
-                // Paste is done — park instantly. Don't linger on "Done" while history saves.
-                hide_overlay_if_current(&app_handle, paste_token);
-            }
+            // Paste is done — park instantly. No "Fixed grammar" toast: it only delays the pill.
+            hide_overlay_if_current(&app_handle, paste_token);
             emit_state_if_current(&app_handle, paste_token, "idle");
 
             let history_text = final_output.trim_end().to_string();
@@ -1078,7 +1057,7 @@ pub fn stop_dictation(app: &tauri::AppHandle) {
     // Keep capturing after hotkey-up: people release during the last syllable. A fixed
     // wait either chops endings or makes every take pay for the worst case, so stop as
     // soon as the mic has been quiet for TRAIL_QUIET_MS (after TRAIL_MIN_MS), capped.
-    let trail_max_ms: u64 = if elapsed_secs < 5.0 { 450 } else { 550 };
+    let trail_max_ms: u64 = if elapsed_secs < 5.0 { 320 } else { 420 };
     *state.released_at.lock().unwrap() = Some(Instant::now());
 
     let stop_tx = state.stop_tx.lock().unwrap().take();
