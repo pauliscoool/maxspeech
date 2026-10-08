@@ -3,7 +3,6 @@ package com.maxspeech.android.ui
 import android.Manifest
 import android.content.Intent
 import android.net.Uri
-import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.Animatable
@@ -109,10 +108,6 @@ fun MaxSpeechRoot(vm: AppViewModel) {
         ) { granted ->
             micOk = granted || TextInjector.micGranted(ctx)
         }
-        val notifLauncher = rememberLauncherForActivityResult(
-            ActivityResultContracts.RequestPermission(),
-        ) { }
-
         fun refreshPerms() {
             micOk = TextInjector.micGranted(ctx)
             overlayOk = TextInjector.overlayGranted(ctx)
@@ -152,9 +147,6 @@ fun MaxSpeechRoot(vm: AppViewModel) {
             }
             MaxSpeechApp.instance.floatingMic.ensureShown(ctx)
             OverlayService.start(ctx)
-            if (Build.VERSION.SDK_INT >= 33 && !TextInjector.notificationGranted(ctx)) {
-                notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-            }
             if (!a11yOk) {
                 snack.showSnackbar("Turn on MaxSpeech in Accessibility — required for the mic while typing")
             }
@@ -228,6 +220,9 @@ fun MaxSpeechRoot(vm: AppViewModel) {
                 }
                 else -> {
                     val dictation by MaxSpeechApp.instance.dictation.ui.collectAsStateWithLifecycle()
+                    LaunchedEffect(dictation.error) {
+                        dictation.error?.let { snack.showSnackbar(it) }
+                    }
                     val showUpgrade = state.plan.tier == com.maxspeech.android.data.PlanTier.Free
                     Box(Modifier.fillMaxSize()) {
                         Column(Modifier.fillMaxSize()) {
@@ -341,6 +336,7 @@ fun MaxSpeechRoot(vm: AppViewModel) {
                                     if (dictation.phase == DictationPhase.Error) {
                                         DictationRetryPill(
                                             message = dictation.error ?: "Something went wrong",
+                                            transcript = dictation.finalText.ifBlank { dictation.liveText },
                                             onRetry = vm::retryDictation,
                                             onDismiss = vm::cancelDictation,
                                             modifier = Modifier
@@ -408,6 +404,7 @@ private fun UpgradeNowBanner(onUpgrade: () -> Unit) {
 @Composable
 private fun DictationRetryPill(
     message: String,
+    transcript: String,
     onRetry: () -> Unit,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
@@ -424,14 +421,27 @@ private fun DictationRetryPill(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Text(
-            text = message,
-            color = c.text,
-            fontSize = 13.sp,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
+        Column(
             modifier = Modifier.weight(1f),
-        )
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Text(
+                text = message,
+                color = c.text,
+                fontSize = 12.sp,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (transcript.isNotBlank()) {
+                Text(
+                    text = transcript,
+                    color = c.textDim,
+                    fontSize = 11.sp,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
         Text(
             text = "Dismiss",
             color = c.textDim,

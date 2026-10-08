@@ -1,5 +1,6 @@
 package com.maxspeech.android.pipeline
 
+import java.io.IOException
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
@@ -35,6 +36,7 @@ class AudioCapture {
                 AudioFormat.CHANNEL_IN_MONO,
                 AudioFormat.ENCODING_PCM_16BIT,
             )
+            if (min <= 0) throw IOException("Android could not allocate a microphone buffer ($min).")
             val bufferSize = max(min, SAMPLE_RATE / 5)
             val rec = AudioRecord(
                 MediaRecorder.AudioSource.VOICE_RECOGNITION,
@@ -44,17 +46,28 @@ class AudioCapture {
                 bufferSize * 2,
             )
             record = rec
-            rec.startRecording()
-            // 50ms frames — snappier bars and less speech lost before STT opens.
-            val buf = ShortArray(SAMPLE_RATE / 20)
             try {
+                if (rec.state != AudioRecord.STATE_INITIALIZED) {
+                    throw IOException("Android could not initialize microphone recording.")
+                }
+                rec.startRecording()
+                if (rec.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
+                    throw IOException("Android could not start microphone recording.")
+                }
+                // 50ms frames — snappier bars and less speech lost before STT opens.
+                val buf = ShortArray(SAMPLE_RATE / 20)
                 while (isActive && rec.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
                     val n = rec.read(buf, 0, buf.size)
                     if (n > 0) {
                         val slice = buf.copyOf(n)
                         onPcm(slice)
                         onLevel(visualBars(slice))
+                    } else if (n < 0 && isActive) {
+                        throw IOException("Microphone read failed (error $n).")
                     }
+                }
+                if (isActive && record === rec && rec.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
+                    throw IOException("Microphone capture stopped unexpectedly.")
                 }
             } finally {
                 runCatching {

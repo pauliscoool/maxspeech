@@ -1,8 +1,6 @@
 package com.maxspeech.android
 
-import android.Manifest
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -12,7 +10,6 @@ import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Column
@@ -31,7 +28,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.lifecycleScope
 import com.maxspeech.android.overlay.OverlayService
@@ -43,10 +39,6 @@ import kotlinx.coroutines.launch
 class MainActivity : ComponentActivity() {
     private val vm: AppViewModel by viewModels()
     private var uiReady = false
-
-    private val notifPermission = registerForActivityResult(
-        ActivityResultContracts.RequestPermission(),
-    ) { if (uiReady) startFloatingMic() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -126,15 +118,6 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         if (uiReady) startFloatingMic()
-        if (Build.VERSION.SDK_INT >= 33) {
-            val granted = ContextCompat.checkSelfPermission(
-                this,
-                Manifest.permission.POST_NOTIFICATIONS,
-            ) == PackageManager.PERMISSION_GRANTED
-            if (!granted) {
-                notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-            }
-        }
     }
 
     private fun startFloatingMic() {

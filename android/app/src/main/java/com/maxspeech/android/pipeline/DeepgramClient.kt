@@ -76,7 +76,7 @@ class DeepgramClient {
                 synchronized(pendingLock) {
                     open.set(true)
                     while (pending.isNotEmpty()) {
-                        webSocket.send(pending.removeFirst())
+                        if (!webSocket.send(pending.removeFirst())) degraded = true
                     }
                 }
                 ready.trySend(Result.success(Unit))
@@ -192,7 +192,7 @@ class DeepgramClient {
                 }
             }
         }
-        socket?.send(payload)
+        if (socket?.send(payload) != true) degraded = true
     }
 
     /**

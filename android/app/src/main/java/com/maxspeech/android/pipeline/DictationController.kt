@@ -1,5 +1,6 @@
 package com.maxspeech.android.pipeline
 
+import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.os.Build
@@ -19,6 +20,7 @@ import com.maxspeech.android.data.PlanCalculator
 import com.maxspeech.android.data.SettingsRepository
 import com.maxspeech.android.data.UsageEntity
 import com.maxspeech.android.overlay.OverlayService
+import java.io.IOException
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.exp
 import kotlin.math.max
@@ -28,11 +30,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 enum class DictationPhase { Idle, Listening, Processing, Confirm, Error, Limit }
 
@@ -49,9 +53,6 @@ data class DictationUi(
 private const val BAR_COUNT = AudioCapture.BAR_COUNT
 private const val TAG = "MaxSpeechDictation"
 private const val THINKING_DIG_AFTER_S = 3f
-/** How long the Retry affordance stays visible after a failure. */
-const val DictationRetryWindowMs = 5_000L
-private const val RETRY_WINDOW_MS = DictationRetryWindowMs
 private const val STREAM_OPEN_TIMEOUT_MS = 6_000L
 private const val SAVED_RETRY_WINDOW_MS = 60_000L
 private const val AUTO_RETRY_PAUSE_MS = 10_000L
@@ -75,6 +76,7 @@ class DictationController(
 
     private var listenJob: Job? = null
     private var pcmJob: Job? = null
+    private var transcriptJob: Job? = null
     private var thinkingJob: Job? = null
     private var errorDismissJob: Job? = null
     // Tracked so cancel / a new session stops a stale finish from pasting or closing the new socket.
@@ -135,6 +137,8 @@ class DictationController(
         listenJob?.cancel()
         thinkingJob?.cancel()
         pcmJob?.cancel()
+        transcriptJob?.cancel()
+        transcriptJob = null
         audio.stop()
         finals.clear()
         lastInterim.clear()
@@ -167,7 +171,7 @@ class DictationController(
                 sessionKeys = keys
                 sessionLang = lang
                 stt.connect(keys, lang, Vocab.mergeKeyterms(dictionary, builtinKeyterms))
-                launch {
+                transcriptJob = scope.launch {
                     stt.chunks.collect { chunk ->
                         if (_ui.value.phase != DictationPhase.Listening &&
                             _ui.value.phase != DictationPhase.Processing
@@ -180,37 +184,47 @@ class DictationController(
                     }
                 }
                 pcmJob = launch {
-                    audio.start(
-                        onPcm = {
-                            stt.sendPcm(it)
-                            recordPcm(it)
-                        },
-                        onLevel = { bands ->
-                            if (_ui.value.phase != DictationPhase.Listening) return@start
-                            val now = SystemClock.uptimeMillis()
-                            // ~30fps — full recomposition every PCM frame was the "lag spikes".
-                            if (now - lastLevelUiAt < 32L) return@start
-                            lastLevelUiAt = now
-                            val next = MutableList(BAR_COUNT) { 0.14f }
-                            for (i in 0 until BAR_COUNT) {
-                                val src = if (bands.size == BAR_COUNT) {
-                                    bands[i]
-                                } else {
-                                    val t = i / (BAR_COUNT - 1).toFloat()
-                                    val idx = (t * (bands.size - 1)).toInt()
-                                        .coerceIn(0, bands.lastIndex)
-                                    bands.getOrElse(idx) { 0.14f }
+                    try {
+                        audio.start(
+                            onPcm = {
+                                // Keep a local recovery copy before attempting the live socket.
+                                recordPcm(it)
+                                stt.sendPcm(it)
+                            },
+                            onLevel = { bands ->
+                                if (_ui.value.phase != DictationPhase.Listening) return@start
+                                val now = SystemClock.uptimeMillis()
+                                // ~30fps — full recomposition every PCM frame was the "lag spikes".
+                                if (now - lastLevelUiAt < 32L) return@start
+                                lastLevelUiAt = now
+                                val next = MutableList(BAR_COUNT) { 0.14f }
+                                for (i in 0 until BAR_COUNT) {
+                                    val src = if (bands.size == BAR_COUNT) {
+                                        bands[i]
+                                    } else {
+                                        val t = i / (BAR_COUNT - 1).toFloat()
+                                        val idx = (t * (bands.size - 1)).toInt()
+                                            .coerceIn(0, bands.lastIndex)
+                                        bands.getOrElse(idx) { 0.14f }
+                                    }
+                                    val target = src.coerceIn(0.12f, 0.98f)
+                                    val prev = smoothed[i]
+                                    val alpha = if (target > prev) 0.72f else 0.32f
+                                    val v = prev + (target - prev) * alpha
+                                    smoothed[i] = v
+                                    next[i] = v
                                 }
-                                val target = src.coerceIn(0.12f, 0.98f)
-                                val prev = smoothed[i]
-                                val alpha = if (target > prev) 0.72f else 0.32f
-                                val v = prev + (target - prev) * alpha
-                                smoothed[i] = v
-                                next[i] = v
-                            }
-                            _ui.value = _ui.value.copy(levels = next)
-                        },
-                    )
+                                _ui.value = _ui.value.copy(levels = next)
+                            },
+                        )
+                        if (isActive && _ui.value.phase == DictationPhase.Listening) {
+                            handleCaptureFailure(IOException("Microphone capture stopped unexpectedly."))
+                        }
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        handleCaptureFailure(e)
+                    }
                 }
                 // Plan / dictionary in parallel — don't block first audio.
                 val planOk = async(Dispatchers.IO) {
@@ -223,6 +237,8 @@ class DictationController(
                     pcmJob?.cancel()
                     audio.stop()
                     stt.close()
+                    transcriptJob?.cancel()
+                    transcriptJob = null
                     presentError("Weekly word limit reached", autoClearMs = 2_400)
                     return@launch
                 }
@@ -242,6 +258,8 @@ class DictationController(
                 thinkingJob?.cancel()
                 audio.stop()
                 stt.close()
+                transcriptJob?.cancel()
+                transcriptJob = null
                 val msg = e.message.orEmpty()
                 if (msg.equals("done", ignoreCase = true) ||
                     msg.equals("closed", ignoreCase = true)
@@ -250,6 +268,34 @@ class DictationController(
                 }
                 presentError(e.message ?: "Mic / STT failed")
             }
+        }
+    }
+
+    private fun handleCaptureFailure(error: Exception) {
+        if (_ui.value.phase != DictationPhase.Listening) return
+        Log.e(TAG, "Audio capture failed", error)
+        val preview = TranscriptMerge.display(finals, lastInterim)
+            .ifBlank { _ui.value.liveText }
+            .trim()
+        if (preview.isNotBlank() || audio.heardVoice) {
+            // Stop capture and let the batch path recover whatever the stream missed.
+            stopAndFinish()
+        } else {
+            val pcm = synchronized(pcmLock) { pcmCapture.toByteArray() }
+            if (pcm.size >= MIN_PCM_BYTES) {
+                savedPcm = pcm
+                savedHeldMs = (System.currentTimeMillis() - listenStartedAtMs).coerceAtLeast(0L)
+                savedConfirmOnly = !pasteIntoFocusedApp
+            }
+            presentError(
+                buildString {
+                    append(
+                        error.message?.takeIf { it.isNotBlank() }
+                            ?: "Microphone capture failed. Check microphone permission and try again.",
+                    )
+                    if (savedPcm != null) append(" A recording was saved; tap Retry to recover it.")
+                },
+            )
         }
     }
 
@@ -278,6 +324,8 @@ class DictationController(
         finishJob?.cancel()
         listenJob?.cancel()
         pcmJob?.cancel()
+        transcriptJob?.cancel()
+        transcriptJob = null
         thinkingJob?.cancel()
         audio.stop()
         stt.close()
@@ -314,6 +362,17 @@ class DictationController(
         finishJob = scope.launch {
             try {
                 finishInternal(confirmOnly = !pasteIntoFocusedApp)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "Dictation finalization failed", e)
+                thinkingJob?.cancel()
+                audio.stop()
+                pcmJob?.cancel()
+                transcriptJob?.cancel()
+                transcriptJob = null
+                stt.close()
+                presentError(e.message?.takeIf { it.isNotBlank() } ?: "Dictation could not be completed.")
             } finally {
                 finishing.set(false)
             }
@@ -325,8 +384,21 @@ class DictationController(
         scope.launch {
             val text = _ui.value.finalText
             if (text.isNotBlank() && pasteIntoFocusedApp) {
-                TextInjector.insert(context, text)
-                onPasted(text)
+                val inserted = runCatching { TextInjector.insert(context, text) }.getOrDefault(false)
+                if (inserted) {
+                    onPasted(text)
+                } else {
+                    val copied = copyTranscriptToClipboard(text)
+                    presentError(
+                        if (copied) {
+                            "Couldn't paste automatically. The transcript was copied to the clipboard; paste it manually."
+                        } else {
+                            "Couldn't paste or copy the transcript. It is still shown in MaxSpeech."
+                        },
+                        transcript = text,
+                    )
+                    return@launch
+                }
             }
             OverlayService.notifyRecording(context, false)
             _ui.value = DictationUi()
@@ -362,6 +434,8 @@ class DictationController(
         val streamComplete = stt.finishAndFlush()
         // Let the chunk collector apply the last final before we merge.
         delay(80)
+        transcriptJob?.cancelAndJoin()
+        transcriptJob = null
         val merged = TranscriptMerge.mergeTrailing(finals.toString(), lastInterim.toString())
         // Finals are Deepgram's corrected words. The longest-string pick used to win with
         // stale interim guesses that Deepgram had already revised (words never said).
@@ -378,22 +452,88 @@ class DictationController(
             val batch = batchFallback(pcm)
             Log.i(TAG, "batch: pcm=${pcm.size}B result=${batch::class.simpleName}")
             when (batch) {
-                is BatchResult.Text -> if (batch.text.isNotBlank()) raw = batch.text
+                is BatchResult.Text -> {
+                    if (batch.text.isNotBlank()) {
+                        raw = batch.text
+                    } else if (!streamComplete && raw.isNotBlank()) {
+                        preservePartialTranscript(
+                            raw,
+                            pcm,
+                            heldMs,
+                            confirmOnly,
+                            "Transcription was interrupted.",
+                            retryRecording = true,
+                        )
+                        return
+                    }
+                }
                 is BatchResult.Rejected -> if (raw.isBlank()) {
                     presentError(batch.message)
                     return
+                } else {
+                    preservePartialTranscript(
+                        raw,
+                        pcm,
+                        heldMs,
+                        confirmOnly,
+                        "Transcription could not finish: ${batch.message}",
+                        retryRecording = false,
+                    )
+                    return
                 }
-                BatchResult.Unreachable -> if (raw.isBlank() && pcm.size >= MIN_PCM_BYTES) {
-                    savedPcm = pcm
-                    savedHeldMs = heldMs
-                    savedConfirmOnly = confirmOnly
-                    presentError("No connection. Recording saved, tap retry.", autoClearMs = SAVED_RETRY_WINDOW_MS)
-                    autoRetryWhenOnline()
+                BatchResult.Unreachable -> {
+                    if (raw.isNotBlank()) {
+                        preservePartialTranscript(
+                            raw,
+                            pcm,
+                            heldMs,
+                            confirmOnly,
+                            "Transcription connection was lost.",
+                            retryRecording = true,
+                        )
+                        return
+                    }
+                    if (pcm.size >= MIN_PCM_BYTES) {
+                        savedPcm = pcm
+                        savedHeldMs = heldMs
+                        savedConfirmOnly = confirmOnly
+                        presentError("No connection. Recording saved, tap Retry.")
+                        autoRetryWhenOnline()
+                        return
+                    }
+                    presentError("No transcript was returned. Check the microphone and connection, then try again.")
                     return
                 }
             }
         }
         processTranscript(raw, snap, heldMs, confirmOnly)
+    }
+
+    private fun preservePartialTranscript(
+        partial: String,
+        pcm: ByteArray,
+        heldMs: Long,
+        confirmOnly: Boolean,
+        reason: String,
+        retryRecording: Boolean,
+    ) {
+        val retryAudio = pcm.takeIf { retryRecording && it.size >= MIN_PCM_BYTES }
+        savedPcm = retryAudio
+        savedHeldMs = heldMs
+        savedConfirmOnly = confirmOnly
+        val copied = copyTranscriptToClipboard(partial)
+        val copyStatus = if (copied) {
+            "Partial transcript copied to the clipboard."
+        } else {
+            "Partial transcript is still available in MaxSpeech."
+        }
+        val retryStatus = if (retryAudio != null) {
+            "Tap Retry to recover the full recording."
+        } else {
+            "Please start a new dictation to try again."
+        }
+        presentError("$reason $copyStatus $retryStatus", transcript = partial)
+        if (retryAudio != null) autoRetryWhenOnline()
     }
 
     private suspend fun processTranscript(raw: String, snap: AppSettings, heldMs: Long, confirmOnly: Boolean) {
@@ -470,29 +610,48 @@ class DictationController(
                 liveText = historyText,
                 levels = List(BAR_COUNT) { 0.14f },
             )
-            scope.launch(Dispatchers.IO) {
-                runCatching {
-                    db.historyDao().insert(
-                        HistoryEntity(text = historyText, appName = historyApp, enhanced = enhanced),
-                    )
-                    db.usageDao().insert(UsageEntity(wordCount = wordCount))
-                }
-            }
+            saveHistoryAndUsage(historyText, historyApp, enhanced, wordCount)
             return
         }
 
+        var pasteFailure: String? = null
         if (pasteIntoFocusedApp && out.isNotBlank()) {
-            TextInjector.insert(context, historyText)
-            onPasted(historyText)
+            val inserted = runCatching { TextInjector.insert(context, historyText) }.getOrDefault(false)
+            if (inserted) {
+                onPasted(historyText)
+            } else {
+                val copied = copyTranscriptToClipboard(historyText)
+                pasteFailure = if (copied) {
+                    "Couldn't paste automatically. The transcript was copied to the clipboard; paste it manually."
+                } else {
+                    "Couldn't paste or copy the transcript. It is still shown in MaxSpeech."
+                }
+            }
         }
         OverlayService.notifyRecording(context, false)
-        _ui.value = DictationUi()
+        if (pasteFailure == null) {
+            _ui.value = DictationUi()
+        } else {
+            presentError(pasteFailure, transcript = historyText)
+        }
+        saveHistoryAndUsage(historyText, historyApp, enhanced, wordCount)
+    }
+
+    private fun saveHistoryAndUsage(text: String, appName: String, enhanced: Boolean, wordCount: Int) {
         scope.launch(Dispatchers.IO) {
-            runCatching {
-                db.historyDao().insert(
-                    HistoryEntity(text = historyText, appName = historyApp, enhanced = enhanced),
-                )
+            try {
+                db.historyDao().insert(HistoryEntity(text = text, appName = appName, enhanced = enhanced))
                 db.usageDao().insert(UsageEntity(wordCount = wordCount))
+            } catch (e: Exception) {
+                Log.e(TAG, "Could not save completed dictation", e)
+                withContext(Dispatchers.Main.immediate) {
+                    if (_ui.value.phase == DictationPhase.Idle || _ui.value.phase == DictationPhase.Confirm) {
+                        presentError(
+                            "Dictation was processed, but History or usage could not be fully saved.",
+                            transcript = text,
+                        )
+                    }
+                }
             }
         }
     }
@@ -587,10 +746,16 @@ class DictationController(
                     }
                     BatchResult.Unreachable -> {
                         thinkingJob?.cancel()
-                        presentError("Still no connection. Recording kept, tap retry.", autoClearMs = SAVED_RETRY_WINDOW_MS)
+                        presentError("Still no connection. Recording kept, tap Retry.")
                         autoRetryWhenOnline()
                     }
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "Saved dictation recovery failed", e)
+                thinkingJob?.cancel()
+                presentError(e.message?.takeIf { it.isNotBlank() } ?: "Saved recording could not be recovered.")
             } finally {
                 finishing.set(false)
             }
@@ -661,6 +826,12 @@ class DictationController(
         cm.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString()
     }.getOrNull().orEmpty()
 
+    private fun copyTranscriptToClipboard(text: String): Boolean = runCatching {
+        val cm = context.getSystemService(ClipboardManager::class.java)
+        cm.setPrimaryClip(ClipData.newPlainText("MaxSpeech transcript", text))
+        true
+    }.getOrDefault(false)
+
     private suspend fun resolveTone(pkg: String, override: String): String {
         if (override.isNotBlank() && override != "default") return override
         val profiles = db.profileDao().all().filter { it.enabled }
@@ -670,9 +841,13 @@ class DictationController(
         return hit?.tone ?: "default"
     }
 
-    private fun presentError(message: String, autoClearMs: Long = RETRY_WINDOW_MS) {
+    private fun presentError(
+        message: String,
+        autoClearMs: Long? = null,
+        transcript: String? = null,
+    ) {
         OverlayService.notifyRecording(context, false)
-        val snippet = listOf(
+        val snippet = transcript?.trim()?.takeIf { it.isNotBlank() } ?: listOf(
             _ui.value.liveText.trim(),
             _ui.value.finalText.trim(),
             _ui.value.originalText.trim(),
@@ -683,6 +858,8 @@ class DictationController(
             error = message,
             targetApp = sessionApp,
             liveText = snippet,
+            finalText = transcript.orEmpty(),
+            originalText = snippet,
         )
         scope.launch(Dispatchers.IO) {
             runCatching {
@@ -694,13 +871,17 @@ class DictationController(
                         errorMessage = message,
                     ),
                 )
+            }.onFailure {
+                Log.e(TAG, "Could not save dictation failure to history", it)
             }
         }
         errorDismissJob?.cancel()
-        errorDismissJob = scope.launch {
-            delay(autoClearMs)
-            if (_ui.value.phase == DictationPhase.Error) {
-                _ui.value = DictationUi()
+        errorDismissJob = autoClearMs?.takeIf { it > 0L }?.let { clearAfter ->
+            scope.launch {
+                delay(clearAfter)
+                if (_ui.value.phase == DictationPhase.Error) {
+                    _ui.value = DictationUi()
+                }
             }
         }
     }
