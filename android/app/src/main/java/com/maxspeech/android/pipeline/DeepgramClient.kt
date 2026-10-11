@@ -25,7 +25,8 @@ import okhttp3.WebSocketListener
 import okio.ByteString.Companion.toByteString
 import org.json.JSONObject
 
-data class TranscriptChunk(val text: String, val isFinal: Boolean)
+/** [startMs] is the segment's start in the stream, used to drop re-sent finals. */
+data class TranscriptChunk(val text: String, val isFinal: Boolean, val startMs: Long = -1L)
 
 class DeepgramClient {
     private val http = OkHttpClient.Builder()
@@ -122,10 +123,7 @@ class DeepgramClient {
         val sb = StringBuilder(
             "https://api.deepgram.com/v1/listen?model=nova-3&language=$language&punctuate=true&smart_format=true&numerals=true&encoding=linear16&sample_rate=16000&channels=1",
         )
-        for (term in keyterms.take(Vocab.MAX_KEYTERMS)) {
-            val t = term.trim()
-            if (t.isNotEmpty()) sb.append("&keyterm=").append(URLEncoder.encode(t, "UTF-8"))
-        }
+        for (t in Vocab.fitKeytermBudget(keyterms)) sb.append("&keyterm=").append(URLEncoder.encode(t, "UTF-8"))
         val url = sb.toString()
         val audioSecs = pcm.size / 32_000L
         val perTryMs = (20_000L + audioSecs * 500L).coerceAtMost(40_000L)
@@ -278,10 +276,12 @@ class DeepgramClient {
             if (alts.length() == 0) return
             val transcript = alts.getJSONObject(0).optString("transcript")
             if (transcript.isBlank()) return
-            val isFinal = json.optBoolean("is_final", false) || json.optBoolean("speech_final", false)
+            // speech_final only marks an utterance boundary; is_final is what commits text.
+            val isFinal = json.optBoolean("is_final", false)
             if (isFinal) finalCount.incrementAndGet()
             interimPending = !isFinal
-            _chunks.tryEmit(TranscriptChunk(transcript, isFinal))
+            val startMs = (json.optDouble("start", -1.0) * 1000).toLong()
+            _chunks.tryEmit(TranscriptChunk(transcript, isFinal, startMs))
         }
     }
 
@@ -291,12 +291,8 @@ class DeepgramClient {
         val sb = StringBuilder(
             "wss://api.deepgram.com/v1/listen?model=nova-3&language=$language&punctuate=true&interim_results=true&smart_format=true&numerals=true&endpointing=$endpointing&encoding=linear16&sample_rate=16000&channels=1",
         )
-        for (term in keyterms.take(Vocab.MAX_KEYTERMS)) {
-            val t = term.trim()
-            if (t.isNotEmpty()) {
-                sb.append("&keyterm=").append(URLEncoder.encode(t, "UTF-8"))
-            }
-        }
+        // Over Nova-3's 500-token keyterm limit the stream silently stops transcribing.
+        for (t in Vocab.fitKeytermBudget(keyterms)) sb.append("&keyterm=").append(URLEncoder.encode(t, "UTF-8"))
         return sb.toString()
     }
 

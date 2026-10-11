@@ -418,7 +418,11 @@ object LocalCleanup {
     private val CASUAL_AFTER = setOf("bro", "bruh", "dude", "fam", "man", "bestie")
     private val CASUAL_BEFORE = setOf("bro", "bruh", "dude", "fam", "bestie")
 
-    fun fixCasualAddressCommas(text: String): String {
+    /** Per line, so list items and paragraphs survive. */
+    fun fixCasualAddressCommas(text: String): String =
+        text.split('\n').joinToString("\n") { fixCasualAddressCommasLine(it) }
+
+    private fun fixCasualAddressCommasLine(text: String): String {
         val words = words(text)
         val out = ArrayList<String>(words.size)
         for ((i, w) in words.withIndex()) {

@@ -6,7 +6,9 @@ import android.media.SoundPool
 import com.maxspeech.android.R
 
 /**
- * Short bubble-click cue for dictation start/stop (Settings → Start / stop sound).
+ * Short click for dictation start/stop (Settings → Start / stop sound, with volume).
+ * USAGE_ASSISTANT follows the media-style assistant volume instead of the touch-sound
+ * volume that many phones keep muted.
  */
 class SoundCue(context: Context) {
     private val app = context.applicationContext
@@ -14,7 +16,7 @@ class SoundCue(context: Context) {
         .setMaxStreams(2)
         .setAudioAttributes(
             AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
+                .setUsage(AudioAttributes.USAGE_ASSISTANT)
                 .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                 .build(),
         )
@@ -29,9 +31,10 @@ class SoundCue(context: Context) {
         }
     }
 
-    fun play(volume: Float = 0.85f) {
+    fun play(volume: Float) {
         if (!ready || soundId == 0) return
-        val v = volume.coerceIn(0.05f, 1f)
+        val v = volume.coerceIn(0f, 1f)
+        if (v == 0f) return
         pool.play(soundId, v, v, 1, 0, 1f)
     }
 

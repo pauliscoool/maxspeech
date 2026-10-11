@@ -109,9 +109,12 @@ fun OverlayCapsule(
     val scale = (sizeScale * WidgetBump).coerceIn(0.55f, 1.55f)
     val alpha = surfaceAlpha.coerceIn(0.25f, 1f)
     // Error keeps the mic visible — Retry is a side chip, never replaces dictation UI.
-    val expanded = ui.phase == DictationPhase.Confirm ||
-        ui.phase == DictationPhase.Listening ||
-        ui.phase == DictationPhase.Processing
+    var holdTalking by remember { mutableStateOf(false) }
+    val expanded = !holdTalking && (
+        ui.phase == DictationPhase.Confirm ||
+            ui.phase == DictationPhase.Listening ||
+            ui.phase == DictationPhase.Processing
+        )
     val showRetryChip = ui.phase == DictationPhase.Error
     var lastSize by remember { mutableStateOf(IntSize.Zero) }
 
@@ -152,11 +155,7 @@ fun OverlayCapsule(
             },
             label = "overlayExpand",
         ) { showControls ->
-            val blurP by transition.animateFloat(
-                transitionSpec = { tween(200, easing = FastOutSlowInEasing) },
-                label = "overlayBlur",
-            ) { s -> if (s == EnterExitState.Visible) 0f else 1f }
-            Box(Modifier.blur(14.dp * blurP)) {
+            Box {
             if (showControls) {
                 ListeningControls(
                     levels = ui.levels,
@@ -208,6 +207,16 @@ fun OverlayCapsule(
                         // Mic always starts a fresh listen — also clears a prior error.
                         // Saved-audio retry lives on the Retry chip only.
                         onToggle = onHoldStart,
+                        onTalkStart = {
+                            holdTalking = true
+                            onHoldStart()
+                        },
+                        onTalkEnd = {
+                            holdTalking = false
+                            onHoldEnd()
+                        },
+                        talking = holdTalking,
+                        levels = ui.levels,
                         onDragStart = onDragStart,
                         onDragTo = onDragTo,
                         onDragEnd = onDragEnd,
@@ -345,6 +354,10 @@ fun FloatingMicBubble(
     size: Dp,
     surfaceAlpha: Float,
     onToggle: () -> Unit,
+    onTalkStart: (() -> Unit)? = null,
+    onTalkEnd: (() -> Unit)? = null,
+    talking: Boolean = false,
+    levels: List<Float> = emptyList(),
     onDragStart: (Float, Float) -> Unit,
     onDragTo: (Float, Float) -> Unit,
     onDragEnd: () -> Unit = {},
@@ -366,6 +379,7 @@ fun FloatingMicBubble(
     )
     val ring by animateColorAsState(
         targetValue = when {
+            talking -> Turquoise
             moving -> Turquoise.copy(alpha = 0.7f)
             errorRing -> Orange.copy(alpha = 0.85f)
             pressing -> Turquoise.copy(alpha = 0.55f)
@@ -380,6 +394,7 @@ fun FloatingMicBubble(
             // graphicsLayer scale — does not change layout size (avoids WM thrash).
             .graphicsLayer {
                 val s = when {
+                    talking -> 1.12f
                     moving -> 1.04f
                     pressing -> 0.96f
                     else -> 1f
@@ -400,18 +415,31 @@ fun FloatingMicBubble(
                 onDragEnd = onDragEnd,
                 onDismissArmed = onDismissArmed,
                 onTap = onToggle,
+                onHoldTalkStart = onTalkStart,
+                onHoldTalkEnd = onTalkEnd,
                 onPressing = { pressing = it },
                 onMoving = { moving = it },
             )
-            .semantics { contentDescription = "Start dictation" },
+            .semantics { contentDescription = "Tap to dictate, or hold to talk" },
         contentAlignment = Alignment.Center,
     ) {
-        Icon(
-            Icons.Filled.Mic,
-            contentDescription = null,
-            tint = micColor,
-            modifier = Modifier.size(size * 0.42f),
-        )
+        if (talking && levels.isNotEmpty()) {
+            WindowsWaveform(
+                levels = levels,
+                barCount = 5,
+                maxBarHeight = size * 0.42f,
+                barWidth = size * 0.07f,
+                barGap = size * 0.05f,
+                modifier = Modifier.height(size * 0.42f).width(size * 0.55f),
+            )
+        } else {
+            Icon(
+                Icons.Filled.Mic,
+                contentDescription = null,
+                tint = micColor,
+                modifier = Modifier.size(size * 0.42f),
+            )
+        }
     }
 }
 
@@ -428,10 +456,14 @@ fun Modifier.holdToMove(
     onDragEnd: () -> Unit = {},
     onDismissArmed: (Boolean) -> Unit = {},
     onTap: (() -> Unit)? = null,
+    onHoldTalkStart: (() -> Unit)? = null,
+    onHoldTalkEnd: (() -> Unit)? = null,
     onPressing: ((Boolean) -> Unit)? = null,
     onMoving: ((Boolean) -> Unit)? = null,
 ): Modifier {
     val tapState = rememberUpdatedState(onTap)
+    val talkStartState = rememberUpdatedState(onHoldTalkStart)
+    val talkEndState = rememberUpdatedState(onHoldTalkEnd)
     val dragStartState = rememberUpdatedState(onDragStart)
     val dragToState = rememberUpdatedState(onDragTo)
     val dragEndState = rememberUpdatedState(onDragEnd)
@@ -449,26 +481,45 @@ fun Modifier.holdToMove(
                 pressingState.value?.invoke(true)
                 var enteredMove = false
                 var dismissArmed = false
-                val downAt = System.nanoTime()
+                var talking = false
+                var downAt = System.nanoTime()
+                val canTalk = talkStartState.value != null
+                val slop = viewConfiguration.touchSlop
                 try {
-                    val releasedEarly = withTimeoutOrNull(MoveHoldMs) {
+                    // Released = tap, Moved = drag, still holding after the wait = hold-to-talk
+                    // (or drag, for controls without talk).
+                    val outcome = withTimeoutOrNull(if (canTalk) HoldTalkMs else MoveHoldMs) {
                         while (true) {
                             val event = awaitPointerEvent(PointerEventPass.Main)
                             val change = event.changes.firstOrNull { it.id == down.id }
-                                ?: return@withTimeoutOrNull true
+                                ?: return@withTimeoutOrNull Gesture.Tap
                             if (!change.pressed) {
                                 change.consume()
-                                return@withTimeoutOrNull true
+                                return@withTimeoutOrNull Gesture.Tap
+                            }
+                            if (canTalk && (change.position - down.position).getDistance() > slop) {
+                                change.consume()
+                                return@withTimeoutOrNull Gesture.Drag
                             }
                             change.consume()
                         }
                         @Suppress("UNREACHABLE_CODE")
-                        false
-                    }
+                        Gesture.Drag
+                    } ?: if (canTalk) Gesture.Talk else Gesture.Drag
 
-                    if (releasedEarly == true) {
+                    if (outcome == Gesture.Tap) {
                         tapState.value?.invoke()
+                    } else if (outcome == Gesture.Talk) {
+                        talking = true
+                        talkStartState.value?.invoke()
+                        while (true) {
+                            val event = awaitPointerEvent(PointerEventPass.Main)
+                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                            change.consume()
+                            if (!change.pressed) break
+                        }
                     } else {
+                        downAt = System.nanoTime()
                         enteredMove = true
                         movingState.value?.invoke(true)
                         fun screenOf(change: androidx.compose.ui.input.pointer.PointerInputChange): Offset {
@@ -503,6 +554,8 @@ fun Modifier.holdToMove(
                         dragEndState.value()
                     }
                 } finally {
+                    // Also on cancellation (window detached mid-hold): never leave the mic recording.
+                    if (talking) talkEndState.value?.invoke()
                     if (dismissArmed) dismissArmState.value(false)
                     if (enteredMove) movingState.value?.invoke(false)
                     pressingState.value?.invoke(false)
@@ -513,5 +566,9 @@ fun Modifier.holdToMove(
 
 /** Long-press before drag — short enough to feel responsive, long enough vs tap. */
 private const val MoveHoldMs = 450L
+/** Holding the mic this long without moving starts push-to-talk (Wispr-style). */
+private const val HoldTalkMs = 220L
+
+private enum class Gesture { Tap, Drag, Talk }
 /** Hold this long before the bottom dismiss-X target appears. */
 const val DismissArmMs = 3_000L

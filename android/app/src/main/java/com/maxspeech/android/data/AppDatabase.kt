@@ -130,6 +130,9 @@ interface SubstitutionDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(row: SubstitutionEntity)
+
+    @Query("DELETE FROM substitutions")
+    suspend fun clear()
 }
 
 @Dao

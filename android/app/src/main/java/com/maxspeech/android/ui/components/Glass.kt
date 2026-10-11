@@ -13,7 +13,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
@@ -24,19 +23,14 @@ import com.maxspeech.android.ui.theme.LocalGlassAlpha
 import com.maxspeech.android.ui.theme.LocalMsColors
 import com.maxspeech.android.ui.theme.TitleSmall
 
-/** Plain solid fill — no frost / liquid sheen. */
+/** Flat solid fill with a hairline — no shadow, glow or frost. */
+@Suppress("UNUSED_PARAMETER")
 fun Modifier.plainSurface(
     shape: Shape,
     fill: Color,
     hairline: Color,
-    elevation: Dp = 6.dp,
+    elevation: Dp = 0.dp,
 ): Modifier = this
-    .shadow(
-        elevation = elevation,
-        shape = shape,
-        ambientColor = Color.Black.copy(alpha = 0.40f),
-        spotColor = Color.Black.copy(alpha = 0.22f),
-    )
     .clip(shape)
     .background(fill, shape)
     .border(Dp.Hairline, hairline, shape)

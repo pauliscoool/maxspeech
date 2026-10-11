@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
@@ -29,6 +30,8 @@ import androidx.compose.material.icons.outlined.Layers
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.RestartAlt
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
@@ -44,7 +47,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.maxspeech.android.data.AppSettings
 import com.maxspeech.android.data.AuthUser
-import com.maxspeech.android.data.EnhanceSpeed
 import com.maxspeech.android.data.PlanStatus
 import com.maxspeech.android.data.SttLanguages
 import com.maxspeech.android.data.UiTheme
@@ -65,7 +67,9 @@ fun SettingsScreen(
     a11yOn: Boolean,
     overlayOn: Boolean,
     onTheme: (UiTheme) -> Unit,
-    onEnhanceSpeed: (EnhanceSpeed) -> Unit,
+    onSoundVolume: (Float) -> Unit,
+    onOpenPlan: () -> Unit,
+    onSoundVolumePreview: () -> Unit,
     onResetMicPosition: () -> Unit,
     onToggle: (String, Boolean) -> Unit,
     onLanguage: (String) -> Unit,
@@ -106,14 +110,10 @@ fun SettingsScreen(
             Column(Modifier.padding(16.dp)) {
                 Text(user?.username.orEmpty(), color = c.text, fontSize = 16.sp, fontWeight = FontWeight.Medium)
                 Text(user?.email.orEmpty(), color = c.textDim, fontSize = 13.sp)
-                Text(
-                    "${plan.tier.label} · ${plan.wordsUsed} / ${plan.weeklyLimit} words this week",
-                    color = c.turquoise,
-                    fontSize = 13.sp,
-                    modifier = Modifier.padding(top = 8.dp),
-                )
             }
         }
+        Spacer(Modifier.height(10.dp))
+        com.maxspeech.android.ui.plan.UsageCard(plan, onClick = onOpenPlan)
 
         // 2 — Theme
         Section("Theme")
@@ -223,34 +223,9 @@ fun SettingsScreen(
             Column(Modifier.padding(16.dp)) {
                 ToggleRow(
                     "AI enhance",
-                    "Clean grammar, fillers, and self-corrections",
+                    "Fix misheard words, fillers, self-corrections and lists",
                     settings.aiEnhance,
                 ) { onToggle("enhance", it) }
-                if (settings.aiEnhance) {
-                    Text("Enhance speed", color = c.text, modifier = Modifier.padding(top = 10.dp))
-                    Text(
-                        "Fast = quicker paste. Thinking / Ultra take longer for cleaner prose.",
-                        color = c.textDim,
-                        fontSize = 12.sp,
-                        modifier = Modifier.padding(top = 4.dp, bottom = 8.dp),
-                    )
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        EnhanceSpeed.entries.forEach { speed ->
-                            GlassChip(
-                                label = speed.name,
-                                selected = settings.enhanceSpeed == speed,
-                            ) { onEnhanceSpeed(speed) }
-                        }
-                    }
-                }
-                ToggleRow(
-                    "Show live transcript",
-                    "Show words on the capsule while speaking",
-                    settings.liveTranscript,
-                ) { onToggle("live", it) }
                 ToggleRow(
                     "Trailing space",
                     "Add a space after each insertion so you can keep typing",
@@ -258,9 +233,25 @@ fun SettingsScreen(
                 ) { onToggle("space", it) }
                 ToggleRow(
                     "Start / stop sound",
-                    "Bubble click when dictation starts and stops",
+                    "Click when dictation starts and stops",
                     settings.soundCue,
                 ) { onToggle("sound", it) }
+                if (settings.soundCue) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("Volume", color = c.textDim, fontSize = 13.sp, modifier = Modifier.width(64.dp))
+                        Slider(
+                            value = settings.soundVolume,
+                            onValueChange = onSoundVolume,
+                            onValueChangeFinished = onSoundVolumePreview,
+                            modifier = Modifier.weight(1f),
+                            colors = SliderDefaults.colors(thumbColor = Turquoise, activeTrackColor = Turquoise),
+                        )
+                        Text("${(settings.soundVolume * 100).toInt()}%", color = c.textDim, fontSize = 13.sp, modifier = Modifier.width(44.dp).padding(start = 8.dp))
+                    }
+                }
                 ToggleRow(
                     "Haptics",
                     "Light vibration when a session starts",

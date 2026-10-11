@@ -13,8 +13,8 @@ android {
         applicationId = "com.maxspeech.android"
         minSdk = 26
         targetSdk = 35
-        versionCode = 71
-        versionName = "0.4-beta"
+        versionCode = 72
+        versionName = "0.5-beta"
         vectorDrawables.useSupportLibrary = true
     }
 

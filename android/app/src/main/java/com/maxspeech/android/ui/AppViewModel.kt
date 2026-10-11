@@ -9,7 +9,6 @@ import com.maxspeech.android.data.AppProfileEntity
 import com.maxspeech.android.data.AppSettings
 import com.maxspeech.android.data.AuthUser
 import com.maxspeech.android.data.DictionaryEntity
-import com.maxspeech.android.data.EnhanceSpeed
 import com.maxspeech.android.data.HistoryEntity
 import com.maxspeech.android.data.OverlayStyle
 import com.maxspeech.android.data.PlanCalculator
@@ -48,6 +47,8 @@ data class UiState(
     val toast: String? = null,
     val ready: Boolean = false,
 )
+
+private const val BILLING_URL = "https://maxspeech.vercel.app/checkout"
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val ms = getApplication<MaxSpeechApp>()
@@ -162,9 +163,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun setOverlayWaveScale(v: Float) = viewModelScope.launch { ms.settings.setOverlayWaveScale(v) }
     fun setOverlayMicColor(argb: Long) = viewModelScope.launch { ms.settings.setOverlayMicColor(argb) }
     fun setOverlayStyle(style: OverlayStyle) = viewModelScope.launch { ms.settings.setOverlayStyle(style) }
-    fun setEnhanceSpeed(s: EnhanceSpeed) = viewModelScope.launch { ms.settings.setEnhanceSpeed(s) }
+    fun setSoundVolume(v: Float) = viewModelScope.launch { ms.settings.setSoundVolume(v) }
+    fun previewSound() = ms.dictation.previewSoundCue()
     fun setDeepgramKey(v: String) = viewModelScope.launch { ms.settings.setDeepgramKey(v) }
-    fun setLlmKey(v: String) = viewModelScope.launch { ms.settings.setLlmKey(v) }
     fun resetOverlayPosition() = viewModelScope.launch {
         ms.settings.setOverlayCenter(0.82f, 0.48f)
         ms.floatingMic.resetToDefault()
@@ -190,7 +191,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 ms.settings.setSoundCue(on)
                 if (on) ms.dictation.previewSoundCue()
             }
-            "live" -> ms.settings.setLiveTranscript(on)
         }
     }
 
@@ -326,6 +326,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun finishOnboarding() = viewModelScope.launch {
         ms.settings.setOverlayEnabled(true)
         ms.settings.setOnboarded(true)
+    }
+
+    /** Pull the latest plan_tier (e.g. right after a Stripe checkout). */
+    fun refreshPlan() = viewModelScope.launch { runCatching { ms.auth.refreshProfile() } }
+
+    /**
+     * Open Stripe checkout (or the billing portal when [tier] is null) on the website.
+     * The session token rides in the URL fragment, which browsers never send to servers.
+     */
+    fun openBilling(tier: PlanTier?) = viewModelScope.launch {
+        val token = runCatching { ms.auth.freshToken() }.getOrNull()
+        val query = if (tier == null) "portal=1" else "tier=${tier.key}"
+        val url = "$BILLING_URL?$query" + (token?.let { "#at=$it" } ?: "")
+        val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))
+            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        runCatching { getApplication<MaxSpeechApp>().startActivity(intent) }
     }
 
     fun copied(text: String) {

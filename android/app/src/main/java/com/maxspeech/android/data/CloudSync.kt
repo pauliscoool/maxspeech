@@ -29,6 +29,8 @@ import java.util.concurrent.TimeUnit
 class CloudSync(
     private val db: AppDatabase,
     private val auth: AuthRepository,
+    /** Learning junk from old builds must not come back from the account copy. */
+    private val isJunk: (String) -> Boolean = { false },
 ) {
     private val http = OkHttpClient.Builder()
         .connectTimeout(12, TimeUnit.SECONDS)
@@ -59,7 +61,7 @@ class CloudSync(
         val words = parseWords(settings.optString(DICT_KEY))
         val macros = parseMacros(settings.optString(MACROS_KEY))
         val haveWords = db.dictionaryDao().all().toSet()
-        for (w in words) if (w !in haveWords) db.dictionaryDao().insert(DictionaryEntity(w))
+        for (w in words) if (w !in haveWords && !isJunk(w)) db.dictionaryDao().insert(DictionaryEntity(w))
         val haveTriggers = db.snippetDao().observe().first().map { it.trigger }.toSet()
         for ((t, e) in macros) if (t !in haveTriggers) db.snippetDao().upsert(SnippetEntity(t, e))
         pulled = true

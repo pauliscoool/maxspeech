@@ -14,8 +14,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import com.maxspeech.android.data.UiTheme
 
-val Turquoise = Color(0xFF2DD4BF)
-val TurquoiseDim = Color(0xFF14B8A6)
+/** The single accent (cyan-400). Name kept so every screen picks it up. */
+val Turquoise = Color(0xFF22D3EE)
+val TurquoiseDim = Color(0xFF06B6D4)
 val Orange = Color(0xFFF97316)
 val Hairline = Color.White.copy(alpha = 0.05f)
 
@@ -39,18 +40,18 @@ val LocalGlassAlpha = staticCompositionLocalOf { 0.50f }
 val LocalBlurStrength = staticCompositionLocalOf { 0.70f }
 
 fun darkColors(glass: Float) = MsColors(
-    bg = Color(0xFF000000),
-    bgSoft = Color(0xFF0A0A0A),
-    surface = Color(0xFF111111),
-    surface2 = Color(0xFF1A1A1A),
-    text = Color.White,
-    textDim = Color(0xFFA3A3A3),
+    bg = Color(0xFF111113),
+    bgSoft = Color(0xFF18181B),
+    surface = Color(0xFF1C1C1F),
+    surface2 = Color(0xFF27272A),
+    text = Color(0xFFFAFAFA),
+    textDim = Color(0xFFA1A1AA),
     glassFill = Color.White.copy(alpha = 0.10f * (glass / 0.5f).coerceIn(0.15f, 2.2f)),
-    hairline = Color.White.copy(alpha = 0.05f),
+    hairline = Color.White.copy(alpha = 0.07f),
     turquoise = Turquoise,
     orange = Orange,
     error = Color(0xFFEF4444),
-    capsule = Brush.linearGradient(listOf(Turquoise, Color(0xFF86EFD0), Orange)),
+    capsule = Brush.linearGradient(listOf(Turquoise, Turquoise)),
 )
 
 fun grayColors(glass: Float) = darkColors(glass).copy(
@@ -69,10 +70,19 @@ fun lightColors(glass: Float) = MsColors(
     textDim = Color(0xFF5C5F6A),
     glassFill = Color.White.copy(alpha = 0.55f * (glass / 0.5f).coerceIn(0.2f, 1.6f)),
     hairline = Color(0x140F172A),
-    turquoise = Color(0xFF0D9488),
+    turquoise = Color(0xFF0891B2),
     orange = Color(0xFFEA580C),
     error = Color(0xFFDC2626),
-    capsule = Brush.linearGradient(listOf(Color(0xFF5B8CFF), Color(0xFF0D9488), Orange)),
+    capsule = Brush.linearGradient(listOf(Color(0xFF0891B2), Color(0xFF0891B2))),
+)
+
+/** Big serif number / headline, Wispr-style. */
+val DisplayHero = TextStyle(
+    fontFamily = FontFamily.Serif,
+    fontWeight = FontWeight.Normal,
+    fontSize = 44.sp,
+    letterSpacing = (-0.8).sp,
+    lineHeight = 50.sp,
 )
 
 val DisplayLarge = TextStyle(

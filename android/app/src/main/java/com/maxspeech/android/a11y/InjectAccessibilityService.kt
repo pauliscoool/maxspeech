@@ -9,6 +9,7 @@ import android.graphics.Rect
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
@@ -28,14 +29,19 @@ data class InputFocus(
     /** True when the focused field is a password / PIN entry. */
     val password: Boolean = false,
 ) {
-    /** Only a real focused editable field in another app — never IME-alone guesses. */
+    /** A focused editable field in another app (or a keyboard open over one we can't see yet). */
     val typing: Boolean
         get() = editable && !password
 }
 
+/** What the AI cleanup may read for context. Empty for password fields and money apps. */
+data class ScreenContext(val fieldText: String = "", val screenText: String = "")
+
 class InjectAccessibilityService : AccessibilityService() {
     private val focusHandler = Handler(Looper.getMainLooper())
+    @Volatile private var publishPending = false
     private val publishRunnable = Runnable {
+        publishPending = false
         runCatching { publishFocusNow() }
             .onFailure { Log.w(TAG, "publishFocus failed", it) }
     }
@@ -43,10 +49,16 @@ class InjectAccessibilityService : AccessibilityService() {
         override fun run() {
             runCatching { publishFocusNow() }
             if (instance === this@InjectAccessibilityService) {
-                focusHandler.postDelayed(this, 280)
+                focusHandler.postDelayed(this, POLL_MS)
             }
         }
     }
+
+    /** Last editable node reported by a focus / text event — Chrome often only exposes it this way. */
+    @Volatile private var eventField: AccessibilityNodeInfo? = null
+    private var lastFieldSeenAt = 0L
+    private var imeUpSince = 0L
+    private var lastImeTop = -1
 
     override fun onServiceConnected() {
         instance = this
@@ -63,37 +75,48 @@ class InjectAccessibilityService : AccessibilityService() {
         }
         Log.i(TAG, "onServiceConnected pkg=$packageName")
         focusHandler.post(publishRunnable)
-                focusHandler.removeCallbacks(pollRunnable)
+        focusHandler.removeCallbacks(pollRunnable)
         focusHandler.post(pollRunnable)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         runCatching {
-            val pkg = event?.packageName?.toString().orEmpty()
+            event ?: return
+            val pkg = event.packageName?.toString().orEmpty()
             if (pkg == packageName) return
-            if (pkg.isNotBlank()) lastPackage = pkg
-            when (event?.eventType) {
+            if (pkg.isNotBlank() && !isKeyboardOrSystem(pkg)) lastPackage = pkg
+            when (event.eventType) {
                 AccessibilityEvent.TYPE_VIEW_FOCUSED,
-                AccessibilityEvent.TYPE_VIEW_CLICKED,
                 AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED,
                 AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED,
-                AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
-                AccessibilityEvent.TYPE_WINDOWS_CHANGED,
-                AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
                 -> {
-                    focusHandler.removeCallbacks(publishRunnable)
-                    // Hide fast when focus leaves a field; slight delay only to coalesce bursts.
-                    focusHandler.postDelayed(publishRunnable, 16)
+                    event.source?.takeIf { it.isEditable && !isKeyboardOrSystem(pkg) }?.let { eventField = it }
+                    schedulePublish()
                 }
+                AccessibilityEvent.TYPE_WINDOWS_CHANGED -> {
+                    schedulePublish()
+                    // Web fields are built lazily after the keyboard opens: look again shortly.
+                    for (ms in RECHECK_MS) focusHandler.postDelayed({ runCatching { publishFocusNow() } }, ms)
+                }
+                AccessibilityEvent.TYPE_VIEW_CLICKED,
+                AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
+                AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
+                -> schedulePublish()
             }
         }.onFailure { Log.w(TAG, "onAccessibilityEvent failed", it) }
+    }
+
+    /** Throttle, not debounce: a flood of Chrome content events must not starve the check. */
+    private fun schedulePublish() {
+        if (publishPending) return
+        publishPending = true
+        focusHandler.postDelayed(publishRunnable, THROTTLE_MS)
     }
 
     override fun onInterrupt() = Unit
 
     override fun onDestroy() {
-        focusHandler.removeCallbacks(publishRunnable)
-        focusHandler.removeCallbacks(pollRunnable)
+        focusHandler.removeCallbacksAndMessages(null)
         if (instance === this) {
             instance = null
             _bound.value = false
@@ -104,42 +127,26 @@ class InjectAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Insert [text] into the focused field.
-     * Prefer ACTION_SET_TEXT so we never touch the clipboard on success
-     * (Android 13+ shows an annoying system toast on every clip write).
-     * Clipboard is used only as a last resort, and cleared again after a
-     * successful paste so dictation does not linger in the pasteboard.
+     * Insert [text] into the focused field, exactly once.
+     * Web / browser fields: clipboard paste first (SET_TEXT applies late or is ignored by rich
+     * editors). Native fields: ACTION_SET_TEXT splice first, so the clipboard is untouched.
      */
     fun insert(text: String): Boolean = runCatching {
         val focused = findBestEditable() ?: return false
         lastPackage = focused.packageName?.toString() ?: lastPackage
-        focused.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+        val web = isWebField(focused)
         Log.d(
             TAG,
-            "insert: pkg=${focused.packageName} class=${focused.className} " +
-                "showingHint=${runCatching { focused.isShowingHintText }.getOrDefault(false)} " +
+            "insert: pkg=${focused.packageName} class=${focused.className} web=$web " +
                 "rawTextLen=${focused.text?.length ?: -1} realTextLen=${realText(focused).length}",
         )
-
-        // 1) Direct set/splice — no clipboard.
-        if (insertViaSetText(focused, text)) return true
-
-        // 2) Last resort: clipboard paste, then always try to restore prior clip.
-        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        val previous = runCatching { cm.primaryClip }.getOrNull()
-        cm.setPrimaryClip(ClipData.newPlainText("MaxSpeech", text))
-        val before = realText(focused)
-        val pasted = pasteInto(focused)
-        val verified = likelyInserted(focused, text, before)
-        if (pasted || verified) {
-            restoreClip(cm, previous)
-            // Some OEMs re-assert the clip after PASTE — clear again shortly.
-            focusHandler.postDelayed({ restoreClip(cm, previous) }, 120)
-            return true
+        if (web) {
+            if (insertViaPaste(focused, text)) return true
+            // SET_TEXT on web fields lands asynchronously: trust the action, never paste again.
+            return insertViaSetText(focused, text, trustResult = true)
         }
-
-        // Still failed — leave text on clipboard for manual paste.
-        false
+        if (insertViaSetText(focused, text, trustResult = false)) return true
+        insertViaPaste(focused, text)
     }.getOrDefault(false)
 
     /**
@@ -160,6 +167,38 @@ class InjectAccessibilityService : AccessibilityService() {
         setText(focused, next)
     }.getOrDefault(false)
 
+    /** Field text before the caret plus visible text on screen, for the AI cleanup. */
+    fun screenContext(): ScreenContext = runCatching {
+        val root = rootInActiveWindow ?: return ScreenContext()
+        val pkg = root.packageName?.toString().orEmpty()
+        if (pkg == packageName || isSensitiveApp(pkg)) return ScreenContext()
+        val field = findBestEditable()
+        if (field?.isPassword == true) return ScreenContext()
+        val fieldText = field?.let { f ->
+            val t = realText(f)
+            val caret = f.textSelectionStart.takeIf { it in 0..t.length } ?: t.length
+            t.substring(0, caret)
+        }.orEmpty()
+        val parts = ArrayList<String>()
+        collectVisibleText(root, parts, intArrayOf(0))
+        val screen = parts.joinToString(" | ").replace(Regex("\\s+"), " ")
+        ScreenContext(fieldText.takeLast(400), screen.takeLast(1_200))
+    }.getOrDefault(ScreenContext())
+
+    private fun collectVisibleText(node: AccessibilityNodeInfo, out: MutableList<String>, budget: IntArray) {
+        if (budget[0] > MAX_CONTEXT_NODES) return
+        budget[0]++
+        if (!node.isVisibleToUser) return
+        if (!node.isEditable && !node.isPassword) {
+            val t = node.text?.toString()?.trim().orEmpty()
+            if (t.length >= 2 && (out.isEmpty() || out.last() != t)) out.add(t.take(300))
+        }
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            collectVisibleText(child, out, budget)
+        }
+    }
+
     /**
      * Many custom composers (Instagram's DM box included) report the placeholder
      * through getText() instead of a real hint, so treat text as empty whenever
@@ -172,34 +211,42 @@ class InjectAccessibilityService : AccessibilityService() {
     }
 
     /** Splice [text] at the caret (or append) via ACTION_SET_TEXT. */
-    private fun insertViaSetText(node: AccessibilityNodeInfo, text: String): Boolean {
+    private fun insertViaSetText(node: AccessibilityNodeInfo, text: String, trustResult: Boolean): Boolean {
         val existing = realText(node)
         val selStartRaw = node.textSelectionStart
         val selEndRaw = node.textSelectionEnd
-        val start = when {
-            selStartRaw < 0 -> existing.length
-            else -> selStartRaw.coerceIn(0, existing.length)
-        }
-        val end = when {
-            selEndRaw < 0 -> start
-            else -> selEndRaw.coerceIn(0, existing.length)
-        }
+        val start = if (selStartRaw < 0) existing.length else selStartRaw.coerceIn(0, existing.length)
+        val end = if (selEndRaw < 0) start else selEndRaw.coerceIn(0, existing.length)
         val a = minOf(start, end)
         val b = maxOf(start, end)
         val next = existing.substring(0, a) + text + existing.substring(b)
-        val applied = setText(node, next) || run {
-            val fallback = if (existing.isEmpty()) text else existing + text
-            setText(node, fallback)
-        }
-        if (!applied) return false
+        if (!setText(node, next)) return false
+        if (trustResult) return true
         runCatching { node.refresh() }
-        val after = node.text?.toString()
-        // Opaque fields (many WebViews): trust the action result — do not touch clipboard.
-        if (after == null) return true
-        if (text.isNotBlank() && after.contains(text)) return true
-        if (after.length > existing.length) return true
-        // SET_TEXT returned true but content unchanged — treat as failure.
-        return false
+        val after = node.text?.toString() ?: return true
+        // Native fields apply SET_TEXT synchronously, so an unchanged field really failed.
+        return (text.isNotBlank() && after.contains(text.trim())) || after.length > existing.length
+    }
+
+    private fun insertViaPaste(node: AccessibilityNodeInfo, text: String): Boolean {
+        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val previous = runCatching { cm.primaryClip }.getOrNull()
+        cm.setPrimaryClip(ClipData.newPlainText("MaxSpeech", text))
+        val caretKnown = node.textSelectionStart >= 0
+        val len = realText(node).length
+        if (!caretKnown && len > 0) {
+            val sel = Bundle().apply {
+                putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, len)
+                putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, len)
+            }
+            node.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, sel)
+        }
+        val pasted = node.performAction(AccessibilityNodeInfo.ACTION_PASTE)
+        if (pasted) {
+            // Restore after the target app has read the clip.
+            focusHandler.postDelayed({ restoreClip(cm, previous) }, CLIP_RESTORE_MS)
+        }
+        return pasted
     }
 
     private fun setText(node: AccessibilityNodeInfo, text: String): Boolean {
@@ -207,30 +254,6 @@ class InjectAccessibilityService : AccessibilityService() {
             putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
         }
         return node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
-    }
-
-    private fun pasteInto(node: AccessibilityNodeInfo): Boolean {
-        val len = realText(node).length
-        if (len > 0) {
-            val sel = Bundle().apply {
-                putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, len)
-                putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, len)
-            }
-            node.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, sel)
-        }
-        return node.performAction(AccessibilityNodeInfo.ACTION_PASTE)
-    }
-
-    private fun likelyInserted(
-        node: AccessibilityNodeInfo,
-        inserted: String,
-        before: String,
-    ): Boolean {
-        runCatching { node.refresh() }
-        val after = node.text?.toString() ?: return false
-        if (inserted.isNotBlank() && after.contains(inserted)) return true
-        if (before.isNotEmpty() && after.length > before.length) return true
-        return false
     }
 
     private fun restoreClip(cm: ClipboardManager, previous: ClipData?) {
@@ -245,106 +268,179 @@ class InjectAccessibilityService : AccessibilityService() {
 
     private fun isOurs(clip: ClipData): Boolean {
         if (clip.itemCount <= 0) return false
-        val label = clip.description?.label?.toString().orEmpty()
-        if (label.equals("MaxSpeech", ignoreCase = true)) return true
-        val text = runCatching { clip.getItemAt(0).coerceToText(this)?.toString() }.getOrNull()
-        return text != null && label.contains("MaxSpeech", ignoreCase = true)
+        return clip.description?.label?.toString().orEmpty().contains("MaxSpeech", ignoreCase = true)
+    }
+
+    private fun isWebField(node: AccessibilityNodeInfo): Boolean {
+        if (node.packageName?.toString() in BROWSERS) return true
+        var cur: AccessibilityNodeInfo? = node
+        var depth = 0
+        while (cur != null && depth < 40) {
+            if (cur.className?.toString()?.contains("WebView") == true) return true
+            cur = cur.parent
+            depth++
+        }
+        return false
     }
 
     /** Prefer the focused editable in an application window — not the IME. */
-    private fun findBestEditable(): AccessibilityNodeInfo? {
+    private fun findBestEditable(): AccessibilityNodeInfo? = findFocusedField(deep = true)?.first
+
+    /**
+     * The focused editable field and how it was found. Checked in order: the active window's
+     * input focus, every app window's input focus, the last focus/text event source, then a
+     * bounded search for a focused editable node (Chrome's lazily built web tree) when [deep].
+     */
+    private fun findFocusedField(deep: Boolean): Pair<AccessibilityNodeInfo, String>? {
+        val active = rootInActiveWindow
+        if (active?.packageName?.toString() == packageName) return null
+        active?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)?.takeIf { it.isEditable }?.let { return it to "active" }
         val list = runCatching { windows }.getOrNull().orEmpty()
-        for (window in list) {
-            if (window.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD) continue
-            if (window.type == AccessibilityWindowInfo.TYPE_SYSTEM) continue
-            val root = runCatching { window.root }.getOrNull() ?: continue
-            val pkg = root.packageName?.toString()
-            if (pkg != null && pkg == packageName) continue
-            val focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
-            if (focused != null && focused.isEditable) return focused
+        val roots = list.filter {
+            it.type != AccessibilityWindowInfo.TYPE_INPUT_METHOD && it.type != AccessibilityWindowInfo.TYPE_SYSTEM
+        }.mapNotNull { runCatching { it.root }.getOrNull() }
+            .filter { it.packageName?.toString() != packageName }
+        for (root in roots) {
+            root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)?.takeIf { it.isEditable }?.let { return it to "window" }
         }
-        val root = rootInActiveWindow ?: return null
-        if (root.packageName?.toString() == packageName) return null
-        return root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)?.takeIf { it.isEditable }
-            ?: findEditable(root)
+        eventField?.let { node ->
+            if (runCatching { node.refresh() }.getOrDefault(false) && node.isEditable && node.isFocused &&
+                node.packageName?.toString() != packageName
+            ) {
+                return node to "event"
+            }
+        }
+        if (!deep) return null
+        for (root in listOfNotNull(active) + roots) {
+            findFocusedEditable(root, intArrayOf(0))?.let { return it to "search" }
+        }
+        return null
+    }
+
+    private fun findFocusedEditable(node: AccessibilityNodeInfo, budget: IntArray): AccessibilityNodeInfo? {
+        if (budget[0]++ > MAX_SEARCH_NODES) return null
+        if (node.isEditable && node.isFocused) return node
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            findFocusedEditable(child, budget)?.let { return it }
+        }
+        return null
     }
 
     private fun publishFocusNow() {
+        val now = SystemClock.uptimeMillis()
         val imeTop = imeTopPx()
-        val root = rootInActiveWindow
-        val rootPkg = root?.packageName?.toString()
+        if (imeTop > 0) {
+            if (lastImeTop <= 0) imeUpSince = now
+        } else {
+            imeUpSince = 0L
+        }
+        lastImeTop = imeTop
+        val active = rootInActiveWindow
         // Never drive the float from MaxSpeech's own UI (login email/password, settings, …).
-        if (rootPkg != null && rootPkg == packageName) {
+        if (active?.packageName?.toString() == packageName) {
             clearFocusIfNeeded("own-app")
             return
         }
-        // Strict: only the currently focused input. Never "any visible EditText"
-        // (Messages / WhatsApp keep a composer in the tree while you just read).
-        val focused = root?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
-        val pkg = focused?.packageName?.toString()
-        if (pkg != null && pkg == packageName) {
-            clearFocusIfNeeded("own-field")
-            return
-        }
-        if (focused != null && focused.isEditable && focused.isFocused && pkg != null) {
-            if (focused.isPassword) {
+        // The tree walk is only worth it while a keyboard is open.
+        val found = findFocusedField(deep = imeTop > 0)
+        val field = found?.first
+        val pkg = field?.packageName?.toString()
+        if (field != null && pkg != null) {
+            if (field.isPassword) {
                 clearFocusIfNeeded("password")
                 return
             }
             val bounds = Rect()
-            focused.getBoundsInScreen(bounds)
+            field.getBoundsInScreen(bounds)
             lastPackage = pkg
-            val next = InputFocus(
-                editable = true,
-                packageName = pkg,
-                fieldTop = bounds.top,
-                fieldBottom = bounds.bottom,
-                imeTop = imeTop,
-                password = false,
-            )
-            if (_focus.value != next) {
-                _focus.value = next
-                Log.i(TAG, "focus editable pkg=$pkg ime=$imeTop field=${bounds.top}-${bounds.bottom}")
+            lastFieldSeenAt = now
+            publish(InputFocus(true, pkg, bounds.top, bounds.bottom, imeTop, false), found.second)
+            return
+        }
+        // Keyboard is open but the field isn't in the tree yet (web pages build it late):
+        // keep showing what we had, or after a moment trust the keyboard like Wispr does.
+        if (imeTop > 0) {
+            val current = _focus.value
+            if (current.editable) {
+                publish(current.copy(imeTop = imeTop), "keep")
+                return
             }
+            val appPkg = active?.packageName?.toString() ?: lastPackage
+            if (now - imeUpSince >= IME_ONLY_AFTER_MS && appPkg != null && !isKeyboardOrSystem(appPkg)) {
+                publish(InputFocus(true, appPkg, 0, 0, imeTop, false), "ime-only")
+                return
+            }
+            focusHandler.postDelayed({ runCatching { publishFocusNow() } }, IME_ONLY_AFTER_MS)
+            return
+        }
+        // Ride out keyboard animations and tree rebuilds instead of flickering.
+        if (now - lastFieldSeenAt < HIDE_GRACE_MS && _focus.value.editable) {
+            focusHandler.postDelayed({ runCatching { publishFocusNow() } }, HIDE_GRACE_MS)
             return
         }
         clearFocusIfNeeded("idle")
     }
 
-    private fun clearFocusIfNeeded(reason: String) {
-        if (_focus.value.typing || _focus.value.editable || _focus.value.imeTop > 0) {
-            Log.i(TAG, "focus cleared ($reason)")
+    private fun publish(next: InputFocus, via: String) {
+        if (_focus.value != next) {
+            _focus.value = next
+            Log.i(TAG, "focus editable via=$via pkg=${next.packageName} ime=${next.imeTop} field=${next.fieldTop}-${next.fieldBottom}")
         }
+    }
+
+    private fun clearFocusIfNeeded(reason: String) {
         if (_focus.value != InputFocus()) {
+            Log.i(TAG, "focus cleared ($reason)")
             _focus.value = InputFocus()
         }
     }
 
+    /** Top of the keyboard in screen px, or -1 when no keyboard is showing. */
     private fun imeTopPx(): Int {
         val list = runCatching { windows }.getOrNull() ?: return -1
+        val screenH = resources.displayMetrics.heightPixels
         for (window in list) {
-            if (window.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD) {
-                val bounds = Rect()
-                window.getBoundsInScreen(bounds)
-                if (bounds.height() > 80 && bounds.top > 0) return bounds.top
-            }
+            if (window.type != AccessibilityWindowInfo.TYPE_INPUT_METHOD) continue
+            val bounds = Rect()
+            window.getBoundsInScreen(bounds)
+            if (bounds.height() < 40) continue
+            // Floating / one-handed / full-height keyboards report odd bounds: anchor low.
+            if (bounds.top <= 0 || bounds.top >= screenH) return (screenH * 0.62f).toInt()
+            return bounds.top
         }
         return -1
     }
 
-    private fun findEditable(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-        // Prefer a focused editable — used only as paste fallback, never to show the mic.
-        if (node.isEditable && node.isFocused) return node
-        for (i in 0 until node.childCount) {
-            val child = node.getChild(i) ?: continue
-            val found = findEditable(child)
-            if (found != null) return found
-        }
-        return null
-    }
+    private fun isKeyboardOrSystem(pkg: String): Boolean =
+        pkg == "com.android.systemui" ||
+            pkg.contains("inputmethod") ||
+            pkg.contains("keyboard") ||
+            pkg.contains("honeyboard") ||
+            pkg.contains("swiftkey")
+
+    private fun isSensitiveApp(pkg: String): Boolean = SENSITIVE.any { pkg.contains(it, ignoreCase = true) }
 
     companion object {
         private const val TAG = "MaxSpeechA11y"
+        private const val POLL_MS = 280L
+        private const val THROTTLE_MS = 60L
+        private val RECHECK_MS = longArrayOf(150L, 400L, 800L, 1_200L)
+        private const val HIDE_GRACE_MS = 350L
+        private const val IME_ONLY_AFTER_MS = 900L
+        private const val CLIP_RESTORE_MS = 400L
+        private const val MAX_SEARCH_NODES = 600
+        private const val MAX_CONTEXT_NODES = 400
+        private val BROWSERS = setOf(
+            "com.android.chrome", "com.chrome.beta", "com.chrome.dev",
+            "com.sec.android.app.sbrowser", "com.sec.android.app.sbrowser.beta",
+            "org.mozilla.firefox", "com.brave.browser", "com.microsoft.emmx",
+            "com.opera.browser", "com.duckduckgo.mobile.android", "com.vivaldi.browser",
+        )
+        private val SENSITIVE = listOf(
+            "bank", "wallet", "paypal", "venmo", "squareup.cash", "chase", "wellsfargo",
+            "coinbase", "robinhood", "authenticator", "1password", "bitwarden", "lastpass",
+        )
         @Volatile var instance: InjectAccessibilityService? = null
         @Volatile var lastPackage: String? = null
         private val _focus = MutableStateFlow(InputFocus())
@@ -383,15 +479,9 @@ object TextInjector {
             android.Manifest.permission.RECORD_AUDIO,
         ) == android.content.pm.PackageManager.PERMISSION_GRANTED
 
-    fun notificationGranted(context: Context): Boolean {
-        if (android.os.Build.VERSION.SDK_INT < 33) return true
-        return androidx.core.content.ContextCompat.checkSelfPermission(
-            context,
-            android.Manifest.permission.POST_NOTIFICATIONS,
-        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
-    }
-
     fun foregroundPackage(): String? = InjectAccessibilityService.lastPackage
+
+    fun screenContext(): ScreenContext = InjectAccessibilityService.instance?.screenContext() ?: ScreenContext()
 
     fun replaceLast(old: String, new: String): Boolean =
         InjectAccessibilityService.instance?.replaceLast(old, new) ?: false

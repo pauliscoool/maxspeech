@@ -15,6 +15,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.maxspeech.android.pipeline.AudioCapture
 import com.maxspeech.android.ui.theme.Orange
+import com.maxspeech.android.ui.theme.Turquoise
 
 /** Overlay compact pill uses 6 bands; keyboard dock uses a wider 12-bar ribbon. */
 const val KeyboardBarCount = 12
@@ -65,17 +66,7 @@ fun WindowsWaveform(
         if (levels.isEmpty()) return@Canvas
         val gap = barGap.toPx()
         val barW = barWidth.toPx()
-        val brush = Brush.horizontalGradient(
-            listOf(
-                Color(0xFF2DD4BF),
-                Color(0xFF5EEAD4),
-                Color(0xFF86EFD0),
-                Color(0xFFFDBA74),
-                Orange,
-            ),
-            startX = 0f,
-            endX = size.width,
-        )
+        val brush = androidx.compose.ui.graphics.SolidColor(Turquoise)
         val denom = ((n - 1) / 2f).coerceAtLeast(1f)
         for (i in 0 until n) {
             val src = if (levels.size == n) {

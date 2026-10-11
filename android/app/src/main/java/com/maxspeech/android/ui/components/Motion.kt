@@ -54,8 +54,8 @@ val PageEnterSpec = fadeIn(tween(200)) + slideInVertically(tween(200)) { it / 10
 fun BlurFade(
     visible: Boolean,
     modifier: Modifier = Modifier,
-    durationMs: Int = 340,
-    maxBlur: Dp = 20.dp,
+    durationMs: Int = 160,
+    @Suppress("UNUSED_PARAMETER") maxBlur: Dp = 0.dp,
     content: @Composable () -> Unit,
 ) {
     var mounted by remember { mutableStateOf(visible) }
@@ -73,8 +73,7 @@ fun BlurFade(
     if (!mounted) return
     Box(
         modifier = modifier
-            .graphicsLayer { alpha = progress }
-            .blur(radius = maxBlur * (1f - progress)),
+            .graphicsLayer { alpha = progress },
     ) {
         content()
     }

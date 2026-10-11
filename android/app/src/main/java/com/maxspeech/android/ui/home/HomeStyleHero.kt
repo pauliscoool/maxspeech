@@ -64,13 +64,9 @@ fun HomeStyleHero(
     Box(
         modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(26.dp))
-            .background(
-                Brush.linearGradient(
-                    listOf(Color(0xFF141418), Color(0xFF0C0C10), Color(0xFF08080A)),
-                ),
-            )
-            .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(26.dp))
+            .clip(RoundedCornerShape(20.dp))
+            .background(c.surface)
+            .border(1.dp, c.hairline, RoundedCornerShape(20.dp))
             .padding(16.dp),
     ) {
         Column(Modifier.fillMaxWidth()) {
@@ -82,12 +78,12 @@ fun HomeStyleHero(
                     val on = id == current
                     Text(
                         id.title,
-                        color = if (on) Color.White else c.textDim,
+                        color = if (on) Turquoise else c.textDim,
                         fontSize = 12.sp,
                         fontWeight = if (on) FontWeight.SemiBold else FontWeight.Medium,
                         modifier = Modifier
                             .clip(RoundedCornerShape(20.dp))
-                            .background(if (on) Turquoise.copy(alpha = 0.28f) else Color.Transparent)
+                            .background(if (on) Turquoise.copy(alpha = 0.16f) else Color.Transparent)
                             .clickable { onSelectGroup(id) }
                             .padding(horizontal = 10.dp, vertical = 6.dp),
                     )
@@ -114,9 +110,7 @@ fun HomeStyleHero(
                 label = "homeStyleGroup",
                 modifier = Modifier.fillMaxWidth(),
             ) { group ->
-                BlurReveal(key = group) {
-                    GroupPanel(group = group, settings = settings)
-                }
+                GroupPanel(group = group, settings = settings)
             }
         }
         Box(
@@ -124,43 +118,17 @@ fun HomeStyleHero(
                 .align(Alignment.BottomEnd)
                 .size(36.dp)
                 .clip(CircleShape)
-                .background(Orange.copy(alpha = 0.92f))
+                .background(c.surface2)
                 .clickable(onClick = onEdit),
             contentAlignment = Alignment.Center,
         ) {
             Icon(
                 Icons.Filled.Edit,
                 contentDescription = "Edit style groups",
-                tint = Color.White,
+                tint = c.text,
                 modifier = Modifier.size(16.dp),
             )
         }
-    }
-}
-
-@Composable
-private fun BlurReveal(
-    key: Any,
-    content: @Composable () -> Unit,
-) {
-    var sharp by remember(key) { mutableStateOf(false) }
-    LaunchedEffect(key) {
-        sharp = false
-        sharp = true
-    }
-    val progress by animateFloatAsState(
-        targetValue = if (sharp) 1f else 0f,
-        animationSpec = tween(420, easing = FastOutSlowInEasing),
-        label = "blurReveal",
-    )
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .graphicsLayer { alpha = 0.55f + 0.45f * progress }
-            .blur(radius = 16.dp * (1f - progress)),
-        contentAlignment = Alignment.Center,
-    ) {
-        content()
     }
 }
 
@@ -174,22 +142,19 @@ private fun GroupPanel(group: StyleGroupId, settings: AppSettings) {
         StyleGroupId.Work -> settings.styleToneWork
         StyleGroupId.Social -> settings.styleToneSocial
     }
-    Column(
-        Modifier.fillMaxWidth(),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-            LogoSwirl(brands = def.brands, size = 160.dp, logoSize = 38.dp)
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(group.title, color = c.text, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
-                Text(
-                    StyleGroups.labelForTone(tone),
-                    color = Turquoise,
-                    fontSize = 13.sp,
-                )
-            }
-        }
-        Spacer(Modifier.height(4.dp))
-        Text(group.subtitle, color = c.textDim, fontSize = 12.sp)
+    Column(Modifier.fillMaxWidth().padding(end = 44.dp)) {
+        Text(
+            "${group.title} · ${StyleGroups.labelForTone(tone)}",
+            color = c.text,
+            fontSize = 16.sp,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Spacer(Modifier.height(2.dp))
+        Text(
+            group.subtitle + "  ·  " + def.brands.take(4).joinToString(", ") { it.label },
+            color = c.textDim,
+            fontSize = 12.sp,
+            maxLines = 2,
+        )
     }
 }

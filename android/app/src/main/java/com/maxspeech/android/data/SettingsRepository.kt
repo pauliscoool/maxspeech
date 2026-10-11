@@ -14,7 +14,6 @@ import kotlinx.coroutines.flow.map
 private val Context.dataStore by preferencesDataStore("maxspeech_settings")
 
 enum class UiTheme { Dark, Gray, Light }
-enum class EnhanceSpeed { Fast, Thinking, Ultra }
 
 /** How the dictation control sits over other apps. */
 enum class OverlayStyle {
@@ -45,17 +44,16 @@ data class AppSettings(
     /** Epoch millis until which the overlay stays hidden (drag-to-X snooze). */
     val overlaySnoozeUntil: Long = 0L,
     val aiEnhance: Boolean = true,
-    val enhanceSpeed: EnhanceSpeed = EnhanceSpeed.Thinking,
     val multilingual: Boolean = false,
     val languages: List<String> = listOf("en"),
     val trailingSpace: Boolean = true,
-    val soundCue: Boolean = false,
+    val soundCue: Boolean = true,
+    /** Start / stop click volume, 0..1. */
+    val soundVolume: Float = 0.6f,
     val haptics: Boolean = true,
-    val liveTranscript: Boolean = true,
     val onboarded: Boolean = false,
     val localMode: Boolean = false,
     val deepgramKey: String = "",
-    val llmKey: String = "",
     val toneOverride: String = "default",
     /** Per app-group voice defaults from onboarding / Style. */
     val styleToneMessaging: String = "casual",
@@ -102,17 +100,15 @@ class SettingsRepository(private val context: Context) {
     suspend fun setOverlaySnoozeUntil(untilEpochMs: Long) =
         set(Keys.overlaySnoozeUntil, untilEpochMs.coerceAtLeast(0L).toString())
     suspend fun setAiEnhance(on: Boolean) = set(Keys.enhance, on)
-    suspend fun setEnhanceSpeed(speed: EnhanceSpeed) = set(Keys.speed, speed.name.lowercase())
     suspend fun setMultilingual(on: Boolean) = set(Keys.multi, on)
     suspend fun setLanguages(codes: List<String>) = set(Keys.langs, codes.joinToString(","))
     suspend fun setTrailingSpace(on: Boolean) = set(Keys.space, on)
     suspend fun setSoundCue(on: Boolean) = set(Keys.sound, on)
+    suspend fun setSoundVolume(value: Float) = set(Keys.soundVolume, value.coerceIn(0f, 1f))
     suspend fun setHaptics(on: Boolean) = set(Keys.haptics, on)
-    suspend fun setLiveTranscript(on: Boolean) = set(Keys.live, on)
     suspend fun setOnboarded(on: Boolean) = set(Keys.onboarded, on)
     suspend fun setLocalMode(on: Boolean) = set(Keys.local, on)
     suspend fun setDeepgramKey(value: String) = set(Keys.dg, value.trim())
-    suspend fun setLlmKey(value: String) = set(Keys.llm, value.trim())
     suspend fun setToneOverride(tone: String) = set(Keys.tone, tone)
 
     suspend fun setStyleGroupTones(
@@ -160,17 +156,16 @@ class SettingsRepository(private val context: Context) {
         val overlayCenterY = floatPreferencesKey("overlay_center_y")
         val overlaySnoozeUntil = stringPreferencesKey("overlay_snooze_until")
         val enhance = booleanPreferencesKey("ai_enhance")
-        val speed = stringPreferencesKey("enhance_speed")
         val multi = booleanPreferencesKey("stt_multilingual")
         val langs = stringPreferencesKey("stt_languages")
         val space = booleanPreferencesKey("trailing_space")
-        val sound = booleanPreferencesKey("sound_cue")
+        // v2: default flipped to on; the old key stored an explicit off from the old default UI.
+        val sound = booleanPreferencesKey("sound_cue_v2")
+        val soundVolume = floatPreferencesKey("sound_volume")
         val haptics = booleanPreferencesKey("haptics")
-        val live = booleanPreferencesKey("show_live_transcript")
         val onboarded = booleanPreferencesKey("onboarded")
         val local = booleanPreferencesKey("local_mode")
         val dg = stringPreferencesKey("deepgram_api_key")
-        val llm = stringPreferencesKey("llm_api_key")
         val tone = stringPreferencesKey("tone_override")
         val styleToneMessaging = stringPreferencesKey("style_tone_messaging")
         val styleToneEmail = stringPreferencesKey("style_tone_email")
@@ -210,21 +205,15 @@ class SettingsRepository(private val context: Context) {
             overlayCenterY = this[Keys.overlayCenterY] ?: -1f,
             overlaySnoozeUntil = this[Keys.overlaySnoozeUntil]?.toLongOrNull() ?: 0L,
             aiEnhance = this[Keys.enhance] ?: true,
-            enhanceSpeed = when (this[Keys.speed]) {
-                "fast" -> EnhanceSpeed.Fast
-                "ultra" -> EnhanceSpeed.Ultra
-                else -> EnhanceSpeed.Thinking
-            },
             multilingual = this[Keys.multi] ?: false,
             languages = langs,
             trailingSpace = this[Keys.space] ?: true,
-            soundCue = this[Keys.sound] ?: false,
+            soundCue = this[Keys.sound] ?: true,
+            soundVolume = this[Keys.soundVolume] ?: 0.6f,
             haptics = this[Keys.haptics] ?: true,
-            liveTranscript = this[Keys.live] ?: true,
             onboarded = this[Keys.onboarded] ?: false,
             localMode = this[Keys.local] ?: false,
             deepgramKey = this[Keys.dg].orEmpty(),
-            llmKey = this[Keys.llm].orEmpty(),
             toneOverride = this[Keys.tone] ?: "default",
             styleToneMessaging = this[Keys.styleToneMessaging] ?: "casual",
             styleToneEmail = this[Keys.styleToneEmail] ?: "formal",

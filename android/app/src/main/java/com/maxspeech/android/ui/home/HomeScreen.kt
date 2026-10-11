@@ -15,6 +15,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -94,6 +95,8 @@ fun HomeScreen(
     history: List<HistoryEntity>,
     wordsUsed: Int,
     wordsLimit: Int,
+    plan: com.maxspeech.android.data.PlanStatus,
+    onOpenPlan: () -> Unit,
     appCount: Int,
     overlayReady: Boolean,
     a11yReady: Boolean,
@@ -152,21 +155,10 @@ fun HomeScreen(
         }
         Spacer(Modifier.height(8.dp))
 
-        Text(
-            buildAnnotatedString {
-                append("Welcome back, ")
-                withStyle(
-                    SpanStyle(
-                        brush = Brush.horizontalGradient(listOf(Turquoise, Orange)),
-                        fontWeight = FontWeight.SemiBold,
-                    ),
-                ) {
-                    append(name.ifBlank { "there" })
-                }
-            },
-            style = DisplayLarge,
-            color = c.text,
-        )
+        Text("Welcome back, ${name.ifBlank { "there" }}", style = DisplayLarge, color = c.text)
+
+        Spacer(Modifier.height(16.dp))
+        com.maxspeech.android.ui.plan.UsageCard(plan, onClick = onOpenPlan)
 
         Spacer(Modifier.height(16.dp))
 
@@ -181,15 +173,6 @@ fun HomeScreen(
             Box(
                 Modifier
                     .fillMaxWidth()
-                    .background(
-                        Brush.radialGradient(
-                            colors = listOf(
-                                Turquoise.copy(alpha = 0.18f),
-                                Orange.copy(alpha = 0.10f),
-                                c.surface,
-                            ),
-                        ),
-                    )
                     .padding(16.dp),
             ) {
                 Row(verticalAlignment = Alignment.Top) {
@@ -204,7 +187,7 @@ fun HomeScreen(
                         Text("Dictate anywhere", color = c.text, fontSize = 15.sp, fontWeight = FontWeight.Medium)
                         Text(
                             if (overlayReady && a11yReady) {
-                                "Open a text field in another app — the floating mic appears automatically."
+                                "Tap a text field in any app. Tap the mic to dictate, or hold it and talk."
                             } else {
                                 "Enable Overlay + Accessibility in Settings so the floating mic can show."
                             },
@@ -229,15 +212,6 @@ fun HomeScreen(
             }
         }
 
-        Spacer(Modifier.height(20.dp))
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            StatTile("Words", "$wordsUsed", Modifier.weight(1f))
-            StatTile("Limit", "$wordsLimit", Modifier.weight(1f))
-            StatTile("Apps", "$appCount", Modifier.weight(1f))
-        }
 
         Spacer(Modifier.height(22.dp))
         // Compact toolbar: search expands on the left with a jump-slide; filter on the right.
@@ -592,10 +566,7 @@ private fun HistoryRow(
     SurfaceCard(
         Modifier
             .fillMaxWidth()
-            .padding(bottom = 8.dp)
-            .pointerInput(row.id) {
-                detectTapGestures { onCopy() }
-            },
+            .padding(bottom = 8.dp),
     ) {
         Column(Modifier.padding(14.dp)) {
             if (row.failed) {
@@ -610,21 +581,33 @@ private fun HistoryRow(
             Text(
                 row.text,
                 color = if (row.failed) c.textDim else c.text,
-                fontSize = 14.sp,
-                maxLines = 4,
+                fontSize = 15.sp,
+                lineHeight = 21.sp,
+                maxLines = 8,
             )
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(4.dp))
+            Text(
+                TIME_FMT.format(Date(row.createdAt)) + " · " + row.appName.ifBlank { "MaxSpeech" },
+                color = c.textDim,
+                fontSize = 12.sp,
+            )
+            Spacer(Modifier.height(10.dp))
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Text(
-                    row.appName.ifBlank { "MaxSpeech" },
-                    color = c.textDim,
-                    fontSize = 11.sp,
-                )
-                if (row.enhanced && !row.failed) {
-                    Text("AI", color = Turquoise, fontSize = 11.sp)
+                if (!row.failed) {
+                    Text(
+                        "Copy",
+                        color = c.text,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(18.dp))
+                            .border(1.dp, c.hairline, RoundedCornerShape(18.dp))
+                            .clickable(onClick = onCopy)
+                            .padding(horizontal = 16.dp, vertical = 7.dp),
+                    )
                 }
                 Spacer(Modifier.weight(1f))
                 if (row.failed) {
@@ -689,17 +672,6 @@ private fun HistoryRow(
                         )
                     }
                 }
-                IconButton(
-                    onClick = onRequestDelete,
-                    modifier = Modifier.size(32.dp),
-                ) {
-                    Icon(
-                        Icons.Outlined.Delete,
-                        contentDescription = "Delete",
-                        tint = c.error,
-                        modifier = Modifier.size(18.dp),
-                    )
-                }
             }
         }
     }
@@ -715,6 +687,8 @@ private fun StatTile(label: String, value: String, modifier: Modifier = Modifier
         }
     }
 }
+
+private val TIME_FMT = SimpleDateFormat("h:mm a", Locale.getDefault())
 
 private fun groupByDay(items: List<HistoryEntity>): List<Pair<String, List<HistoryEntity>>> {
     val fmt = SimpleDateFormat("EEEE, MMM d", Locale.getDefault())

@@ -137,9 +137,28 @@ class MaxSpeechApp : Application() {
             }
             runCatching { maybeStartKeepAlive() }
                 .onFailure { Log.e(TAG, "Keep-alive start failed", it) }
-            runCatching { CloudSync(db, auth).start(appScope) }
+            val common = runCatching { com.maxspeech.android.pipeline.Vocab.loadCommonWords(assets) }.getOrDefault(emptySet())
+            val isJunk = { w: String -> com.maxspeech.android.pipeline.Vocab.isJunkDictionaryEntry(w, common) }
+            runCatching { purgeLearnedJunk(isJunk) }
+                .onFailure { Log.e(TAG, "Dictionary purge failed", it) }
+            runCatching { CloudSync(db, auth, isJunk).start(appScope) }
                 .onFailure { Log.e(TAG, "Cloud sync start failed", it) }
         }
+    }
+
+    /**
+     * One-time cleanup of the old auto-learning: everyday words saved as "names" and learned
+     * substitutions caused random capitals ("How Do they Do") and "They're's". Cloud sync then
+     * pushes the cleaned list so desktop gets it too.
+     */
+    private suspend fun purgeLearnedJunk(isJunk: (String) -> Boolean) {
+        val runtime = getSharedPreferences("maxspeech_runtime", MODE_PRIVATE)
+        if (runtime.getBoolean("dictionary_purge_v1", false)) return
+        val junk = db.dictionaryDao().all().filter(isJunk)
+        for (w in junk) db.dictionaryDao().delete(w)
+        db.substitutionDao().clear()
+        Log.i(TAG, "Purged ${junk.size} learned dictionary words and all learned substitutions")
+        runtime.edit().putBoolean("dictionary_purge_v1", true).apply()
     }
 
     private suspend fun maybeStartKeepAlive() {

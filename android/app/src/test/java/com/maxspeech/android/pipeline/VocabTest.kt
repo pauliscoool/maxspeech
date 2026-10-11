@@ -145,4 +145,29 @@ class VocabTest {
             assertTrue("$common should not be a keyterm", common !in terms)
         }
     }
+
+    @Test fun apostropheJoinsWords() {
+        assertEquals("if there's a way", Vocab.replacePhraseCi("if there's a way", "if there", "If they're"))
+        assertEquals("o'clock now", Vocab.replacePhraseCi("o'clock now", "o", "zero"))
+        assertEquals("Ask 'Sam' now", Vocab.replacePhraseCi("Ask 'sam' now", "sam", "Sam"))
+    }
+
+    @Test fun junkDictionaryEntriesAreEverydayWords() {
+        val common = File("../../shared/dictation/common_words.txt").readLines()
+            .filter { !it.startsWith("#") }.flatMap { it.split(' ') }.map { it.trim().lowercase() }.toSet()
+        for (w in listOf("What", "Do", "If", "How", "Basically", "They're", "If they're")) {
+            assertTrue(w, Vocab.isJunkDictionaryEntry(w, common))
+        }
+        for (w in listOf("Covenant Core", "Tailscale", "Sarah", "MaxSpeech", "CurseForge", "Max", "Will")) {
+            assertTrue(w, !Vocab.isJunkDictionaryEntry(w, common))
+        }
+    }
+
+    @Test fun keytermsFitTokenBudget() {
+        val many = (1..300).map { "Term$it" }
+        val fit = Vocab.fitKeytermBudget(many)
+        assertTrue(fit.size in 20..250)
+        assertEquals("Term1", fit.first())
+        assertEquals(listOf("GitHub"), Vocab.fitKeytermBudget(listOf("GitHub", " github ", "")))
+    }
 }

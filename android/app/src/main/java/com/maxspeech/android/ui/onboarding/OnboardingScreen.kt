@@ -139,26 +139,6 @@ fun OnboardingScreen(
     }
 
     Box(Modifier.fillMaxSize().background(c.bg)) {
-        Box(
-            Modifier
-                .align(Alignment.BottomStart)
-                .offset((-48).dp, 40.dp)
-                .size(260.dp)
-                .background(
-                    Brush.radialGradient(listOf(Orange.copy(alpha = 0.38f), Color.Transparent)),
-                    CircleShape,
-                ),
-        )
-        Box(
-            Modifier
-                .align(Alignment.TopEnd)
-                .offset(40.dp, (-32).dp)
-                .size(280.dp)
-                .background(
-                    Brush.radialGradient(listOf(Turquoise.copy(alpha = 0.32f), Color.Transparent)),
-                    CircleShape,
-                ),
-        )
         Column(
             Modifier
                 .fillMaxSize()

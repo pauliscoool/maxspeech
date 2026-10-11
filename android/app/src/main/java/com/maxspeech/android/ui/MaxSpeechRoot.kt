@@ -88,7 +88,7 @@ import kotlinx.coroutines.launch
 
 enum class Tab { Home, Style, Settings, About }
 
-private enum class SettingsSub { Main, MicLook }
+private enum class SettingsSub { Main, MicLook, Plan }
 
 @Composable
 fun MaxSpeechRoot(vm: AppViewModel) {
@@ -229,12 +229,8 @@ fun MaxSpeechRoot(vm: AppViewModel) {
                             if (showUpgrade) {
                                 UpgradeNowBanner(
                                     onUpgrade = {
-                                        ctx.startActivity(
-                                            Intent(
-                                                Intent.ACTION_VIEW,
-                                                Uri.parse("https://maxspeech.vercel.app"),
-                                            ),
-                                        )
+                                        tab = Tab.Settings
+                                        settingsSub = SettingsSub.Plan
                                     },
                                 )
                             }
@@ -250,6 +246,11 @@ fun MaxSpeechRoot(vm: AppViewModel) {
                                             overlayReady = overlayOk,
                                             a11yReady = a11yOk,
                                             settings = state.settings,
+                                            plan = state.plan,
+                                            onOpenPlan = {
+                                                tab = Tab.Settings
+                                                settingsSub = SettingsSub.Plan
+                                            },
                                             onOpenSettings = { tab = Tab.Settings },
                                             onOpenStyleEdit = { tab = Tab.Style },
                                             onSelectStyleGroup = vm::setHomeStyleGroup,
@@ -284,6 +285,13 @@ fun MaxSpeechRoot(vm: AppViewModel) {
                                                     onColor = vm::setOverlayMicColor,
                                                     onStyle = vm::setOverlayStyle,
                                                 )
+                                                SettingsSub.Plan -> com.maxspeech.android.ui.plan.PlanScreen(
+                                                    plan = state.plan,
+                                                    onBack = { settingsSub = SettingsSub.Main },
+                                                    onUpgrade = { vm.openBilling(it) },
+                                                    onManage = { vm.openBilling(null) },
+                                                    onRefresh = vm::refreshPlan,
+                                                )
                                                 SettingsSub.Main -> SettingsScreen(
                                                     settings = state.settings,
                                                     user = state.user,
@@ -291,7 +299,8 @@ fun MaxSpeechRoot(vm: AppViewModel) {
                                                     a11yOn = a11yOk,
                                                     overlayOn = state.settings.overlayEnabled && overlayOk,
                                                     onTheme = vm::setTheme,
-                                                    onEnhanceSpeed = vm::setEnhanceSpeed,
+                                                    onSoundVolume = vm::setSoundVolume,
+                                                    onSoundVolumePreview = vm::previewSound,
                                                     onResetMicPosition = vm::resetOverlayPosition,
                                                     onToggle = { k, v ->
                                                         vm.toggle(k, v)
@@ -321,6 +330,7 @@ fun MaxSpeechRoot(vm: AppViewModel) {
                                                         )
                                                     },
                                                     onOpenMicLook = { settingsSub = SettingsSub.MicLook },
+                                                    onOpenPlan = { settingsSub = SettingsSub.Plan },
                                                 )
                                             }
                                         }

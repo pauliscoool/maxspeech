@@ -9,12 +9,11 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import android.util.Log
+import com.maxspeech.android.a11y.ScreenContext
 import com.maxspeech.android.a11y.TextInjector
 import com.maxspeech.android.data.AppDatabase
 import com.maxspeech.android.data.AppSettings
 import com.maxspeech.android.data.AuthRepository
-import com.maxspeech.android.data.DictionaryEntity
-import com.maxspeech.android.data.SubstitutionEntity
 import com.maxspeech.android.data.HistoryEntity
 import com.maxspeech.android.data.PlanCalculator
 import com.maxspeech.android.data.SettingsRepository
@@ -37,6 +36,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 enum class DictationPhase { Idle, Listening, Processing, Confirm, Error, Limit }
 
@@ -58,6 +58,10 @@ private const val SAVED_RETRY_WINDOW_MS = 60_000L
 private const val AUTO_RETRY_PAUSE_MS = 10_000L
 /** ~0.25s of 16 kHz 16-bit mono. */
 private const val MIN_PCM_BYTES = 16_000 * 2 / 4
+/** How long after release the whole-clip transcript may take before streaming finals win. */
+private const val BATCH_RACE_MS = 900L
+/** "Okay", "Thanks so much" — not worth a round trip. */
+private const val AI_MIN_WORDS = 3
 
 class DictationController(
     private val context: Context,
@@ -68,7 +72,7 @@ class DictationController(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val audio = AudioCapture()
     private val stt = DeepgramClient()
-    private val enhance = EnhanceClient(context.assets)
+    private val agent = AgentEnhanceClient(context.assets)
     private val soundCue = SoundCue(context)
 
     private val _ui = MutableStateFlow(DictationUi())
@@ -93,7 +97,6 @@ class DictationController(
     private var lastLevelUiAt = 0L
     @Volatile private var dictionary: List<String> = emptyList()
     @Volatile private var snippets: List<Pair<String, String>> = emptyList()
-    @Volatile private var learned: List<Vocab.Substitution> = emptyList()
     private val builtinKeyterms by lazy { Vocab.loadKeyterms(context.assets) }
     private val phraseFixes by lazy { Vocab.loadPhraseFixes(context.assets) }
     private val pcmLock = Any()
@@ -101,8 +104,9 @@ class DictationController(
     private var sessionKeys: List<String> = emptyList()
     private var sessionLang: String = "en"
     private var lastPasteText: String? = null
-    private var lastPasteAt = 0L
-    private var pendingLearnFrom: String? = null
+    /** AI cleanup session opened when recording starts, consumed on release. */
+    @Volatile private var agentSession: AgentEnhanceClient.Session? = null
+    private var batchRace: kotlinx.coroutines.Deferred<String?>? = null
     private var savedPcm: ByteArray? = null
     private var savedHeldMs = 0L
     private var savedConfirmOnly = false
@@ -114,11 +118,6 @@ class DictationController(
         scope.launch { db.dictionaryDao().observe().collect { dictionary = it } }
         scope.launch {
             db.snippetDao().observe().collect { rows -> snippets = rows.map { it.trigger to it.expansion } }
-        }
-        scope.launch {
-            db.substitutionDao().observe().collect { rows ->
-                learned = rows.map { Vocab.Substitution(it.fromText, it.toText) }
-            }
         }
     }
 
@@ -147,8 +146,6 @@ class DictationController(
         lastLevelUiAt = 0L
         // Always enter Listening first — never flash X/Retry in place of the mic.
         listenStartedAtMs = System.currentTimeMillis()
-        // Re-dictating right after a paste usually means "that was wrong" — learn from it.
-        pendingLearnFrom = lastPasteText.takeIf { listenStartedAtMs - lastPasteAt <= Vocab.LEARN_WINDOW_MS }
         _ui.value = DictationUi(phase = DictationPhase.Listening, targetApp = sessionApp)
         OverlayService.notifyRecording(context, true)
         haptic(HapticKind.Start)
@@ -171,6 +168,7 @@ class DictationController(
                 sessionKeys = keys
                 sessionLang = lang
                 stt.connect(keys, lang, Vocab.mergeKeyterms(dictionary, builtinKeyterms))
+                if (snap.aiEnhance) prewarmAgent(keys, snap, multilingual = lang == "multi")
                 transcriptJob = scope.launch {
                     stt.chunks.collect { chunk ->
                         if (_ui.value.phase != DictationPhase.Listening &&
@@ -329,15 +327,48 @@ class DictationController(
         thinkingJob?.cancel()
         audio.stop()
         stt.close()
+        closeAgent()
         OverlayService.notifyRecording(context, false)
         _ui.value = DictationUi()
+    }
+
+    private fun prewarmAgent(keys: List<String>, snap: AppSettings, multilingual: Boolean) {
+        closeAgent()
+        val app = sessionApp
+        scope.launch(Dispatchers.IO) {
+            val tone = resolveTone(app, snap.toneOverride)
+            val screen = if (pasteIntoFocusedApp) TextInjector.screenContext() else ScreenContext()
+            val session = agent.prewarm(
+                keys,
+                AgentEnhanceClient.CleanupContext(
+                    tone = tone,
+                    appName = friendlyApp(app),
+                    dictionary = dictionary,
+                    multilingual = multilingual || snap.multilingual,
+                    fieldText = screen.fieldText,
+                    screenText = screen.screenText,
+                ),
+            )
+            // A cancel or a new session may have happened while this was opening.
+            if (_ui.value.phase == DictationPhase.Listening && sessionApp == app && agentSession == null) {
+                agentSession = session
+            } else {
+                session.close()
+            }
+        }
+    }
+
+    private fun closeAgent() {
+        agentSession?.close()
+        agentSession = null
+        batchRace?.cancel()
+        batchRace = null
     }
 
     fun stopAndFinish() {
         if (_ui.value.phase != DictationPhase.Listening) return
         if (!finishing.compareAndSet(false, true)) return
         haptic(HapticKind.Stop)
-        playSoundCue()
         val preview = TranscriptMerge.display(finals, lastInterim)
             .ifBlank { _ui.value.liveText }
             .trim()
@@ -431,6 +462,21 @@ class DictationController(
         delay(trailMs)
         audio.stop()
         pcmJob?.cancel()
+        // After the mic is closed so the click never ends up in the recording.
+        playSoundCue()
+        val releasedAt = SystemClock.elapsedRealtime()
+        // A single pass over the whole clip is more accurate than stitched streaming finals
+        // (full context, no segment seams); use it when it lands within the budget.
+        val pcmAll = synchronized(pcmLock) { pcmCapture.toByteArray() }
+        batchRace = if (pcmAll.size >= MIN_PCM_BYTES) {
+            scope.async(Dispatchers.IO) {
+                runCatching {
+                    stt.transcribeBatch(pcmAll, sessionKeys, sessionLang, Vocab.mergeKeyterms(dictionary, builtinKeyterms))
+                }.getOrNull()
+            }
+        } else {
+            null
+        }
         val streamComplete = stt.finishAndFlush()
         // Let the chunk collector apply the last final before we merge.
         delay(80)
@@ -445,9 +491,17 @@ class DictationController(
                 ?.trim()
                 .orEmpty()
         }
+        val raceBudget = (releasedAt + BATCH_RACE_MS - SystemClock.elapsedRealtime()).coerceAtLeast(120L)
+        val raced = batchRace?.let { race -> withTimeoutOrNull(raceBudget) { race.await() } }
+        batchRace?.cancel()
+        batchRace = null
+        if (!raced.isNullOrBlank()) {
+            Log.i(TAG, "finish: using whole-clip transcript (${raced.length} chars vs stream ${raw.length})")
+            raw = raced
+        }
         Log.i(TAG, "finish: stream=${if (streamComplete) "complete" else "incomplete"} words=${raw.length} voice=${audio.heardVoice}")
         // Streaming missed audio (weak network) or heard nothing: re-transcribe the recording.
-        if (raw.isBlank() || !streamComplete) {
+        if (raw.isBlank() || (!streamComplete && raced.isNullOrBlank())) {
             val pcm = synchronized(pcmLock) { pcmCapture.toByteArray() }
             val batch = batchFallback(pcm)
             Log.i(TAG, "batch: pcm=${pcm.size}B result=${batch::class.simpleName}")
@@ -551,44 +605,42 @@ class DictationController(
         }
         _ui.value = _ui.value.copy(originalText = raw, liveText = raw)
 
-        // Same order as desktop pipeline/mod.rs:
-        // snippets/dictionary/learned → local cleanup → AI enhance → punctuation.
+        // snippets/dictionary → local cleanup → AI cleanup → punctuation.
         val expanded = Vocab.expand(
             raw,
             snippets = snippets,
             dictionary = dictionary,
             phraseFixes = phraseFixes,
-            learned = learned,
+            learned = emptyList(),
             clipboard = ::clipboardText,
         )
         val multilingual = snap.multilingual || LocalCleanup.hasNonLatinScript(expanded)
         val corrected = if (multilingual) expanded else LocalCleanup.localSelfCorrect(expanded)
-        // Spoken self-corrections ("Sarah I mean Sandra") teach the dictionary too.
-        if (corrected.trim() != expanded.trim()) learnFrom(expanded, corrected)
         val tone = resolveTone(sessionApp, snap.toneOverride)
         var out = corrected
-        // Desktop parity: short holds get local cleanup only; multilingual sessions skip the LLM.
-        val heldSecs = heldMs / 1000.0
-        val runEnhance = snap.aiEnhance && sessionLang != "multi" &&
-            heldSecs >= EnhancePolicy.quickSkipSecs(snap.enhanceSpeed)
-        if (runEnhance) {
-            val key = snap.llmKey.trim()
-            if (key.isNotBlank()) {
-                runCatching {
-                    out = enhance.enhance(
-                        text = corrected,
-                        tone = tone,
-                        apiKey = key,
-                        speed = snap.enhanceSpeed,
-                        multilingual = multilingual,
-                        dictTerms = dictionary,
-                    )
-                }.onFailure {
-                    out = corrected
-                }
+        val wholeSnippet = snippets.any { raw.trim().trimEnd('.', '!', '?').equals(it.first, ignoreCase = true) }
+        val session = agentSession
+        agentSession = null
+        var aiRan = false
+        if (snap.aiEnhance && !wholeSnippet && PlanCalculator.wordCount(corrected) > AI_MIN_WORDS) {
+            val started = SystemClock.elapsedRealtime()
+            val live = session ?: agent.prewarm(
+                sessionKeys,
+                AgentEnhanceClient.CleanupContext(tone, friendlyApp(sessionApp), dictionary, multilingual),
+            )
+            val reply = live.run(corrected, AgentEnhanceClient.timeoutFor(corrected))
+            val ms = SystemClock.elapsedRealtime() - started
+            if (reply != null && AgentEnhanceClient.looksLikeEdit(corrected, reply)) {
+                out = reply
+                aiRan = true
+                Log.i(TAG, "AI cleanup ${ms}ms prewarmed=${session != null}")
+            } else {
+                Log.w(TAG, "AI cleanup unusable after ${ms}ms (reply=${reply?.length ?: -1} chars), using local text")
             }
+        } else {
+            session?.close()
         }
-        if (!multilingual) {
+        if (!aiRan && !multilingual) {
             out = LocalCleanup.fixCasualAddressCommas(out)
             out = LocalCleanup.normalizeTerminalPunctuation(out, tone)
         }
@@ -774,10 +826,9 @@ class DictationController(
             is VoiceCommands.Result.InsertText -> TextInjector.insert(context, cmd.text)
             is VoiceCommands.Result.Rewrite -> {
                 val old = lastPasteText
-                val key = snap.llmKey.trim()
-                if (old != null && key.isNotBlank()) {
+                if (old != null) {
                     // Rewrite first, only then swap — a failed LLM call must never delete the text.
-                    runCatching { enhance.rewrite(old, cmd.instruction, key) }.getOrNull()
+                    runCatching { agent.rewrite(sessionKeys, old, cmd.instruction) }.getOrNull()
                         ?.takeIf { it.isNotBlank() }
                         ?.let { rewritten ->
                             if (TextInjector.replaceLast(old, rewritten.trim())) lastPasteText = rewritten.trim()
@@ -790,35 +841,7 @@ class DictationController(
     }
 
     private fun onPasted(text: String) {
-        pendingLearnFrom?.let { prev ->
-            val pairs = Vocab.redictateCorrections(prev, text)
-            if (pairs.isNotEmpty()) persistLearned(pairs, Vocab.namesIn(pairs))
-        }
-        pendingLearnFrom = null
         lastPasteText = text
-        lastPasteAt = System.currentTimeMillis()
-    }
-
-    private fun learnFrom(before: String, after: String) {
-        persistLearned(
-            Vocab.substitutionsFromRedictate(before, after),
-            Vocab.learnNameCorrections(before, after),
-        )
-    }
-
-    private fun persistLearned(pairs: List<Vocab.Substitution>, names: List<String>) {
-        if (pairs.isEmpty() && names.isEmpty()) return
-        scope.launch(Dispatchers.IO) {
-            runCatching {
-                for (p in pairs) {
-                    db.substitutionDao().upsert(SubstitutionEntity(p.from, p.to))
-                    Log.i(TAG, "Learned substitution: ${p.from} → ${p.to}")
-                }
-                for (n in (names + Vocab.namesIn(pairs)).distinct()) {
-                    db.dictionaryDao().insert(DictionaryEntity(n))
-                }
-            }.onFailure { Log.w(TAG, "learn failed", it) }
-        }
     }
 
     private fun clipboardText(): String = runCatching {
@@ -846,6 +869,7 @@ class DictationController(
         autoClearMs: Long? = null,
         transcript: String? = null,
     ) {
+        closeAgent()
         OverlayService.notifyRecording(context, false)
         val snippet = transcript?.trim()?.takeIf { it.isNotBlank() } ?: listOf(
             _ui.value.liveText.trim(),
@@ -924,12 +948,12 @@ class DictationController(
     /** Bubble-click for start / stop when Settings → Start / stop sound is on. */
     private fun playSoundCue() {
         if (!cachedSnap.soundCue) return
-        soundCue.play()
+        soundCue.play(cachedSnap.soundVolume)
     }
 
-    /** Preview from Settings when the user enables the cue. */
+    /** Preview from Settings when the user enables the cue or moves the volume. */
     fun previewSoundCue() {
-        soundCue.play()
+        scope.launch { soundCue.play(settings.snapshot().soundVolume) }
     }
 
     private enum class HapticKind { Start, Stop, Cancel, Confirm }

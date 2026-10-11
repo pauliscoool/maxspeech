@@ -26,6 +26,22 @@ object Vocab {
         .filter { it.isNotEmpty() && !it.startsWith("#") && it.contains("=>") }
         .map { l -> l.substringBefore("=>").trim() to l.substringAfter("=>").trim() }
 
+    fun loadCommonWords(assets: AssetManager): Set<String> = readLines(assets, "common_words")
+        .filter { !it.startsWith("#") }
+        .flatMap { it.split(' ') }
+        .map { it.trim().lowercase() }
+        .filter { it.isNotEmpty() }
+        .toSet()
+
+    /**
+     * A dictionary entry made only of everyday words ("What", "Do", "If they're") is learning
+     * junk: it force-capitalizes those words everywhere and biases Deepgram toward them.
+     */
+    fun isJunkDictionaryEntry(entry: String, common: Set<String>): Boolean {
+        val tokens = tokenize(entry).map { it.lowercase().replace('’', '\'') }
+        return tokens.isNotEmpty() && tokens.all { it in common || it.length < 2 }
+    }
+
     private fun readLines(assets: AssetManager, name: String): List<String> =
         assets.open("dictation/$name.txt").bufferedReader().use { r ->
             r.readLines().map { it.trim() }.filter { it.isNotEmpty() }
@@ -50,6 +66,26 @@ object Vocab {
     }
 
     const val MAX_KEYTERMS = 120
+
+    /** Deepgram allows 500 keyterm tokens per request; stay well under with a word-based estimate. */
+    private const val KEYTERM_TOKEN_BUDGET = 400
+
+    /** Trimmed, de-duplicated keyterms in priority order, cut off before the token budget. */
+    fun fitKeytermBudget(terms: List<String>, budget: Int = KEYTERM_TOKEN_BUDGET): List<String> {
+        val out = ArrayList<String>()
+        val seen = HashSet<String>()
+        var used = 0
+        for (term in terms) {
+            val t = term.trim()
+            if (t.isEmpty() || !seen.add(t.lowercase())) continue
+            // ~1.5 tokens per word plus punctuation pieces — conservative.
+            val cost = t.split(Regex("\\s+")).size * 2 + t.count { !it.isLetterOrDigit() && !it.isWhitespace() }
+            if (used + cost > budget) break
+            used += cost
+            out.add(t)
+        }
+        return out
+    }
 
     // ---- expand_macros ----
 
@@ -165,8 +201,8 @@ object Vocab {
         while (i < text.length) {
             val end = i + from.length
             if (end <= text.length && text.regionMatches(i, from, 0, from.length, ignoreCase = true)) {
-                val beforeOk = i == 0 || !text[i - 1].isLetterOrDigit()
-                val afterOk = end >= text.length || !text[end].isLetterOrDigit()
+                val beforeOk = i == 0 || !isWordChar(text, i - 1)
+                val afterOk = end >= text.length || !isWordChar(text, end)
                 if (beforeOk && afterOk) {
                     out.append(to)
                     i = end
@@ -177,6 +213,16 @@ object Vocab {
             i++
         }
         return out.toString()
+    }
+
+    /** An apostrophe inside a word ("there's", "o'clock") joins it, so "there" never matches "there's". */
+    private fun isWordChar(s: String, i: Int): Boolean {
+        val c = s[i]
+        if (c.isLetterOrDigit()) return true
+        if (c != '\'' && c != '’') return false
+        val left = i > 0 && s[i - 1].isLetterOrDigit()
+        val right = i + 1 < s.length && s[i + 1].isLetterOrDigit()
+        return left && right
     }
 
     // ---- learn_name_corrections ----
