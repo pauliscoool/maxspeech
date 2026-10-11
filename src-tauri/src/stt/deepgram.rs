@@ -116,6 +116,26 @@ pub fn merge_keyterms(user: Vec<String>) -> Vec<String> {
             out.push(t.to_string());
         }
     }
+    fit_token_budget(out)
+}
+
+/// Nova-3 accepts at most 500 keyterm tokens per request and silently stops transcribing past
+/// that, so cut the list (in priority order) well before the limit.
+const KEYTERM_TOKEN_BUDGET: usize = 400;
+
+fn fit_token_budget(terms: Vec<String>) -> Vec<String> {
+    let mut used = 0;
+    let mut out = Vec::with_capacity(terms.len());
+    for term in terms {
+        // ~1.5 tokens per word plus punctuation pieces: deliberately conservative.
+        let cost = term.split_whitespace().count() * 2
+            + term.chars().filter(|c| !c.is_alphanumeric() && !c.is_whitespace()).count();
+        if used + cost > KEYTERM_TOKEN_BUDGET {
+            break;
+        }
+        used += cost;
+        out.push(term);
+    }
     out
 }
 
@@ -681,6 +701,15 @@ mod tests {
     fn monolingual_keeps_intentional_russian() {
         let langs = vec!["ru".into()];
         assert_eq!(resolve_language(false, &langs), "ru");
+    }
+
+    #[test]
+    fn keyterms_stay_inside_the_token_budget() {
+        let user: Vec<String> = (0..200).map(|i| format!("Some Long Name {i}")).collect();
+        let merged = fit_token_budget(user);
+        let cost: usize = merged.iter().map(|t| t.split_whitespace().count() * 2).sum();
+        assert!(cost <= KEYTERM_TOKEN_BUDGET && !merged.is_empty());
+        assert!(merge_keyterms(vec![]).len() > 40, "builtins must fit the budget");
     }
 
     #[test]

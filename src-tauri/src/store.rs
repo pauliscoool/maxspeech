@@ -524,6 +524,12 @@ impl Store {
         Ok(())
     }
 
+    /// Remove every learned "heard → meant" pair; they were auto-learned from edits and did harm.
+    pub fn clear_substitutions(&self) -> Result<usize, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM learned_substitutions", [])
+    }
+
     /// Learned ASR substitutions (from_phrase is stored lowercase).
     pub fn get_substitutions(&self) -> Result<Vec<(String, String)>, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();

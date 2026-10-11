@@ -1,0 +1,25 @@
+# Everyday English words that never belong in the personal dictionary. Old builds auto-learned
+# sentence-start words ("What", "Do", "They're") as names; entries made only of these are purged.
+# Names that are also words (will, mark, may, bill, grace, rose, max, june, april, jack) are left out on purpose.
+a about above across act actually add after again against age ago agree ah ahead air all almost alone along already alright also although always am amazing among amount an and angry animal another answer any anybody anymore anyone anything anyway anywhere apparently app apps are area aren't arm around arrive art as ask asked asking at ate away awesome aww
+baby back bad bag ball bank bar base basic basically be beat beautiful became because become bed been before began begin behind being believe below best better between big bit black blue board boat body book both bottom bought box boy brain break bring bro broke broken brother brought bruh build building built bunch business busy but buy by bye
+call called calling came can can't cannot car card care careful carry case cat catch cause cell center certain certainly chair chance change changed charge cheap check chicken child children choose city class clean clear clearly close closed clothes coffee cold college color come comes coming company complete completely computer cool copy correct cost could couldn't count country couple course cover crazy create cup cut cute
+dad damn dark data date day days dead deal dear decide decided deep definitely did didn't die different difficult dinner do doctor does doesn't dog doing don't done door down draw dream dress drink drive drop dude during
+each early easy eat eight either else email end energy enjoy enough entire especially even evening ever every everybody everyone everything exactly example except excited exciting expect experience explain eye eyes
+face fact fair fall family far fast father favorite fear feel feeling feet fell felt few field fight figure file fill final finally find fine finish fire first fish five fix floor fly follow food foot for forget forgot form forward found four free friend friends from front full fun funny future
+game games gave get gets getting girl give given glad go goes going gone gonna good got gotta great green ground group grow guess guy guys
+had hair half hand hands happen happened happy hard has hasn't hate have haven't having he he's head hear heard heart hello help her here hers hey hi high him himself his hit hold home honestly hope horrible hot hour hours house how however huge huh human hundred hungry hurt husband
+i i'd i'll i'm i've idea if important in inside instead interesting into is isn't issue it it's its itself
+job join just keep kid kids kill kind kinda kitchen knew know known
+lady land language large last late later laugh learn least leave left leg less let let's letter level lie life light like liked line list listen little live lol long look looked looking looks lose lost lot lots love low lunch
+made main make makes making man many matter maybe me mean means meant meet meeting member mention message met middle might mind mine minute minutes miss mom money month months more morning most mostly mother move movie much music must my myself
+name names near need needed needs never new news next nice night nine no nobody none nope nor normal not note nothing notice now number
+of off office oh ok okay old on once one only open or order other others our ours out outside over own
+page paid pain paper parent parents part party pass past pay people perfect perhaps person phone pick picture piece place plan play please plus point police possible post power pretty probably problem program pull put
+question quick quickly quite
+rather read ready real really reason red remember rest right road room round run running
+sad said same saw say saying says school second see seem seen self sell send sense sent serious set seven several she she's shit shoot short should shouldn't show side simple since sir sister sit six size sleep slow small so some somebody someone something sometimes somewhere son song soon sorry sort sound space speak special spend stand start started state stay still stop story street strong stuff such super supposed sure
+table take taken talk talking tea team tell ten terrible text than thank thanks that that's the their them themselves then there there's these they they'd they'll they're they've thing things think thinking third this those though thought three through time times tired to today together told tomorrow tonight too took top totally toward town tried true try trying turn two type
+uh um under understand unless until up upon us use used useful usually
+very video voice wait walk wall want wanted wants was wasn't watch water way we we'll we're we've wear week weekend weird welcome well went were weren't what what's whatever when where which while white who whole whose why wife win window wish with within without woman women won't wonder word words work working world worry worse worst would wouldn't wow write wrong
+yeah year years yes yesterday yet you you'd you'll you're you've young your yours yourself

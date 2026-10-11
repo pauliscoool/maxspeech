@@ -1,0 +1,8 @@
+CRITICAL — multilingual / code-switched dictation:
+The transcript may mix languages in one utterance (e.g. Russian then English).
+- Preserve EVERY language and script exactly as spoken.
+- Do NOT translate between languages.
+- Do NOT transliterate Cyrillic, CJK, Arabic, etc. into Latin letters.
+- Do NOT drop words from a language you understand less well.
+- Only lightly fix punctuation/spacing; leave mixed-language wording intact.
+- English self-correction rules apply only to clearly English correction chatter.

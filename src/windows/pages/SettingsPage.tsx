@@ -66,9 +66,6 @@ export default function SettingsPage({
   const [openOnLaunch, setOpenOnLaunch] = useState(false);
   const [showLive, setShowLive] = useState(true);
   const [aiEnhance, setAiEnhance] = useState(true);
-  const [enhanceSpeed, setEnhanceSpeed] = useState<"fast" | "thinking" | "ultra">(
-    "thinking",
-  );
   const [soundCue, setSoundCue] = useState(false);
   const [soundCueVolume, setSoundCueVolume] = useState<"soft" | "medium" | "loud">(
     "medium",
@@ -200,10 +197,6 @@ export default function SettingsPage({
       setShowLive(live !== "false");
       const enhance = await invoke<string>("get_setting", { key: "ai_enhance" });
       setAiEnhance(enhance !== "false");
-      const speed = (await invoke<string>("get_setting", { key: "enhance_speed" })).toLowerCase();
-      setEnhanceSpeed(
-        speed === "fast" || speed === "ultra" ? speed : "thinking",
-      );
       const sound = await invoke<string>("get_setting", { key: "sound_cue" });
       setSoundCue(sound === "true");
       const soundVol = await invoke<string>("get_setting", { key: "sound_cue_volume" });
@@ -699,43 +692,11 @@ export default function SettingsPage({
               <div className="settings-row-title">AI enhance</div>
               <div className="settings-row-desc">
                 {aiEnhance
-                  ? enhanceSpeed === "fast"
-                    ? "Fast: shorter wait; skips AI for recordings under 6.25 seconds."
-                    : enhanceSpeed === "ultra"
-                      ? "Ultra: longer timeout; skips AI for recordings under 1.5 seconds."
-                      : "Thinking: standard timeout; skips AI for recordings under 5 seconds."
+                  ? "Fixes misheard words, filler, capitals and lists using the surrounding app."
                   : "Keep your words; clean punctuation, hesitations, and clear corrections."}
               </div>
             </div>
             <div className="flex items-center gap-2 shrink-0">
-              {aiEnhance ? (
-                <div className="sound-vol-seg" role="group" aria-label="Enhance speed">
-                  {(
-                    [
-                      ["fast", "Fast"],
-                      ["thinking", "Thinking"],
-                      ["ultra", "Ultra"],
-                    ] as const
-                  ).map(([value, label]) => (
-                    <button
-                      key={value}
-                      type="button"
-                      className={`sound-vol-opt${
-                        enhanceSpeed === value ? " is-active" : ""
-                      }`}
-                      onClick={() => {
-                        setEnhanceSpeed(value);
-                        void invoke("set_setting", {
-                          key: "enhance_speed",
-                          value,
-                        }).then(() => scheduleCloudSettingsPush());
-                      }}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-              ) : null}
               <Toggle
                 checked={aiEnhance}
                 onChange={() => toggleBool("ai_enhance", aiEnhance, setAiEnhance)}

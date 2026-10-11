@@ -9,7 +9,6 @@ use crate::audio::AudioCapture;
 use crate::context;
 use crate::inject::{self, LastInsertion};
 use crate::recording::{self, MAX_REMAKE_RECORDINGS, WAV_SAMPLE_RATE};
-use crate::secrets;
 use crate::store::Store;
 use crate::stt::deepgram::{self, DeepgramConfig, TranscriptChunk};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -20,6 +19,8 @@ use tokio::sync::mpsc;
 
 /// Hard cap for a single push-to-talk session.
 const MAX_RECORDING: Duration = Duration::from_secs(120);
+/// Shorter dictations are pasted with local cleanup only; the model adds nothing there.
+const AI_MIN_WORDS: usize = 3;
 
 /// Never cut the mic sooner than this after release (capture + WASAPI buffer latency).
 const TRAIL_MIN_MS: u64 = 120;
@@ -253,6 +254,42 @@ fn spawn_mic_start(
     }
 }
 
+/// Open the cleanup agent now, with this session's app/tone/dictionary as context.
+fn prewarm_agent(
+    app: &tauri::AppHandle,
+    dictionary: &[String],
+    multilingual: bool,
+) -> Option<agent_llm::AgentSession> {
+    let store = app.try_state::<Store>()?;
+    let enabled = store
+        .get_setting("ai_enhance")
+        .ok()
+        .flatten()
+        .map(|v| v != "false")
+        .unwrap_or(true);
+    if !enabled {
+        return None;
+    }
+    let fg = app.state::<PipelineState>().session_fg.lock().unwrap().clone();
+    let app_name = fg
+        .as_ref()
+        .map(|a| context::friendly_app_name(&a.exe))
+        .unwrap_or_default();
+    let tone_name = fg
+        .as_ref()
+        .and_then(|a| tone::get_tone_for_app(a, &store))
+        .unwrap_or_else(|| "default".to_string());
+    let title = fg.as_ref().map(|a| a.title.clone()).unwrap_or_default();
+    let system = tone::cleanup_system_prompt(&tone::CleanupContext {
+        tone: &tone_name,
+        app_name: &app_name,
+        window_title: &title,
+        dictionary,
+        multilingual,
+    });
+    Some(agent_llm::prewarm(system))
+}
+
 pub fn start_dictation(app: &tauri::AppHandle) {
     let state = app.state::<PipelineState>();
     {
@@ -396,10 +433,12 @@ pub fn start_dictation(app: &tauri::AppHandle) {
     log::info!("STT language={language} multilingual={multilingual} selected={languages:?}");
     let language_for_pipeline = language.clone();
 
+    let agent = prewarm_agent(app, &keywords, language_for_pipeline == "multi");
+
     // Empty api_key → stream_audio tries cached / user / app fallback keys.
     let config = DeepgramConfig {
         api_key: String::new(),
-        keywords: deepgram::merge_keyterms(keywords),
+        keywords: deepgram::merge_keyterms(keywords.clone()),
         language,
         ..Default::default()
     };
@@ -513,6 +552,7 @@ pub fn start_dictation(app: &tauri::AppHandle) {
     let session_pcm_task = session_pcm.clone();
     let app_handle = app.clone();
     tauri::async_runtime::spawn(async move {
+        let mut agent_session = agent;
         let mut final_text = String::new();
         let mut last_interim = String::new();
         while let Some(chunk) = transcript_rx.recv().await {
@@ -788,75 +828,37 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                 return;
             }
 
-            let has_llm_key = secrets::has_llm_api_key();
-            let ai_enhance = store
-                .get_setting("ai_enhance")
-                .ok()
-                .flatten()
-                .map(|v| v != "false")
-                .unwrap_or(true);
-            let enhance_speed = tone::EnhanceSpeed::from_store(&store);
-
-            // Short hold: paste fast with local cleanup only. Full LLM
-            // enhance is reserved for longer dictations where the lag is worth it.
-            // Fast skips more often; Ultra almost always runs the model.
-            let session_secs = *app_handle
-                .state::<PipelineState>()
-                .last_session_secs
-                .lock()
-                .unwrap();
-            let quick_session = session_secs < enhance_speed.quick_skip_secs();
-
-            // Multilingual / code-switch: keep Deepgram text as-is. The English
-            // Grammarly pass was compounding ASR mistakes into fluent wrong prose
-            // ("build function" stayed "blood function" or got rewritten further).
-            let will_call_llm = language_for_pipeline != "multi"
-                && has_llm_key
-                && ai_enhance
-                && !quick_session;
-            if will_call_llm {
-                emit_state_if_current(&app_handle, paste_token, "processing");
-            }
-
-            let mut final_output = if language_for_pipeline == "multi" {
-                log::info!("Skipping AI enhance for multilingual session");
-                corrected
-            } else if quick_session {
-                log::info!(
-                    "Quick session ({session_secs:.1}s) — local cleanup only, skip LLM"
-                );
-                corrected
-            } else if has_llm_key && ai_enhance {
-                let dict_terms: Vec<String> = store
-                    .get_dictionary()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|w| w.word)
-                    .collect();
-                match tone::enhance_dictation_ex(
-                    &corrected,
-                    &tone_name,
-                    multilingual_session,
-                    &dict_terms,
-                    enhance_speed,
-                )
-                .await
-                {
-                    Ok(out) => {
-                        log::info!("AI enhance ok ({} → {} chars)", corrected.len(), out.len());
-                        out
-                    }
-                    Err(e) => {
-                        log::warn!("AI enhance failed, using local correction: {e}");
-                        // Local cleanup still counts when enhance is on
-                        corrected
+            // The agent session was opened when recording started, so only the LLM itself is
+            // left to wait for. Anything it can't deliver in time falls back to local cleanup.
+            let words = expanded.split_whitespace().count();
+            let mut final_output = match agent_session.take() {
+                Some(agent) if words >= AI_MIN_WORDS => {
+                    emit_state_if_current(&app_handle, paste_token, "processing");
+                    let started = Instant::now();
+                    let input = format!("<t>{}</t>", expanded.trim());
+                    match agent.run(&input, tone::cleanup_timeout(&expanded)).await {
+                        Ok(reply) => {
+                            let reply = reply.replace("<t>", "").replace("</t>", "").trim().to_string();
+                            if tone::looks_like_edit(&expanded, &reply) {
+                                log::info!(
+                                    "AI cleanup ok ({} → {} chars, {} ms)",
+                                    expanded.len(),
+                                    reply.len(),
+                                    started.elapsed().as_millis()
+                                );
+                                reply
+                            } else {
+                                log::warn!("AI cleanup reply off-size, using local cleanup");
+                                corrected
+                            }
+                        }
+                        Err(e) => {
+                            log::warn!("AI cleanup failed, using local cleanup: {e}");
+                            corrected
+                        }
                     }
                 }
-            } else {
-                if !has_llm_key && ai_enhance {
-                    log::info!("AI enhance on but no LLM key — local self-correct only");
-                }
-                corrected
+                _ => corrected,
             };
 
             let trailing = store
@@ -1177,21 +1179,44 @@ fn apply_transcript_chunk(
         } else {
             String::new()
         };
-        if !final_text.is_empty() && !final_text.ends_with(' ') {
-            final_text.push(' ');
-        }
-        final_text.push_str(t);
-        final_text.push(' ');
+        push_final(final_text, t);
         *last_interim = rest;
         return;
     }
 
+    push_final(final_text, t);
+    last_interim.clear();
+}
+
+/// Words that continue a sentence: Deepgram capitalizes the first word of each finalized segment,
+/// so one that follows a pause mid-sentence ("... the store | And then ...") must be lowercased.
+const CONTINUATION: &[&str] = &[
+    "and", "but", "so", "because", "or", "the", "a", "an", "to", "of", "that", "which", "then", "if",
+    "when", "while", "with", "for", "in", "on", "at", "as", "is", "are", "was", "were", "it", "this",
+    "we", "they", "you", "he", "she", "my", "your", "our", "their", "also", "just", "not", "do",
+    "does", "did", "have", "has", "had", "can", "could", "would", "should", "will", "from", "by",
+];
+
+fn push_final(final_text: &mut String, segment: &str) {
     if !final_text.is_empty() && !final_text.ends_with(' ') {
         final_text.push(' ');
     }
-    final_text.push_str(t);
+    let prev = final_text.trim_end();
+    let mid_sentence = !prev.is_empty() && !prev.ends_with(['.', '?', '!', '…', ':', '\n']);
+    let first = segment.split_whitespace().next().unwrap_or("");
+    let bare: String = first.chars().filter(|c| c.is_alphabetic()).collect();
+    let capitalized_only_first = bare.chars().next().is_some_and(char::is_uppercase)
+        && bare.chars().skip(1).all(char::is_lowercase);
+    if mid_sentence && capitalized_only_first && CONTINUATION.contains(&bare.to_lowercase().as_str()) {
+        let mut chars = segment.chars();
+        if let Some(c) = chars.next() {
+            final_text.extend(c.to_lowercase());
+            final_text.push_str(chars.as_str());
+        }
+    } else {
+        final_text.push_str(segment);
+    }
     final_text.push(' ');
-    last_interim.clear();
 }
 
 /// True when `full` is `prefix`, or `prefix` plus a non-alphanumeric break
@@ -1239,6 +1264,38 @@ fn merge_trailing_interim(final_text: &str, interim: &str) -> String {
     }
 
     format!("{text} {interim}")
+}
+
+#[cfg(test)]
+mod seam_tests {
+    use super::{apply_transcript_chunk, push_final};
+
+    fn join(parts: &[&str]) -> String {
+        let (mut text, mut interim) = (String::new(), String::new());
+        for p in parts {
+            apply_transcript_chunk(&mut text, &mut interim, p, true);
+        }
+        text.trim().to_string()
+    }
+
+    #[test]
+    fn lowercases_continuation_after_a_mid_sentence_pause() {
+        assert_eq!(join(&["I went to the store", "And then I left."]), "I went to the store and then I left.");
+    }
+
+    #[test]
+    fn keeps_capitals_after_sentence_ends_names_and_i() {
+        assert_eq!(join(&["I went home.", "And then I left."]), "I went home. And then I left.");
+        assert_eq!(join(&["I talked to", "Sarah about it"]), "I talked to Sarah about it");
+        assert_eq!(join(&["we agreed that", "I should go"]), "we agreed that I should go");
+    }
+
+    #[test]
+    fn push_final_into_empty_text_is_untouched() {
+        let mut t = String::new();
+        push_final(&mut t, "And so it begins");
+        assert_eq!(t, "And so it begins ");
+    }
 }
 
 #[cfg(test)]

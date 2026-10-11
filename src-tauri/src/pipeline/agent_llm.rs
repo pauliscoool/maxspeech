@@ -1,12 +1,16 @@
 //! Text rewriting through Deepgram's Voice Agent "think" step.
 //!
 //! MaxSpeech only ships a Deepgram key. Deepgram hosts managed LLMs (OpenAI,
-//! Anthropic, ...) behind the Voice Agent socket, so we open a session, inject
-//! the text as a user message, and read the model's reply from ConversationText.
-//! No audio is ever sent; the agent's TTS audio is ignored.
+//! Anthropic, ...) behind the Voice Agent socket, so we open a session and inject
+//! the text as a user message. The agent normally releases its reply one spoken
+//! sentence at a time (seconds of pacing), so the model is told to hand the result
+//! to a client-side function instead: the whole text arrives in one
+//! FunctionCallRequest as soon as the LLM finishes (~0.6 s). No audio is ever sent
+//! (only silence to keep the session alive); the agent's TTS audio is ignored.
 
 use futures_util::{SinkExt, StreamExt};
 use std::time::{Duration, Instant};
+use tokio::sync::oneshot;
 use tokio_tungstenite::tungstenite::handshake::client::generate_key;
 use tokio_tungstenite::tungstenite::http::Request;
 use tokio_tungstenite::tungstenite::Message;
@@ -16,17 +20,19 @@ use crate::secrets;
 const AGENT_HOST: &str = "agent.deepgram.com";
 const AGENT_URL: &str = "wss://agent.deepgram.com/v1/agent/converse";
 const THINK_PROVIDER: &str = "open_ai";
-const THINK_MODEL: &str = "gpt-4.1-mini";
+/// Fastest faithful model in the 2026-10 probe (~0.65 s, fixes misheard words).
+const THINK_MODEL: &str = "gpt-5.4-mini";
+const FUNCTION_NAME: &str = "deliver_text";
 const SESSION_TIMEOUT: Duration = Duration::from_secs(60);
-/// The agent speaks (and sends) its reply one sentence at a time and signals
-/// "audio done" after the first, so the model ends with this marker instead.
+/// A prewarmed session lives as long as the longest dictation, then closes itself so a
+/// forgotten one can never stream silence (and bill) forever.
+const PREWARM_TIMEOUT: Duration = Duration::from_secs(150);
 /// 120 ms of 16 kHz mono linear16 silence, one per poll tick.
 const SILENCE_FRAME_BYTES: usize = 3840;
-const END_MARKER: &str = "END_OF_TEXT";
-/// Fallback when the model forgets the marker: this long after the last sentence.
+const DELIVER_INSTRUCTION: &str = "ALWAYS deliver the final text by calling the function deliver_text exactly once, with the complete text as its \"text\" argument. Never speak or write anything else.";
+/// Fallback when the model speaks instead of calling the function: this long after the last sentence.
 const REPLY_IDLE: Duration = Duration::from_millis(8000);
-/// Whole-passage replies arrive at speaking pace, so the end marker itself can trail the last
-/// sentence by that long; wait longer before assuming the model forgot it.
+/// Whole-passage replies arrive at speaking pace; wait longer before assuming the model is done.
 const REPLY_IDLE_WHOLE: Duration = Duration::from_millis(15000);
 
 type BoxErr = Box<dyn std::error::Error + Send + Sync>;
@@ -60,9 +66,16 @@ fn settings_message(system: &str) -> String {
             "listen": { "provider": { "type": "deepgram", "model": "nova-3" } },
             "think": {
                 "provider": { "type": THINK_PROVIDER, "model": THINK_MODEL },
-                "prompt": format!(
-                    "{system} After the last word of the edited text, add a final separate line                      containing exactly {END_MARKER}."
-                )
+                "prompt": format!("{system}\n\n{DELIVER_INSTRUCTION}"),
+                "functions": [{
+                    "name": FUNCTION_NAME,
+                    "description": "Deliver the final edited text.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": { "text": { "type": "string" } },
+                        "required": ["text"]
+                    }
+                }]
             },
             "speak": { "provider": { "type": "deepgram", "model": "aura-2-thalia-en" } }
         }
@@ -80,7 +93,7 @@ where
 }
 
 /// Like `rewrite`, but for edits that change the length (shorten, expand, translate, list):
-/// only the end marker ends the reply, never "the reply is about as long as the input".
+/// the reply is never judged by its size.
 pub async fn rewrite_whole<C>(system: &str, text: &str, is_cancelled: C) -> Result<String, BoxErr>
 where
     C: Fn() -> bool,
@@ -100,7 +113,12 @@ where
     let mut last_err: BoxErr = "Deepgram key not available".into();
     for key in secrets::deepgram_key_candidates() {
         match connect(&key).await {
-            Ok(ws) => return run_session(ws, system, text, &is_cancelled, early_finish).await,
+            Ok(ws) => {
+                let (tx, rx) = oneshot::channel();
+                let _ = tx.send(text.to_string());
+                return run_session(ws, system, rx, &is_cancelled, early_finish, SESSION_TIMEOUT)
+                    .await;
+            }
             Err(e) => {
                 log::warn!("Deepgram agent connect failed: {e}");
                 last_err = e;
@@ -110,18 +128,70 @@ where
     Err(last_err)
 }
 
+/// A session opened while the user is still talking, so releasing the key only pays for the LLM.
+/// Dropping it closes the socket.
+pub struct AgentSession {
+    text_tx: Option<oneshot::Sender<String>>,
+    done: tauri::async_runtime::JoinHandle<Result<String, BoxErr>>,
+}
+
+/// Open a session for `system` in the background and wait for text via `AgentSession::run`.
+pub fn prewarm(system: String) -> AgentSession {
+    let (text_tx, text_rx) = oneshot::channel::<String>();
+    let done = tauri::async_runtime::spawn(async move {
+        let mut last_err: BoxErr = "Deepgram key not available".into();
+        let mut text_rx = Some(text_rx);
+        for key in secrets::deepgram_key_candidates() {
+            match connect(&key).await {
+                Ok(ws) => {
+                    let rx = text_rx.take().expect("receiver used once");
+                    return run_session(ws, &system, rx, &|| false, true, PREWARM_TIMEOUT).await;
+                }
+                Err(e) => {
+                    log::warn!("Deepgram agent connect failed: {e}");
+                    last_err = e;
+                }
+            }
+        }
+        Err(last_err)
+    });
+    AgentSession { text_tx: Some(text_tx), done }
+}
+
+impl AgentSession {
+    /// Hand over the transcript and wait up to `timeout` for the model's text.
+    pub async fn run(mut self, text: &str, timeout: Duration) -> Result<String, BoxErr> {
+        if let Some(tx) = self.text_tx.take() {
+            let _ = tx.send(text.to_string());
+        }
+        match tokio::time::timeout(timeout, &mut self.done).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(join)) => Err(format!("Agent task failed: {join}").into()),
+            Err(_) => Err("Deepgram agent timed out".into()),
+        }
+    }
+}
+
+impl Drop for AgentSession {
+    fn drop(&mut self) {
+        self.done.abort();
+    }
+}
+
 async fn run_session<C>(
     mut ws: WsStream,
     system: &str,
-    text: &str,
+    text_rx: oneshot::Receiver<String>,
     is_cancelled: &C,
     early_finish: bool,
+    session_timeout: Duration,
 ) -> Result<String, BoxErr>
 where
     C: Fn() -> bool,
 {
-    let deadline = Instant::now() + SESSION_TIMEOUT;
-    let input_chars = text.chars().count();
+    let deadline = Instant::now() + session_timeout;
+    let mut text_rx = Some(text_rx);
+    let mut input_chars = 0usize;
     let mut out = String::new();
     let mut last_chunk_at: Option<Instant> = None;
     let mut listening = false;
@@ -134,26 +204,51 @@ where
         if Instant::now() > deadline {
             break Err("Deepgram agent timed out".into());
         }
-        let msg = match tokio::time::timeout(Duration::from_millis(120), ws.next()).await {
-            Err(_) => {
-                if last_chunk_at.is_some_and(|t| t.elapsed() > idle_limit) {
-                    break Ok(());
-                }
-                // The agent releases its reply at speaking pace and drops a session that
-                // hears no audio for ~12s (CLIENT_MESSAGE_TIMEOUT), so stream silence.
-                if listening
-                    && ws
-                        .send(Message::Binary(vec![0u8; SILENCE_FRAME_BYTES].into()))
-                        .await
-                        .is_err()
-                {
-                    break Ok(());
-                }
-                continue;
+        let waiting_for_text = async {
+            match text_rx.as_mut() {
+                Some(rx) if listening => Some(rx.await),
+                _ => std::future::pending().await,
             }
-            Ok(None) => break Ok(()),
-            Ok(Some(Err(e))) => break Err(e.into()),
-            Ok(Some(Ok(m))) => m,
+        };
+        let msg = tokio::select! {
+            incoming = waiting_for_text => {
+                text_rx = None;
+                match incoming {
+                    Some(Ok(text)) => {
+                        input_chars = text.chars().count();
+                        let inject = serde_json::json!({
+                            "type": "InjectUserMessage",
+                            "content": text
+                        });
+                        if let Err(e) = ws.send(Message::Text(inject.to_string().into())).await {
+                            break Err(e.into());
+                        }
+                        continue;
+                    }
+                    // Sender dropped: the dictation was cancelled or produced nothing.
+                    _ => break Ok(()),
+                }
+            }
+            next = tokio::time::timeout(Duration::from_millis(120), ws.next()) => match next {
+                Err(_) => {
+                    if last_chunk_at.is_some_and(|t| t.elapsed() > idle_limit) {
+                        break Ok(());
+                    }
+                    // The agent drops a session that hears no audio for ~12s, so stream silence.
+                    if listening
+                        && ws
+                            .send(Message::Binary(vec![0u8; SILENCE_FRAME_BYTES].into()))
+                            .await
+                            .is_err()
+                    {
+                        break Ok(());
+                    }
+                    continue;
+                }
+                Ok(None) => break Ok(()),
+                Ok(Some(Err(e))) => break Err(e.into()),
+                Ok(Some(Ok(m))) => m,
+            }
         };
         match msg {
             Message::Text(raw) => {
@@ -170,16 +265,24 @@ where
                             break Err(e.into());
                         }
                     }
-                    "SettingsApplied" => {
-                        listening = true;
-                        let inject = serde_json::json!({
-                            "type": "InjectUserMessage",
-                            "content": text
-                        });
-                        if let Err(e) = ws.send(Message::Text(inject.to_string().into())).await {
-                            break Err(e.into());
+                    "SettingsApplied" => listening = true,
+                    "FunctionCallRequest" => {
+                        let delivered = v["functions"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter(|f| f["name"] == FUNCTION_NAME)
+                            .find_map(|f| {
+                                let args: serde_json::Value =
+                                    serde_json::from_str(f["arguments"].as_str()?).ok()?;
+                                Some(args["text"].as_str()?.to_string())
+                            });
+                        if let Some(text) = delivered {
+                            out = text;
+                            break Ok(());
                         }
                     }
+                    // The model spoke instead of calling the function: collect its sentences.
                     "ConversationText" if v["role"] == "assistant" => {
                         if let Some(piece) = v["content"].as_str() {
                             if !out.is_empty() && !out.ends_with('\n') {
@@ -189,20 +292,11 @@ where
                             last_chunk_at = Some(Instant::now());
                             // An edit is about as long as its input, so a reply that size is
                             // complete — no need to wait out the rest of the agent's speech.
-                            let reply_chars = out.replace(END_MARKER, "").trim().chars().count();
-                            if out.contains(END_MARKER)
-                                || (early_finish && reply_chars * 100 >= input_chars * 85)
-                            {
+                            let reply_chars = out.trim().chars().count();
+                            if early_finish && input_chars > 0 && reply_chars * 100 >= input_chars * 85 {
                                 break Ok(());
                             }
                         }
-                    }
-                    // History marks the assistant turn as complete and carries its full text.
-                    "HistoryXX" if v["role"] == "assistant" && !out.is_empty() => {
-                        if let Some(full) = v["content"].as_str().filter(|c| !c.trim().is_empty()) {
-                            out = full.to_string();
-                        }
-                        break Ok(());
                     }
                     "Error" => {
                         let desc = v["description"]
@@ -222,7 +316,7 @@ where
 
     let _ = ws.close(None).await;
     result?;
-    let out = out.replace(END_MARKER, "").trim().to_string();
+    let out = out.trim().to_string();
     if out.is_empty() && !is_cancelled() {
         return Err("Empty LLM response".into());
     }
@@ -496,5 +590,39 @@ mod tests {
         .expect("agent rewrite failed");
         println!("[{:.2}s] IN {} / OUT {} chars\n{out}", started.elapsed().as_secs_f32(), LONG.len(), out.len());
         assert!(out.len() as f64 > LONG.len() as f64 * 0.8, "reply was condensed");
+    }
+}
+
+#[cfg(test)]
+mod cleanup_live {
+    use crate::pipeline::tone::{cleanup_system_prompt, CleanupContext};
+
+    /// Live check of the prewarmed cleanup session. Run with:
+    /// cargo test cleanup_live -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore]
+    async fn prewarmed_cleanup_latency() {
+        let system = cleanup_system_prompt(&CleanupContext {
+            tone: "casual",
+            app_name: "Discord",
+            window_title: "minecraft-mods - Discord",
+            dictionary: &["CurseForge".to_string()],
+            multilingual: false,
+        });
+        let cases = [
+            "um so you should download the mom or retrospect from curseforge",
+            "okay so for the trip I need to pack first my passport second the charger and third some snacks",
+            "lets meet thursday no wait friday at like 3",
+        ];
+        for text in cases {
+            let session = super::prewarm(system.clone());
+            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+            let started = std::time::Instant::now();
+            let out = session
+                .run(&format!("<t>{text}</t>"), std::time::Duration::from_secs(9))
+                .await
+                .expect("cleanup failed");
+            println!("[{} ms] {text}\n  -> {out}\n", started.elapsed().as_millis());
+        }
     }
 }

@@ -1,62 +1,10 @@
 use crate::context::ForegroundApp;
 use crate::pipeline::agent_llm;
-use crate::secrets;
 use crate::store::Store;
 use futures_util::StreamExt;
-use std::sync::OnceLock;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-pub use super::faithful::{guard_output, has_non_latin_script, local_cleanup};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EnhanceSpeed {
-    Fast,
-    Thinking,
-    Ultra,
-}
-
-impl EnhanceSpeed {
-    pub fn parse(s: &str) -> Self {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "fast" => Self::Fast,
-            "ultra" => Self::Ultra,
-            _ => Self::Thinking,
-        }
-    }
-
-    pub fn from_store(store: &Store) -> Self {
-        Self::parse(
-            &store
-                .get_setting("enhance_speed")
-                .ok()
-                .flatten()
-                .unwrap_or_default(),
-        )
-    }
-
-    pub fn quick_skip_secs(self) -> f64 {
-        match self {
-            Self::Fast => 6.25,
-            Self::Thinking => 5.0,
-            Self::Ultra => 1.5,
-        }
-    }
-
-    pub fn timeout(self) -> Duration {
-        Duration::from_millis(match self {
-            Self::Fast => 12_000,
-            Self::Thinking => 15_000,
-            Self::Ultra => 20_000,
-        })
-    }
-
-    fn temperature(self) -> f64 {
-        0.0
-    }
-    fn model(self) -> &'static str {
-        "gpt-4o-mini"
-    }
-}
+pub use super::faithful::{has_non_latin_script, local_cleanup};
 
 pub fn get_tone_for_app(app: &ForegroundApp, store: &Store) -> Option<String> {
     let profiles = store.get_app_profiles().unwrap_or_default();
@@ -92,21 +40,75 @@ pub fn get_tone_for_app(app: &ForegroundApp, store: &Store) -> Option<String> {
     best.map(|(_, tone)| tone.to_string())
 }
 
-const FAITHFUL_RULES: &str = include_str!("../../../shared/dictation/prompt.txt");
+const CLEANUP_RULES: &str = include_str!("../../../shared/dictation/agent_cleanup.txt");
+const MULTILINGUAL_RULES: &str = include_str!("../../../shared/dictation/multilingual_rules.txt");
 
-fn system_prompt_for_tone(tone: &str, multilingual: bool) -> String {
-    let surface = match tone {
-        "casual" => "Casual surface formatting only; preserve proper names and use lighter terminal punctuation.",
-        "prose" => "Keep paragraph breaks; add paragraphs only for explicit spoken commands.",
-        "code" => "Preserve technical words and symbols; never invent code or comment syntax.",
-        _ => "Use normal sentence capitalization and punctuation; preserve incomplete sentences.",
-    };
-    let language = if multilingual {
-        "Preserve all languages and scripts. Do not translate or transliterate."
-    } else {
-        "Preserve the spoken language."
-    };
-    format!("{FAITHFUL_RULES}\n{surface}\n{language}")
+fn tone_line(tone: &str) -> &'static str {
+    match tone {
+        "casual" => "casual chat message. Relaxed punctuation, no period at the very end, keep slang.",
+        "formal" => "professional email. Complete sentences and proper punctuation, same words and facts.",
+        "prose" => "clean prose with paragraphs.",
+        "code" => "technical writing for a programmer; use exact technical terms.",
+        _ => "natural and clean, in the speaker's own voice.",
+    }
+}
+
+pub struct CleanupContext<'a> {
+    pub tone: &'a str,
+    pub app_name: &'a str,
+    pub window_title: &'a str,
+    pub dictionary: &'a [String],
+    pub multilingual: bool,
+}
+
+/// System prompt for the dictation cleanup agent: fixes misheard words, fillers, casing and lists.
+pub fn cleanup_system_prompt(c: &CleanupContext) -> String {
+    let mut out = format!("{CLEANUP_RULES}\n\nStyle: {}", tone_line(c.tone));
+    if c.multilingual {
+        out.push('\n');
+        out.push_str(MULTILINGUAL_RULES);
+    }
+    let terms: Vec<&str> = c
+        .dictionary
+        .iter()
+        .map(|t| t.trim())
+        .filter(|t| !t.is_empty())
+        .take(60)
+        .collect();
+    if !terms.is_empty() {
+        out.push_str(&format!(
+            "\n\nUser dictionary (spell exactly like this when heard): {}",
+            terms.join(", ")
+        ));
+    }
+    out.push_str("\n\nContext (reference only, never copy it into the output):");
+    out.push_str(&format!(
+        "\nApp: {}",
+        if c.app_name.trim().is_empty() { "unknown" } else { c.app_name }
+    ));
+    if !c.window_title.trim().is_empty() {
+        out.push_str(&format!("\nWindow title: {}", c.window_title.trim()));
+    }
+    out
+}
+
+/// Release-to-text budget: a short dictation should never wait long on the LLM.
+pub fn cleanup_timeout(text: &str) -> Duration {
+    Duration::from_millis((3_000 + text.len() as u64 * 8).min(9_000))
+}
+
+/// The reply must look like an edit of the input, not an answer or a summary.
+/// Lists add characters and filler removal drops some, so the bounds are loose.
+pub fn looks_like_edit(input: &str, reply: &str) -> bool {
+    let i = input.trim().chars().count();
+    let r = reply.trim().chars().count();
+    if r == 0 {
+        return false;
+    }
+    if i < 30 {
+        return r <= i * 3 + 25;
+    }
+    r * 100 >= i * 45 && r * 100 <= i * 180
 }
 
 fn dictionary_prompt_block(terms: &[String]) -> String {
@@ -126,25 +128,12 @@ fn with_dictionary(system: String, terms: &[String]) -> String {
     format!("{system}{}", dictionary_prompt_block(terms))
 }
 
-fn token_budget(text: &str) -> u32 {
-    // UTF-8 bytes bound mixed-script output more safely than English word counts.
-    (text.len().saturating_add(128)).clamp(256, 16_384) as u32
-}
-
 pub async fn rewrite_with_llm(
     text: &str,
     instruction: &str,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    let key = secrets::resolve_llm_api_key().ok_or("LLM API key not set")?;
     let system = format!("Rewrite the text per the user's explicit instruction: {instruction}. Preserve names, numbers and language. Return only the rewritten text.");
-    call_llm(
-        &key,
-        &system,
-        text,
-        token_budget(text),
-        EnhanceSpeed::Thinking,
-    )
-    .await
+    agent_llm::rewrite_whole(&system, text, || false).await
 }
 
 /// Deepgram agent sessions edited at once; more risks rate limits.
@@ -259,180 +248,43 @@ where
     Ok(acc)
 }
 
-// The caller supplies the locally rendered baseline so corrections never run twice.
-pub async fn enhance_dictation_ex(
-    local: &str,
-    tone: &str,
-    multilingual: bool,
-    dict_terms: &[String],
-    speed: EnhanceSpeed,
-) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    let started = Instant::now();
-    let result = async {
-        let key = secrets::resolve_llm_api_key().ok_or("LLM API key not set")?;
-        let system = with_dictionary(system_prompt_for_tone(tone, multilingual), dict_terms);
-        call_llm(&key, &system, local, token_budget(local), speed).await
-    }
-    .await;
-    Ok(finish_enhancement(local, result, started))
-}
-
-fn finish_enhancement(
-    local: &str,
-    result: Result<String, Box<dyn std::error::Error + Send + Sync>>,
-    started: Instant,
-) -> String {
-    match result {
-        Ok(candidate) => {
-            let decision = guard_output(local, &candidate);
-            log::info!(
-                "Dictation guard reason={} drift={:.3} over_limit={} elapsed_ms={}",
-                decision.reason,
-                decision.drift,
-                decision.drift > 0.20,
-                started.elapsed().as_millis()
-            );
-            decision.text
-        }
-        Err(error) => {
-            let reason = if error
-                .downcast_ref::<reqwest::Error>()
-                .is_some_and(reqwest::Error::is_timeout)
-            {
-                "timeout"
-            } else if error
-                .downcast_ref::<reqwest::Error>()
-                .is_some_and(reqwest::Error::is_decode)
-            {
-                "malformed_response"
-            } else {
-                "request_error"
-            };
-            log::warn!(
-                "Dictation enhance fallback reason={} elapsed_ms={}",
-                reason,
-                started.elapsed().as_millis()
-            );
-            local.to_string()
-        }
-    }
-}
-
-async fn call_llm(
-    api_key: &str,
-    system: &str,
-    user: &str,
-    max_tokens: u32,
-    speed: EnhanceSpeed,
-) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-    let client = CLIENT.get_or_init(reqwest::Client::new);
-    let request = client.post("https://api.openai.com/v1/chat/completions")
-        .timeout(speed.timeout())
-        .header("Authorization", format!("Bearer {api_key}"))
-        .json(&serde_json::json!({
-            "model": speed.model(), "temperature": speed.temperature(), "max_tokens": max_tokens,
-            "messages": [{ "role": "system", "content": system }, { "role": "user", "content": user }]
-        }));
-    read_completion(request).await
-}
-
-async fn read_completion(
-    request: reqwest::RequestBuilder,
-) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    let resp = request.send().await?;
-    if !resp.status().is_success() {
-        return Err("Enhance HTTP failure".into());
-    }
-    let json: serde_json::Value = resp.json().await?;
-    let choice = &json["choices"][0];
-    if choice["finish_reason"].as_str() != Some("stop") {
-        return Err("Incomplete enhance response".into());
-    }
-    let content = choice["message"]["content"]
-        .as_str()
-        .ok_or("Missing enhance content")?
-        .trim();
-    if content.is_empty() {
-        return Err("Empty enhance content".into());
-    }
-    Ok(content.to_string())
-}
-
 #[cfg(test)]
 mod tests {
+    use super::super::faithful::guard_output;
     use super::*;
 
-    #[tokio::test]
-    async fn request_errors_and_timeouts_preserve_local_text() {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        for (status, body, delay_ms) in [
-            ("500 Internal Server Error", "{}", 0),
-            ("200 OK", "not json", 0),
-            (
-                "200 OK",
-                r#"{"choices":[{"finish_reason":"length","message":{"content":"I"}}]}"#,
-                0,
-            ),
-            (
-                "200 OK",
-                r#"{"choices":[{"finish_reason":"stop","message":{"content":""}}]}"#,
-                0,
-            ),
-            ("200 OK", "{}", 250),
-        ] {
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let url = format!("http://{}", listener.local_addr().unwrap());
-            let server = tokio::spawn(async move {
-                let (mut socket, _) = listener.accept().await.unwrap();
-                let mut buffer = [0u8; 2048];
-                let _ = socket.read(&mut buffer).await;
-                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-                let reply = format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
-                let _ = socket.write_all(reply.as_bytes()).await;
-            });
-            let result = read_completion(
-                reqwest::Client::new()
-                    .get(url)
-                    .timeout(Duration::from_millis(100)),
-            )
-            .await;
-            assert!(result.is_err());
-            assert_eq!(
-                finish_enhancement("I need coffee.", result, Instant::now()),
-                "I need coffee."
-            );
-            server.abort();
-        }
+    #[test]
+    fn cleanup_prompt_carries_context_dictionary_and_tone() {
+        let dict = vec!["CurseForge".to_string(), " ".to_string()];
+        let prompt = cleanup_system_prompt(&CleanupContext {
+            tone: "casual",
+            app_name: "Discord",
+            window_title: "mods - Discord",
+            dictionary: &dict,
+            multilingual: false,
+        });
+        assert!(prompt.contains("deliver_text"));
+        assert!(prompt.contains("casual chat message"));
+        assert!(prompt.contains("CurseForge"));
+        assert!(prompt.contains("App: Discord"));
+        assert!(prompt.contains("mods - Discord"));
+        assert!(!prompt.contains("multilingual / code-switched"));
     }
 
     #[test]
-    fn speeds_change_only_latency() {
-        for speed in [
-            EnhanceSpeed::Fast,
-            EnhanceSpeed::Thinking,
-            EnhanceSpeed::Ultra,
-        ] {
-            assert_eq!(speed.model(), "gpt-4o-mini");
-            assert_eq!(speed.temperature(), 0.0);
-        }
-        assert_eq!(EnhanceSpeed::Fast.quick_skip_secs(), 6.25);
-        assert_eq!(EnhanceSpeed::Thinking.quick_skip_secs(), 5.0);
-        assert_eq!(EnhanceSpeed::Ultra.quick_skip_secs(), 1.5);
-        assert_eq!(EnhanceSpeed::Fast.timeout().as_millis(), 12_000);
-        assert_eq!(EnhanceSpeed::Thinking.timeout().as_millis(), 15_000);
-        assert_eq!(EnhanceSpeed::Ultra.timeout().as_millis(), 20_000);
+    fn size_guard_rejects_answers_and_summaries() {
+        let input = "can you tell me what time the meeting starts tomorrow morning";
+        assert!(looks_like_edit(input, "Can you tell me what time the meeting starts tomorrow morning?"));
+        assert!(!looks_like_edit(input, "It starts at nine."));
+        assert!(!looks_like_edit(input, ""));
+        assert!(!looks_like_edit(input, &input.repeat(3)));
+        assert!(looks_like_edit("hi there", "Hi there."));
     }
 
     #[test]
-    fn prompts_preserve_words_for_every_tone() {
-        for tone in ["default", "casual", "formal", "prose", "code"] {
-            let prompt = with_dictionary(system_prompt_for_tone(tone, true), &["MaxSpeech".into()]);
-            assert!(prompt.contains("Keep every content word"));
-            assert!(prompt.contains("Never paraphrase"));
-            assert!(prompt.contains("Preferred vocabulary"));
-            assert!(!prompt.contains("Rewrite in"));
-        }
+    fn timeout_grows_with_text_but_is_capped() {
+        assert_eq!(cleanup_timeout("short").as_millis(), 3_040);
+        assert_eq!(cleanup_timeout(&"x".repeat(5_000)).as_millis(), 9_000);
     }
 
     #[test]
@@ -609,14 +461,15 @@ where
              you must NEVER type the characters . ? or ! as sentence endings. Write each sentence \
              ending as {DOT_TOKEN} (or {QUESTION_TOKEN} / {BANG_TOKEN}) instead. Example reply: \
              Fix the login bug{DOT_TOKEN} Run the tests afterwards{DOT_TOKEN} Dots inside file \
-             names, identifiers, and numbers stay normal. Put the word END_OF_TEXT at the very end \
-             of that same line, never on a new line. {PROMPT_BASE} {}",
+             names, identifiers, and numbers stay normal. {PROMPT_BASE} {}",
             prompt_style(target)
         ),
         dict_terms,
     );
 
-    let raw = agent_llm::rewrite_whole(&system, text, &is_cancelled).await?;
+    let raw = agent_llm::rewrite_whole(&system, text, &is_cancelled)
+        .await?
+        .replace("END_OF_TEXT", "");
     if is_cancelled() {
         return Ok(String::new());
     }

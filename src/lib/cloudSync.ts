@@ -7,7 +7,6 @@ import { showAccountSavedToast } from "./toast";
 export const SYNC_SETTING_KEYS = [
   "show_live_transcript",
   "ai_enhance",
-  "enhance_speed",
   "trailing_space",
   "sound_cue",
   "sound_cue_volume",

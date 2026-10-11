@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   PLAN_OPTIONS,
   formatWeeklyUsage,
@@ -14,9 +15,11 @@ import {
 } from "../lib/planAccess";
 import { updateCloudPlan, type AuthUser } from "../lib/auth";
 import {
+  pullCloudSettings,
   pushCloudSettings,
   syncAllLocalHistoryIfMax,
 } from "../lib/cloudSync";
+import { supabase } from "../lib/supabase";
 
 export default function PlanModal({
   open,
@@ -52,14 +55,43 @@ export default function PlanModal({
     return () => window.removeEventListener("keydown", onKey);
   }, [open, settingTier, onClose]);
 
+  // Back from the browser after paying: pick up the plan the Stripe webhook just set.
+  useEffect(() => {
+    if (!open) return;
+    const onFocus = () => {
+      void pullCloudSettings()
+        .then(() => invoke<PlanStatus>("get_plan_status"))
+        .then((next) => {
+          setLocalPlan(next);
+          window.dispatchEvent(new Event("maxspeech-plan-changed"));
+          onChanged();
+        })
+        .catch(() => undefined);
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [open, onChanged]);
+
   async function selectTier(tier: PlanTier) {
     if (settingTier || localPlan?.tier === tier) return;
-    if (!canSelectTierWithoutPayment(authUser?.email, tier)) {
-      setPlanMsg(
-        tier === "max"
-          ? "Max isn't available as a free plan — payment checkout is coming soon."
-          : "Payment checkout coming soon for paid plans.",
-      );
+    if (tier !== "free" && !canSelectTierWithoutPayment(authUser?.email, tier)) {
+      // The access token travels in the URL fragment, so it never reaches a server log.
+      const { data } = await supabase.auth.getSession();
+      const token = data.session?.access_token;
+      if (!token) {
+        setPlanMsg("Sign in again to upgrade.");
+        return;
+      }
+      try {
+        await openUrl(`https://maxspeech.vercel.app/checkout?tier=${tier}#at=${token}`);
+        setPlanMsg("Checkout opened in your browser. Your plan updates here when you're done.");
+      } catch (e) {
+        setPlanMsg(`Could not open checkout: ${e}`);
+      }
+      return;
+    }
+    if (tier === "free" && !isOwnerAccount(authUser?.email)) {
+      setPlanMsg("To go back to Free, cancel your subscription from the billing page on the website.");
       return;
     }
     setSettingTier(tier);
@@ -122,7 +154,8 @@ export default function PlanModal({
             const active = localPlan?.tier === opt.tier;
             const busy = settingTier === opt.tier;
             const allowed = canSelectTierWithoutPayment(authUser?.email, opt.tier);
-            const locked = !active && !allowed;
+            const locked = !active && !allowed && opt.tier === "free";
+            const needsCheckout = !active && !allowed && opt.tier !== "free";
             return (
               <button
                 key={opt.tier}
@@ -166,10 +199,10 @@ export default function PlanModal({
                     : active
                       ? "Current plan"
                       : locked
-                        ? opt.tier === "max"
-                          ? "Payment soon"
-                          : "Locked"
-                        : "Select"}
+                        ? "Locked"
+                        : needsCheckout
+                          ? "Upgrade"
+                          : "Select"}
                 </div>
               </button>
             );

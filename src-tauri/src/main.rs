@@ -899,7 +899,6 @@ async fn remake_core(
 
     let expanded = pipeline::vocab::expand_macros(&text, &store);
 
-    let has_llm = secrets::has_llm_api_key();
     let ai_enhance = store
         .get_setting("ai_enhance")
         .ok()
@@ -919,17 +918,31 @@ async fn remake_core(
         language.starts_with("en") && !multilingual,
     );
 
-    let mut output = if has_llm && ai_enhance {
-        let speed = pipeline::tone::EnhanceSpeed::from_store(&store);
-        pipeline::tone::enhance_dictation_ex(
-            &corrected,
-            &tone_name,
+    let mut output = if ai_enhance && expanded.split_whitespace().count() >= 3 {
+        let title = fg.as_ref().map(|a| a.title.clone()).unwrap_or_default();
+        let app_name = fg
+            .as_ref()
+            .map(|a| context::friendly_app_name(&a.exe))
+            .unwrap_or_default();
+        let system = pipeline::tone::cleanup_system_prompt(&pipeline::tone::CleanupContext {
+            tone: &tone_name,
+            app_name: &app_name,
+            window_title: &title,
+            dictionary: &dict_terms,
             multilingual,
-            &dict_terms,
-            speed,
-        )
-        .await
-        .unwrap_or(corrected.clone())
+        });
+        let input = format!("<t>{}</t>", expanded.trim());
+        match pipeline::agent_llm::rewrite(&system, &input, || false).await {
+            Ok(reply) => {
+                let reply = reply.replace("<t>", "").replace("</t>", "").trim().to_string();
+                if pipeline::tone::looks_like_edit(&expanded, &reply) {
+                    reply
+                } else {
+                    corrected
+                }
+            }
+            Err(_) => corrected,
+        }
     } else {
         corrected
     };
@@ -1168,6 +1181,7 @@ fn main() {
         ])
         .setup(|app| {
             let handle = app.handle().clone();
+            pipeline::vocab::purge_learned_junk(&handle.state::<Store>());
             log::info!(
                 "MaxSpeech starting; data_dir={} webview2={:?}",
                 store::data_dir(),

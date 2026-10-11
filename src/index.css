@@ -5,9 +5,9 @@
 [data-theme="dark"] {
   --ms-turquoise: #2dd4bf;
   --ms-turquoise-dim: #14b8a6;
-  --ms-turquoise-glow: rgba(45, 212, 191, 0.35);
+  --ms-turquoise-glow: rgba(45, 212, 191, 0.16);
   --ms-orange: #f97316;
-  --ms-orange-glow: rgba(249, 115, 22, 0.3);
+  --ms-orange-glow: rgba(249, 115, 22, 0.10);
   --ms-bg: #000000;
   --ms-bg-soft: #0a0a0a;
   --ms-surface: #111111;
@@ -46,9 +46,9 @@
 [data-theme="gray"] {
   --ms-turquoise: #2dd4bf;
   --ms-turquoise-dim: #14b8a6;
-  --ms-turquoise-glow: rgba(45, 212, 191, 0.28);
+  --ms-turquoise-glow: rgba(45, 212, 191, 0.14);
   --ms-orange: #fb923c;
-  --ms-orange-glow: rgba(251, 146, 60, 0.25);
+  --ms-orange-glow: rgba(251, 146, 60, 0.10);
   --ms-bg: #1c1c1e;
   --ms-bg-soft: #232326;
   --ms-surface: #2c2c2e;
@@ -84,9 +84,9 @@
 [data-theme="light"] {
   --ms-turquoise: #0d9488;
   --ms-turquoise-dim: #0f766e;
-  --ms-turquoise-glow: rgba(13, 148, 136, 0.18);
+  --ms-turquoise-glow: rgba(13, 148, 136, 0.10);
   --ms-orange: #ea580c;
-  --ms-orange-glow: rgba(234, 88, 12, 0.14);
+  --ms-orange-glow: rgba(234, 88, 12, 0.10);
   --ms-bg: #eef0f3;
   --ms-bg-soft: #e4e7eb;
   --ms-surface: #fafbfc;
@@ -565,17 +565,9 @@ html[data-window="shell"] aside > div:first-child {
 }
 
 .accent-gradient-text {
-  background: linear-gradient(90deg, var(--ms-turquoise), #5eead4 45%, var(--ms-orange));
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  color: var(--ms-turquoise);
 }
 
-[data-theme="light"] .accent-gradient-text {
-  background: linear-gradient(90deg, var(--ms-turquoise), #14b8a6 45%, var(--ms-orange));
-  -webkit-background-clip: text;
-  background-clip: text;
-}
 
 .btn-primary {
   background: linear-gradient(135deg, var(--ms-turquoise), var(--ms-turquoise-dim));
@@ -584,7 +576,7 @@ html[data-window="shell"] aside > div:first-child {
   border-radius: 999px;
   font-weight: 600;
   transition: transform 0.15s ease, box-shadow 0.2s ease, filter 0.2s ease;
-  box-shadow: 0 0 16px var(--ms-turquoise-glow);
+  box-shadow: none;
 }
 
 .btn-primary:hover:not(:disabled) {
@@ -604,7 +596,7 @@ html[data-window="shell"] aside > div:first-child {
   border-radius: 999px;
   font-weight: 600;
   transition: transform 0.15s ease, box-shadow 0.2s ease;
-  box-shadow: 0 0 14px var(--ms-orange-glow);
+  box-shadow: none;
 }
 
 .input-field {
@@ -847,7 +839,7 @@ html[data-window="shell"] aside > div:first-child {
   height: 29px;
   border-radius: 9px;
   background: rgba(255, 255, 255, 0.08);
-  box-shadow: 0 0 12px var(--ms-turquoise-glow);
+  box-shadow: none;
 }
 
 .liquid-glass-toast {
@@ -1064,7 +1056,7 @@ html[data-window="shell"] aside > div:first-child {
 
 .toggle-on {
   background: linear-gradient(135deg, var(--ms-turquoise), var(--ms-turquoise-dim));
-  box-shadow: 0 0 14px var(--ms-turquoise-glow);
+  box-shadow: none;
 }
 
 .toggle-knob {
@@ -1756,12 +1748,12 @@ html[data-window="shell"] .flex.h-screen {
   flex-shrink: 0;
   display: flex;
   color: #22c55e;
-  filter: drop-shadow(0 0 8px rgba(34, 197, 94, 0.5));
+  filter: none;
 }
 
 [data-theme="light"] .app-toast-check {
   color: #16a34a;
-  filter: drop-shadow(0 0 6px rgba(22, 163, 74, 0.32));
+  filter: none;
 }
 
 .app-toast-copy {
@@ -1866,14 +1858,14 @@ html[data-window="enhancer"] #root {
   --enh-hi: rgba(255, 255, 255, 0.36);
   --enh-body: rgba(0, 0, 0, 0.3);
   --enh-menu: rgb(20, 21, 25);
-  --enh-glow-a: rgba(45, 212, 191, 0.42);
-  --enh-glow-b: rgba(249, 115, 22, 0.34);
+  --enh-glow-a: transparent;
+  --enh-glow-b: transparent;
 }
 [data-theme="gray"] .enh-root {
   --enh-tint: rgba(44, 44, 46, 0.46);
   --enh-menu: rgb(40, 40, 44);
-  --enh-glow-a: rgba(45, 212, 191, 0.34);
-  --enh-glow-b: rgba(251, 146, 60, 0.3);
+  --enh-glow-a: transparent;
+  --enh-glow-b: transparent;
 }
 [data-theme="light"] .enh-root {
   --enh-tint: rgba(250, 251, 253, 0.52);
@@ -1883,8 +1875,8 @@ html[data-window="enhancer"] #root {
   --enh-hi: rgba(255, 255, 255, 0.95);
   --enh-body: rgba(255, 255, 255, 0.5);
   --enh-menu: rgb(246, 247, 250);
-  --enh-glow-a: rgba(13, 148, 136, 0.3);
-  --enh-glow-b: rgba(234, 88, 12, 0.24);
+  --enh-glow-a: transparent;
+  --enh-glow-b: transparent;
 }
 
 .enh-root {

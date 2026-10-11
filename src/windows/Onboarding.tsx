@@ -78,14 +78,6 @@ export default function Onboarding() {
 
   return (
     <div className="flex items-center justify-center h-screen bg-[var(--ms-bg)] text-[var(--ms-text)] relative overflow-hidden">
-      <div
-        className="pointer-events-none absolute -left-24 bottom-0 w-72 h-72 rounded-full blur-3xl opacity-30"
-        style={{ background: "radial-gradient(circle, var(--ms-orange), transparent 70%)" }}
-      />
-      <div
-        className="pointer-events-none absolute -right-20 top-0 w-80 h-80 rounded-full blur-3xl opacity-25"
-        style={{ background: "radial-gradient(circle, var(--ms-turquoise), transparent 70%)" }}
-      />
 
       <div className="w-full max-w-md p-8 page-enter relative z-10" key={step}>
         {step === "welcome" && (

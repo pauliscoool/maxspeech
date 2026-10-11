@@ -358,13 +358,6 @@ export default function HomePage({
       </h1>
 
       <div className="relative overflow-hidden rounded-2xl bg-[var(--ms-surface)]">
-        <div
-          className="absolute inset-0 opacity-40 pointer-events-none"
-          style={{
-            background:
-              "radial-gradient(ellipse at 20% 50%, rgba(45,212,191,0.35), transparent 55%), radial-gradient(ellipse at 90% 20%, rgba(249,115,22,0.28), transparent 50%)",
-          }}
-        />
         <div className="relative p-4 sm:p-5 space-y-3">
           <p className="text-sm text-[var(--ms-text-soft)] leading-relaxed">
             Dictate anywhere. Use your hotkey, speak, release — MaxSpeech types into whatever
