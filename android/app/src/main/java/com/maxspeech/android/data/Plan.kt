@@ -48,7 +48,7 @@ object PlanCalculator {
 
     fun from(user: AuthUser?, wordsUsed: Int): PlanStatus {
         val tier = when {
-            user?.email?.trim()?.lowercase() == OWNER_EMAIL -> PlanTier.Max
+            user?.accessToken != null && user.email.trim().lowercase() == OWNER_EMAIL -> PlanTier.Max
             user?.local == true -> PlanTier.Pro
             else -> PlanTier.parse(user?.planTier)
         }
