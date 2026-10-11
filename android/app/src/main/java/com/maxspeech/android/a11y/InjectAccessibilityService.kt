@@ -423,11 +423,11 @@ class InjectAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val TAG = "MaxSpeechA11y"
-        private const val POLL_MS = 280L
-        private const val THROTTLE_MS = 60L
-        private val RECHECK_MS = longArrayOf(150L, 400L, 800L, 1_200L)
+        private const val POLL_MS = 200L
+        private const val THROTTLE_MS = 25L
+        private val RECHECK_MS = longArrayOf(60L, 150L, 300L, 600L, 1_000L)
         private const val HIDE_GRACE_MS = 350L
-        private const val IME_ONLY_AFTER_MS = 900L
+        private const val IME_ONLY_AFTER_MS = 250L
         private const val CLIP_RESTORE_MS = 400L
         private const val MAX_SEARCH_NODES = 600
         private const val MAX_CONTEXT_NODES = 400

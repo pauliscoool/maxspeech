@@ -25,6 +25,9 @@ data class PlanStatus(
     val priceUsd: Int get() = tier.priceUsd
 }
 
+/** Owner account gets Max without checkout (same rule as desktop planAccess.ts). */
+private const val OWNER_EMAIL = "pauldimov5@gmail.com"
+
 object PlanCalculator {
     fun weekStartUtc(now: Long = System.currentTimeMillis()): Long {
         val cal = Calendar.getInstance(TimeZone.getTimeZone("UTC"))
@@ -44,7 +47,11 @@ object PlanCalculator {
         text.trim().split(Regex("\\s+")).count { it.isNotBlank() }
 
     fun from(user: AuthUser?, wordsUsed: Int): PlanStatus {
-        val tier = if (user?.local == true) PlanTier.Pro else PlanTier.parse(user?.planTier)
+        val tier = when {
+            user?.email?.trim()?.lowercase() == OWNER_EMAIL -> PlanTier.Max
+            user?.local == true -> PlanTier.Pro
+            else -> PlanTier.parse(user?.planTier)
+        }
         return PlanStatus(tier, wordsUsed, weekStartUtc())
     }
 }

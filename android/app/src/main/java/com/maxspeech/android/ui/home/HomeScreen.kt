@@ -158,14 +158,13 @@ fun HomeScreen(
         Text("Welcome back, ${name.ifBlank { "there" }}", style = DisplayLarge, color = c.text)
 
         Spacer(Modifier.height(16.dp))
-        com.maxspeech.android.ui.plan.UsageCard(plan, onClick = onOpenPlan)
-
-        Spacer(Modifier.height(16.dp))
-
-        HomeStyleHero(
+        HomeSlides(
+            plan = plan,
+            history = history,
             settings = settings,
-            onSelectGroup = onSelectStyleGroup,
-            onEdit = onOpenStyleEdit,
+            onOpenPlan = onOpenPlan,
+            onSelectStyleGroup = onSelectStyleGroup,
+            onOpenStyleEdit = onOpenStyleEdit,
         )
 
         Spacer(Modifier.height(16.dp))

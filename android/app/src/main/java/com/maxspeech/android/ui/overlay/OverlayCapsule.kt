@@ -133,8 +133,8 @@ fun OverlayCapsule(
                 // Quick pop anchored on the right edge (graphicsLayer scale: no layout
                 // change, so the window never thrashes and the right edge stays put).
                 val anchor = TransformOrigin(1f, 0.5f)
-                val enter = fadeIn(tween(190, easing = FastOutSlowInEasing)) +
-                    scaleIn(tween(240, easing = FastOutSlowInEasing), initialScale = 0.9f, transformOrigin = anchor)
+                val enter = fadeIn(tween(110, easing = FastOutSlowInEasing)) +
+                    scaleIn(tween(140, easing = FastOutSlowInEasing), initialScale = 0.9f, transformOrigin = anchor)
                 val exit = fadeOut(tween(170, easing = FastOutSlowInEasing)) +
                     scaleOut(tween(170, easing = FastOutSlowInEasing), targetScale = 0.94f, transformOrigin = anchor)
                 val opening = targetState
