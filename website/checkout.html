@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#07090c" />
+    <meta name="robots" content="noindex" />
+    <title>Checkout — MaxSpeech</title>
+    <link rel="icon" href="/logo.png" type="image/png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600&family=Syne:wght@600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/get.css" />
+  </head>
+  <body class="get-page">
+    <main class="get-shell">
+      <a class="brand get-brand" href="/">
+        <img class="brand-mark" src="/logo.png" width="36" height="36" alt="" />
+        <span>MaxSpeech</span>
+      </a>
+      <h1 id="title">Checkout</h1>
+      <p class="get-lede" id="lede">Opening secure checkout…</p>
+    </main>
+    <script>
+      (function () {
+        var title = document.getElementById("title");
+        var lede = document.getElementById("lede");
+        var q = new URLSearchParams(location.search);
+        // The app passes its session token in the fragment so it never reaches any server log.
+        var token = new URLSearchParams(location.hash.slice(1)).get("at");
+        history.replaceState(null, "", location.pathname + location.search);
+
+        if (q.get("done")) {
+          title.textContent = "You're all set";
+          lede.textContent = "Your plan is active. Go back to the MaxSpeech app — it updates automatically.";
+          return;
+        }
+        if (q.get("cancelled")) {
+          title.textContent = "Checkout cancelled";
+          lede.textContent = "No charge was made. You can upgrade any time from Settings → Plan & billing in the app.";
+          return;
+        }
+        if (!token) {
+          title.textContent = "Open this from the app";
+          lede.textContent = "Start checkout from MaxSpeech → Settings → Plan & billing so we know which account to upgrade.";
+          return;
+        }
+        var body = q.get("portal") ? { portal: true } : { tier: q.get("tier") };
+        fetch("/api/checkout", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+          body: JSON.stringify(body),
+        })
+          .then(function (r) {
+            return r.json().then(function (j) {
+              if (!r.ok || !j.url) throw new Error(j.error || "Checkout is unavailable right now.");
+              location.replace(j.url);
+            });
+          })
+          .catch(function (e) {
+            title.textContent = "Couldn't open checkout";
+            lede.textContent = e.message;
+          });
+      })();
+    </script>
+  </body>
+</html>
