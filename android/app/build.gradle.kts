@@ -13,9 +13,10 @@ android {
         applicationId = "com.maxspeech.android"
         minSdk = 26
         targetSdk = 35
-        versionCode = 82
-        versionName = "0.5.5-beta"
+        versionCode = 83
+        versionName = "0.5.6-beta"
         vectorDrawables.useSupportLibrary = true
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildTypes {
@@ -92,6 +93,9 @@ dependencies {
     implementation("io.coil-kt:coil-svg:2.7.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     testImplementation("junit:junit:4.13.2")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("junit:junit:4.13.2")
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

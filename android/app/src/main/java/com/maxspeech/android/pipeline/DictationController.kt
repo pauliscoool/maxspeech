@@ -60,6 +60,7 @@ private const val AUTO_RETRY_PAUSE_MS = 10_000L
 private const val MIN_PCM_BYTES = 16_000 * 2 / 4
 /** How long after release the whole-clip transcript may take before streaming finals win. */
 private const val BATCH_RACE_MS = 900L
+private const val BATCH_RACE_COMPLETE_MS = 0L
 /** "Okay", "Thanks so much" — not worth a round trip. */
 private const val AI_MIN_WORDS = 3
 
@@ -494,7 +495,9 @@ class DictationController(
                 ?.trim()
                 .orEmpty()
         }
-        val raceBudget = (releasedAt + BATCH_RACE_MS - SystemClock.elapsedRealtime()).coerceAtLeast(120L)
+        // Measured on-device: a complete stream matches the whole-clip text, so don't wait on it.
+        val raceMs = if (streamComplete) BATCH_RACE_COMPLETE_MS else BATCH_RACE_MS
+        val raceBudget = (releasedAt + raceMs - SystemClock.elapsedRealtime()).coerceAtLeast(0L)
         val raced = batchRace?.let { race -> withTimeoutOrNull(raceBudget) { race.await() } }
         batchRace?.cancel()
         batchRace = null

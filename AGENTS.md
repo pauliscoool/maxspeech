@@ -146,7 +146,7 @@ We ship **Android beta** builds (sideload / website APK), not the Play Store yet
 
 | Track | Scheme | Notes |
 |-------|--------|-------|
-| **Beta (now)** | `0.x.y-beta` up to **`5.0-beta`** | `versionName` includes `-beta`. Bump `versionCode` on every ship (currently 82 / 0.5.5-beta). |
+| **Beta (now)** | `0.x.y-beta` up to **`5.0-beta`** | `versionName` includes `-beta`. Bump `versionCode` on every ship (currently 83 / 0.5.6-beta). |
 | **Full / store (later)** | Restart at **`0.1`** | After the last **5.0 beta**, the first public store release is **0.1** (no `-beta`). |
 
 **Agent reminder:** When Android `versionName` reaches **`5.0-beta`** (or you are about to ship past it), **stop and remind Paul** to plan the store release starting at **0.1**.
