@@ -121,7 +121,7 @@ class DeepgramClient {
         val key = keys.firstOrNull().orEmpty()
         if (key.isBlank() || pcm.isEmpty()) return@withContext ""
         val sb = StringBuilder(
-            "https://api.deepgram.com/v1/listen?model=nova-3&language=$language&punctuate=true&smart_format=true&numerals=true&encoding=linear16&sample_rate=16000&channels=1",
+            "https://api.deepgram.com/v1/listen?model=nova-3&language=$language&punctuate=true&smart_format=true&numerals=false&encoding=linear16&sample_rate=16000&channels=1",
         )
         for (t in Vocab.fitKeytermBudget(keyterms)) sb.append("&keyterm=").append(URLEncoder.encode(t, "UTF-8"))
         val url = sb.toString()
@@ -289,7 +289,7 @@ class DeepgramClient {
         // Same as desktop stt/deepgram.rs build_url.
         val endpointing = if (language == "multi") 700 else 1100
         val sb = StringBuilder(
-            "wss://api.deepgram.com/v1/listen?model=nova-3&language=$language&punctuate=true&interim_results=true&smart_format=true&numerals=true&endpointing=$endpointing&encoding=linear16&sample_rate=16000&channels=1",
+            "wss://api.deepgram.com/v1/listen?model=nova-3&language=$language&punctuate=true&interim_results=true&smart_format=true&numerals=false&endpointing=$endpointing&encoding=linear16&sample_rate=16000&channels=1",
         )
         // Over Nova-3's 500-token keyterm limit the stream silently stops transcribing.
         for (t in Vocab.fitKeytermBudget(keyterms)) sb.append("&keyterm=").append(URLEncoder.encode(t, "UTF-8"))
