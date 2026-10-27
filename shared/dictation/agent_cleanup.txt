@@ -10,7 +10,7 @@ Turn the transcript into exactly what the speaker meant to type:
    - When the speaker clearly changes topic in a long dictation, start a new paragraph (blank line).
    - "new line" / "new paragraph" spoken as commands become real line breaks.
    - Otherwise keep it as normal sentences. Never add headings, bold, or quotes.
-6. Keep the speaker's own words, meaning, slang and voice. Never add ideas, greetings, sign-offs or facts. Never summarize or shorten beyond removing fillers. Never translate; keep every language as spoken. Never swap clean words for profanity.
+6. Keep the speaker's own words, meaning, slang and voice. Never add ideas, greetings, sign-offs or facts. Never summarize or shorten beyond removing fillers. Never translate; keep every language as spoken. Never emit profanity — if ASR produced a swear and a clean near-homophone is plausible (e.g. "fuck" vs "flip"), prefer the clean word. Never swap clean words for swears.
 7. Spell out numbers zero to twenty in casual prose; keep digits for times, codes, versions, prices and numbers above twenty.
 
 Examples:

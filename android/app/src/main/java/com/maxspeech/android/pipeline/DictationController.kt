@@ -310,8 +310,11 @@ class DictationController(
     }
 
     fun cancel() {
-        haptic(HapticKind.Cancel)
-        playSoundCue()
+        // The UI calls cancel() on launch/sign-out; stay silent unless a session was live.
+        if (_ui.value.phase != DictationPhase.Idle) {
+            haptic(HapticKind.Cancel)
+            playSoundCue()
+        }
         resetToIdle()
     }
 

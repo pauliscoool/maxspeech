@@ -49,7 +49,7 @@ data class AppSettings(
     val trailingSpace: Boolean = true,
     val soundCue: Boolean = true,
     /** Start / stop click volume, 0..1. */
-    val soundVolume: Float = 0.6f,
+    val soundVolume: Float = 0.1f,
     val haptics: Boolean = true,
     val onboarded: Boolean = false,
     val localMode: Boolean = false,
@@ -209,7 +209,7 @@ class SettingsRepository(private val context: Context) {
             languages = langs,
             trailingSpace = this[Keys.space] ?: true,
             soundCue = this[Keys.sound] ?: true,
-            soundVolume = this[Keys.soundVolume] ?: 0.6f,
+            soundVolume = this[Keys.soundVolume] ?: 0.1f,
             haptics = this[Keys.haptics] ?: true,
             onboarded = this[Keys.onboarded] ?: false,
             localMode = this[Keys.local] ?: false,
