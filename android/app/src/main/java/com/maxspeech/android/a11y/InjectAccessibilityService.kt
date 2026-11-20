@@ -134,6 +134,7 @@ class InjectAccessibilityService : AccessibilityService() {
     fun insert(text: String): Boolean = runCatching {
         val focused = findBestEditable() ?: return false
         lastPackage = focused.packageName?.toString() ?: lastPackage
+        insertedPackage = focused.packageName?.toString()
         val web = isWebField(focused)
         Log.d(
             TAG,
@@ -155,6 +156,9 @@ class InjectAccessibilityService : AccessibilityService() {
      */
     fun replaceLast(old: String, new: String): Boolean = runCatching {
         val focused = findBestEditable() ?: return false
+        // Only edit the app we pasted into, never a password field or a sensitive app.
+        val pkg = focused.packageName?.toString()
+        if (pkg == null || pkg != insertedPackage || focused.isPassword || isSensitiveApp(pkg)) return false
         val existing = realText(focused)
         val needle = old.trim()
         if (needle.isEmpty()) return false
@@ -448,6 +452,8 @@ class InjectAccessibilityService : AccessibilityService() {
         )
         @Volatile var instance: InjectAccessibilityService? = null
         @Volatile var lastPackage: String? = null
+        /** Package of the app the last dictation was inserted into (scratch that / rewrite target). */
+        @Volatile var insertedPackage: String? = null
         private val _focus = MutableStateFlow(InputFocus())
         val focus: StateFlow<InputFocus> = _focus.asStateFlow()
         private val _bound = MutableStateFlow(false)
