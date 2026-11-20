@@ -459,13 +459,16 @@ object LocalCleanup {
         "or rather" to Kind.Generic,
     )
 
-    private fun selfCorrectMarkers(text: String): String {
+    private val CHATTER_TAIL = Regex("""(?i)\b(?:oh,? no|oh|oops|sorry|no wait|wait no|wait)[\s,.!?;:]*$""")
+
+    fun selfCorrectMarkers(text: String): String {
         val lower = text.lowercase()
         // Lowercasing must not shift indices, or slicing the original would be wrong.
         if (lower.length != text.length) return text
         val m = findLastCorrectionMarker(lower) ?: return text
 
-        val before = text.substring(0, m.idx).trimEnd()
+        // "Tuesday? Oh, no. I meant Monday": the "oh no" is correction chatter, not content.
+        val before = text.substring(0, m.idx).replace(CHATTER_TAIL, "").trimEnd()
         var correction = text.substring(m.contentStart).trim()
         correction = correction.trimStart(',', ':', ';', '.').trim()
         correction = correction.trimEnd('.', '!', '?', ',').trim()
@@ -486,10 +489,11 @@ object LocalCleanup {
 
         if (!applyWeekdayCorrection(words, corr) &&
             !applySingleNameCorrection(words, corr) &&
-            !applySuffixRestatement(words, corr)
+            !applySuffixRestatement(words, corr) &&
+            !applyAnchoredReplace(words, corr)
         ) {
-            val n = minOf(corr.size, words.size)
-            repeat(n) { words.removeAt(words.lastIndex) }
+            // ponytail: no shared word to align on, so assume only the last word was wrong.
+            words.removeAt(words.lastIndex)
             words.addAll(corr)
         }
         return words.joinToString(" ") + trailing
@@ -556,6 +560,7 @@ object LocalCleanup {
     }
 
     private fun looksLikeNameToken(word: String): Boolean {
+        if ('\'' in word || '’' in word) return false
         val bare = word.filter { it.isLetter() || it == '-' }
         if (bare.length !in 2..40) return false
         return bare[0].isUpperCase() && bare.all { it.isLetter() || it == '-' }
@@ -589,8 +594,35 @@ object LocalCleanup {
         if (c < 0) return false
         val m = words.indexOfLast { bareAlpha(it) in WEEKDAYS }
         if (m < 0) return false
-        words[m] = corr[c]
+        if (c < corr.lastIndex) {
+            // "Tuesday no wait Wednesday at three": the correction restates the rest too.
+            while (words.size > m) words.removeAt(words.lastIndex)
+            words.addAll(corr.subList(c, corr.size))
+        } else {
+            words[m] = keepPunct(words[m], corr[c])
+        }
         return true
+    }
+
+    private fun keepPunct(original: String, replacement: String): String {
+        val o = splitWordPunct(original)
+        return o.lead + splitWordPunct(replacement).bare + o.trail
+    }
+
+    /** "two tickets, wait no, three tickets for Saturday": align on the shared word "tickets". */
+    private fun applyAnchoredReplace(words: MutableList<String>, corr: List<String>): Boolean {
+        val window = maxOf(0, words.size - 6)
+        for (j in 0 until minOf(3, corr.size)) {
+            val b = bareAlpha(corr[j])
+            if (b.isEmpty()) continue
+            val k = (words.lastIndex downTo window).firstOrNull { bareAlpha(words[it]) == b } ?: continue
+            val cut = k - j
+            if (cut < 0) continue
+            while (words.size > cut) words.removeAt(words.lastIndex)
+            words.addAll(corr)
+            return true
+        }
+        return false
     }
 
     private fun applySingleNameCorrection(words: MutableList<String>, corr: List<String>): Boolean {
@@ -598,6 +630,8 @@ object LocalCleanup {
         val rep = corr[0]
         val repBare = bareAlpha(rep)
         if (repBare.isEmpty()) return false
+        // "at five no wait six" is not a name swap; only "Sarah I mean Sandra" is.
+        if (!looksLikeNameToken(rep)) return false
         val i = words.indexOfLast { looksLikeNameToken(it) && bareAlpha(it) != repBare }
         if (i < 0) return false
         words[i] = rep

@@ -88,13 +88,22 @@ Android facts:
 - Samsung marks the accessibility service as *crashed* after an install/crash and will not rebind it. Fix: toggle it off then on via `settings put secure enabled_accessibility_services`, then check `dumpsys accessibility | grep Crashed`.
 - The floating mic needs: accessibility service on, "Display over other apps" allowed, mic permission, and a signed-in cloud account.
 - Compose in an overlay window needs the ViewTree lifecycle/savedstate/viewmodel owners on the **root view** added to the `WindowManager`, not only on the `ComposeView`; otherwise the process crashes when the overlay attaches.
+- The floating mic hides over password fields and in banking / password-manager apps (`SENSITIVE` in `InjectAccessibilityService`). A mic that returns digital silence for 2.5 s ends the take with "No sound from the mic".
 - Check crashes with `adb logcat -b crash`, and read `dumpsys activity services com.maxspeech.android` to see whether `OverlayService` and the accessibility service are live.
+
+## Testing without a phone
+
+- **Dictation eval (no device):** `cd scripts/dictation-eval; npm i; node eval.mjs [filter] --realtime` speaks each case in `cases.json` with Deepgram TTS, streams it through Nova-3 with the Android params, applies `asr_phrase_fixes.txt`, then runs the real agent cleanup prompt. Use `--realtime`: faster-than-real-time streaming makes Nova-3 drop words and gives false failures. Add a case whenever a user reports a mis-typed phrase.
+- **Emulator:** AVD `maxspeech_test` (API 35 Google APIs x86_64, WHPX). Boot headless: `emulator -avd maxspeech_test -no-window -no-snapshot-save -gpu swiftshader_indirect`; then `adb -s emulator-5554 install -r …`, grant `RECORD_AUDIO`, `appops set … SYSTEM_ALERT_WINDOW allow`, and enable the accessibility service via `settings put secure enabled_accessibility_services`. The emulator can't hear a real voice, so accuracy is tested with the eval above and UI flows on the emulator.
+- **Eval strength:** `node eval.mjs --realtime --level=light|high` reads the Strength text from `AgentEnhanceClient.levelLine`.
+- **ARTEMIS** (google/artemis, cloned at `%LOCALAPPDATA%\artemis-src\artemis`, `uv sync` done) drives a device from natural-language tasks over MCP. It needs an LLM key in its own `.env` before its agent tools work.
 
 ## Transcription rules (desktop AND Android — keep them identical)
 
 1. **Deepgram Nova-3 with `numerals=false`.** Spoken numbers stay words ("one", "two", "seven"). Never turn on `numerals=true`.
 2. **Faithful dictation.** Fix ASR mistakes only when the intended word is clear; keep the speaker's own words, slang and voice; remove fillers, stutters and apply spoken self-corrections; never add, summarize, translate, or answer the text. Never emit profanity from a clean near-homophone.
 3. **Casual number style:** zero–twenty as words; digits for times, codes, versions, prices and numbers above twenty (prompt rule 7).
+3b. **Cleanup strength** (`cleanup_level`: light / medium / high, default medium). Medium is the bare shared prompt; light and high add one "Strength:" line. Keep the text identical in Android `AgentEnhanceClient.levelLine` and desktop `tone.rs level_line`.
 4. **Prompts are shared.** Edit `shared/dictation/*` once; both platforms consume it. Keep `agent_cleanup.txt` and the local rules in `LocalCleanup` consistent.
 5. **No auto-learning junk.** Never auto-add everyday words to the dictionary or learn "heard → meant" pairs on your own. Learned pairs are passed as empty. Dictionary entries are user-added only.
 6. **Paste once.** Enhance (agent cleanup, prewarmed while the user speaks) and inject a single time. Do not paste a quick draft and then replace it — it caused erase/rewrite flicker and double-pasted text when the user sent a message right after dictating. Desktop: fall back to local cleanup if the agent is slow, then paste once.
@@ -146,7 +155,7 @@ We ship **Android beta** builds (sideload / website APK), not the Play Store yet
 
 | Track | Scheme | Notes |
 |-------|--------|-------|
-| **Beta (now)** | `0.x.y-beta` up to **`5.0-beta`** | `versionName` includes `-beta`. Bump `versionCode` on every ship (currently 83 / 0.5.6-beta). |
+| **Beta (now)** | `0.x.y-beta` up to **`5.0-beta`** | `versionName` includes `-beta`. Bump `versionCode` on every ship (currently 84 / 0.5.7-beta). |
 | **Full / store (later)** | Restart at **`0.1`** | After the last **5.0 beta**, the first public store release is **0.1** (no `-beta`). |
 
 **Agent reminder:** When Android `versionName` reaches **`5.0-beta`** (or you are about to ship past it), **stop and remind Paul** to plan the store release starting at **0.1**.

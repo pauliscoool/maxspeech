@@ -21,6 +21,14 @@ class VocabTest {
         assertEquals("cloudy day", Vocab.replacePhraseCi("cloudy day", "cloud", "cloud"))
     }
 
+    @Test fun joinsLowkeySlang() {
+        assertEquals("Lowkey fire.", asr("Low key fire."))
+        assertEquals("bro I lowkey forgot", asr("bro I Loki forgot"))
+        assertEquals("I lowkey want it, highkey need it", asr("I low key want it, high-key need it"))
+        assertEquals("I want the blue one. No wait. The red one.", asr("I want the blue one. No weight. The red one."))
+        assertEquals("there is no weight limit", asr("there is no weight limit"))
+    }
+
     @Test fun fixesGitVsGet() {
         assertEquals("Did you place it to Git?", asr("Did you place it to get?"))
         assertEquals("Did you push it to Git", asr("Did you push it to get"))

@@ -63,6 +63,7 @@ private const val BATCH_RACE_MS = 900L
 private const val BATCH_RACE_COMPLETE_MS = 0L
 /** "Okay", "Thanks so much" — not worth a round trip. */
 private const val AI_MIN_WORDS = 3
+private const val SILENT_MIC_CHECK_MS = 2_500L
 
 class DictationController(
     private val context: Context,
@@ -247,6 +248,20 @@ class DictationController(
                         stopAndFinish()
                     }
                 }
+                launch {
+                    // Android hands another app's call/recorder a silent (all-zero) mic; say so
+                    // instead of recording nothing and ending with "Didn't catch that".
+                    delay(SILENT_MIC_CHECK_MS)
+                    if (_ui.value.phase == DictationPhase.Listening && audio.micSilent) {
+                        Log.w(TAG, "silent mic after ${SILENT_MIC_CHECK_MS}ms")
+                        pcmJob?.cancel()
+                        audio.stop()
+                        stt.close()
+                        transcriptJob?.cancel()
+                        transcriptJob = null
+                        presentError("No sound from the mic. Another app may be using it.", autoClearMs = 4_000)
+                    }
+                }
                 // A slow or dead socket must not stop the recording: PCM is kept locally and
                 // re-transcribed over HTTP when streaming didn't deliver.
                 if (!stt.awaitOpen(STREAM_OPEN_TIMEOUT_MS)) Log.w(TAG, "Live stream unavailable, recording locally")
@@ -351,6 +366,7 @@ class DictationController(
                     multilingual = multilingual || snap.multilingual,
                     fieldText = screen.fieldText,
                     screenText = screen.screenText,
+                    level = snap.cleanupLevel,
                 ),
             )
             // A cancel or a new session may have happened while this was opening.
@@ -621,7 +637,9 @@ class DictationController(
             clipboard = ::clipboardText,
         )
         val multilingual = snap.multilingual || LocalCleanup.hasNonLatinScript(expanded)
-        val corrected = if (multilingual) expanded else LocalCleanup.localSelfCorrect(expanded)
+        // Spoken self-corrections are left for the AI: the rule-based pass guesses spans and used
+        // to delete words ("I need two tickets wait no three…" -> "three…") before the AI saw them.
+        val corrected = if (multilingual) expanded else LocalCleanup.localAsrCleanup(expanded)
         val tone = resolveTone(sessionApp, snap.toneOverride)
         var out = corrected
         val wholeSnippet = snippets.any { raw.trim().trimEnd('.', '!', '?').equals(it.first, ignoreCase = true) }
@@ -632,7 +650,7 @@ class DictationController(
             val started = SystemClock.elapsedRealtime()
             val live = session ?: agent.prewarm(
                 sessionKeys,
-                AgentEnhanceClient.CleanupContext(tone, friendlyApp(sessionApp), dictionary, multilingual),
+                AgentEnhanceClient.CleanupContext(tone, friendlyApp(sessionApp), dictionary, multilingual, level = snap.cleanupLevel),
             )
             val reply = live.run(corrected, AgentEnhanceClient.timeoutFor(corrected))
             val ms = SystemClock.elapsedRealtime() - started
@@ -647,6 +665,7 @@ class DictationController(
             session?.close()
         }
         if (!aiRan && !multilingual) {
+            out = LocalCleanup.selfCorrectMarkers(out)
             out = LocalCleanup.fixCasualAddressCommas(out)
             out = LocalCleanup.normalizeTerminalPunctuation(out, tone)
         }

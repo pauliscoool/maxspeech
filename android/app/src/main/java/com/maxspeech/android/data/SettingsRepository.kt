@@ -44,6 +44,8 @@ data class AppSettings(
     /** Epoch millis until which the overlay stays hidden (drag-to-X snooze). */
     val overlaySnoozeUntil: Long = 0L,
     val aiEnhance: Boolean = true,
+    /** "light" | "medium" | "high" — how much the AI cleanup may reword. */
+    val cleanupLevel: String = "medium",
     val multilingual: Boolean = false,
     val languages: List<String> = listOf("en"),
     val trailingSpace: Boolean = true,
@@ -100,6 +102,7 @@ class SettingsRepository(private val context: Context) {
     suspend fun setOverlaySnoozeUntil(untilEpochMs: Long) =
         set(Keys.overlaySnoozeUntil, untilEpochMs.coerceAtLeast(0L).toString())
     suspend fun setAiEnhance(on: Boolean) = set(Keys.enhance, on)
+    suspend fun setCleanupLevel(level: String) = set(Keys.cleanupLevel, level)
     suspend fun setMultilingual(on: Boolean) = set(Keys.multi, on)
     suspend fun setLanguages(codes: List<String>) = set(Keys.langs, codes.joinToString(","))
     suspend fun setTrailingSpace(on: Boolean) = set(Keys.space, on)
@@ -156,6 +159,7 @@ class SettingsRepository(private val context: Context) {
         val overlayCenterY = floatPreferencesKey("overlay_center_y")
         val overlaySnoozeUntil = stringPreferencesKey("overlay_snooze_until")
         val enhance = booleanPreferencesKey("ai_enhance")
+        val cleanupLevel = stringPreferencesKey("cleanup_level")
         val multi = booleanPreferencesKey("stt_multilingual")
         val langs = stringPreferencesKey("stt_languages")
         val space = booleanPreferencesKey("trailing_space")
@@ -205,6 +209,7 @@ class SettingsRepository(private val context: Context) {
             overlayCenterY = this[Keys.overlayCenterY] ?: -1f,
             overlaySnoozeUntil = this[Keys.overlaySnoozeUntil]?.toLongOrNull() ?: 0L,
             aiEnhance = this[Keys.enhance] ?: true,
+            cleanupLevel = this[Keys.cleanupLevel] ?: "medium",
             multilingual = this[Keys.multi] ?: false,
             languages = langs,
             trailingSpace = this[Keys.space] ?: true,

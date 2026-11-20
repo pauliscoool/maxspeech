@@ -1,5 +1,6 @@
 package com.maxspeech.android.pipeline
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -23,5 +24,12 @@ class AgentEnhanceClientTest {
         val long = "so basically what happened was we went to the store and they were out of milk and eggs so we drove across town to the other one"
         assertFalse(AgentEnhanceClient.looksLikeEdit(long, "We went shopping."))
         assertFalse(AgentEnhanceClient.looksLikeEdit(long, ""))
+    }
+
+    @Test fun cleanupLevels() {
+        assertTrue(AgentEnhanceClient.levelLine("light")!!.contains("Do not reword"))
+        assertTrue(AgentEnhanceClient.levelLine("high")!!.contains("smooth"))
+        assertEquals(null, AgentEnhanceClient.levelLine("medium"))
+        assertEquals(null, AgentEnhanceClient.levelLine("bogus"))
     }
 }

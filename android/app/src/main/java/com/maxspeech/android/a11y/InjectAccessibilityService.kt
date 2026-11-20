@@ -347,8 +347,9 @@ class InjectAccessibilityService : AccessibilityService() {
         val field = found?.first
         val pkg = field?.packageName?.toString()
         if (field != null && pkg != null) {
-            if (field.isPassword) {
-                clearFocusIfNeeded("password")
+            // Like Wispr: no mic over passwords or in banking / password-manager apps.
+            if (field.isPassword || isSensitiveApp(pkg)) {
+                clearFocusIfNeeded(if (field.isPassword) "password" else "sensitive-app")
                 return
             }
             val bounds = Rect()
@@ -367,7 +368,9 @@ class InjectAccessibilityService : AccessibilityService() {
                 return
             }
             val appPkg = active?.packageName?.toString() ?: lastPackage
-            if (now - imeUpSince >= IME_ONLY_AFTER_MS && appPkg != null && !isKeyboardOrSystem(appPkg)) {
+            if (now - imeUpSince >= IME_ONLY_AFTER_MS && appPkg != null && !isKeyboardOrSystem(appPkg) &&
+                !isSensitiveApp(appPkg)
+            ) {
                 publish(InputFocus(true, appPkg, 0, 0, imeTop, false), "ime-only")
                 return
             }
@@ -440,6 +443,8 @@ class InjectAccessibilityService : AccessibilityService() {
         private val SENSITIVE = listOf(
             "bank", "wallet", "paypal", "venmo", "squareup.cash", "chase", "wellsfargo",
             "coinbase", "robinhood", "authenticator", "1password", "bitwarden", "lastpass",
+            "capitalone", "com.citi", "usaa", "schwab", "fidelity", "americanexpress", "zelle",
+            "revolut", "monzo", "sofi", "onedebit.chime", "dashlane", "keepass", "creditkarma",
         )
         @Volatile var instance: InjectAccessibilityService? = null
         @Volatile var lastPackage: String? = null

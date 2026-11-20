@@ -204,7 +204,9 @@ object Vocab {
                 val beforeOk = i == 0 || !isWordChar(text, i - 1)
                 val afterOk = end >= text.length || !isWordChar(text, end)
                 if (beforeOk && afterOk) {
-                    out.append(to)
+                    // Keep a sentence-start capital ("Low key fire" -> "Lowkey fire").
+                    val sentenceStart = text.substring(0, i).trimEnd().let { it.isEmpty() || it.last() in ".!?\n" }
+                    out.append(if (sentenceStart && text[i].isUpperCase()) to.replaceFirstChar { it.uppercaseChar() } else to)
                     i = end
                     continue
                 }

@@ -70,3 +70,12 @@ for all intensive purposes => for all intents and purposes
 case and point => case in point
 nip it in the butt => nip it in the bud
 escape goat => scapegoat
+# Slang Deepgram always splits into two words
+low key => lowkey
+low-key => lowkey
+loki => lowkey
+high key => highkey
+high-key => highkey
+# "no wait" misheard; only the punctuated form, so "no weight limit" is untouched
+no weight. => no wait.
+no weight, => no wait,

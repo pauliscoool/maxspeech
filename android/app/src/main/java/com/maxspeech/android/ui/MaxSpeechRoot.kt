@@ -300,6 +300,7 @@ fun MaxSpeechRoot(vm: AppViewModel) {
                                                     overlayOn = state.settings.overlayEnabled && overlayOk,
                                                     onTheme = vm::setTheme,
                                                     onSoundVolume = vm::setSoundVolume,
+                                                    onCleanupLevel = { vm.setCleanupLevel(it) },
                                                     onSoundVolumePreview = vm::previewSound,
                                                     onResetMicPosition = vm::resetOverlayPosition,
                                                     onToggle = { k, v ->

@@ -1,0 +1,110 @@
+[
+  {
+    "id": "lowkey-short",
+    "say": "that's low-key fire",
+    "expect": "lowkey",
+    "reject": "low[ -]key|high[ -]key"
+  },
+  {
+    "id": "lowkey-mid",
+    "say": "I low-key want to skip the gym today",
+    "expect": "lowkey want",
+    "reject": "low[ -]key|high[ -]key"
+  },
+  {
+    "id": "lowkey-end",
+    "say": "honestly that movie was kind of mid, low-key",
+    "expect": "lowkey",
+    "reject": "low[ -]key|high[ -]key"
+  },
+  {
+    "id": "lowkey-highkey",
+    "say": "I'm low-key tired but high-key hungry",
+    "expect": "lowkey tired.*highkey",
+    "reject": "low[ -]key|high[ -]key"
+  },
+  {
+    "id": "lowkey-chat",
+    "say": "bro I low-key forgot to text her back",
+    "expect": "lowkey forgot",
+    "reject": "low[ -]key|high[ -]key"
+  },
+  {
+    "id": "fix-weekday",
+    "say": "let's meet on Tuesday, no wait, Wednesday at three",
+    "expect": "Wednesday",
+    "reject": "Tuesday|no wait"
+  },
+  {
+    "id": "fix-name",
+    "say": "send the file to Sarah, I mean Sandra",
+    "expect": "Sandra",
+    "reject": "Sarah|I mean"
+  },
+  {
+    "id": "fix-scratch",
+    "say": "I'll be there at five, scratch that, six thirty",
+    "expect": "(six thirty|6:30)",
+    "reject": "five|scratch|06:"
+  },
+  {
+    "id": "fix-actually",
+    "say": "can you grab some milk, actually make that orange juice",
+    "expect": "orange juice",
+    "reject": "milk|actually"
+  },
+  {
+    "id": "fix-sorry",
+    "say": "the meeting is in room four, sorry, room five",
+    "expect": "room (five|5)",
+    "reject": "room (four|4)|sorry"
+  },
+  {
+    "id": "fix-oh-no",
+    "say": "would you like to go on a trip on Tuesday? Oh no, I meant Monday",
+    "expect": "Monday",
+    "reject": "Tuesday|I meant"
+  },
+  {
+    "id": "fix-wait-no",
+    "say": "I need two tickets, wait no, three tickets for Saturday",
+    "expect": "three tickets",
+    "reject": "two tickets|wait"
+  },
+  {
+    "id": "fix-change-mind",
+    "say": "tell him I'll call tonight, never mind, tell him I'll call tomorrow morning",
+    "expect": "tomorrow morning",
+    "reject": "tonight|never mind"
+  },
+  {
+    "id": "fix-mid-sentence",
+    "say": "we should order pizza, I mean tacos, for the party",
+    "expect": "tacos,? for the party",
+    "reject": "pizza|I mean"
+  },
+  {
+    "id": "keep-imean",
+    "say": "I mean, it's not that bad honestly",
+    "expect": "not that bad",
+    "reject": "^$"
+  },
+  {
+    "id": "lowkey-start",
+    "say": "low-key I think we should leave early",
+    "expect": "^lowkey",
+    "reject": "low[ -]key"
+  },
+  {
+    "id": "fix-time-keep",
+    "say": "call me at noon, no wait, call me at one tomorrow",
+    "expect": "one tomorrow|1 tomorrow",
+    "reject": "noon|wait"
+  },
+  {
+    "id": "fix-blue-red",
+    "say": "I want the blue shirt, no wait, the red one",
+    "expect": "red (one|shirt)",
+    "reject": "blue|wait"
+  }
+]

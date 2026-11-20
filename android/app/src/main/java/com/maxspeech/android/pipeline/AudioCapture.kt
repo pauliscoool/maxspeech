@@ -22,6 +22,12 @@ class AudioCapture {
     /** ~200ms of the take rose above a quiet-speech floor (raw, before AGC). */
     val heardVoice: Boolean get() = voicedFrames >= VOICED_FRAMES_MIN
 
+    @Volatile private var rawPeak = 0
+    @Volatile private var samplesRead = 0L
+
+    /** At least a second of audio arrived and all of it was (near) digital silence. */
+    val micSilent: Boolean get() = samplesRead >= SAMPLE_RATE && rawPeak < SILENT_PEAK
+
     /**
      * [onLevel] receives [BAR_COUNT] visual levels (0..1) — desktop-style global
      * energy + soft AGC + bell swell so phone mics jump as high as desktop.
@@ -31,6 +37,8 @@ class AudioCapture {
             frame = 0
             agcGain = 1f
             voicedFrames = 0
+            rawPeak = 0
+            samplesRead = 0
             val min = AudioRecord.getMinBufferSize(
                 SAMPLE_RATE,
                 AudioFormat.CHANNEL_IN_MONO,
@@ -60,6 +68,11 @@ class AudioCapture {
                     val n = rec.read(buf, 0, buf.size)
                     if (n > 0) {
                         val slice = buf.copyOf(n)
+                        samplesRead += n
+                        for (s in slice) {
+                            val a = abs(s.toInt())
+                            if (a > rawPeak) rawPeak = a
+                        }
                         onPcm(slice)
                         onLevel(visualBars(slice))
                     } else if (n < 0 && isActive) {
@@ -147,6 +160,8 @@ class AudioCapture {
         /** Compact overlay pill — six bars. */
         const val BAR_COUNT = 6
 
+        /** ~-66 dBFS in 16-bit: a silenced/blocked mic. Real rooms are far louder. */
+        private const val SILENT_PEAK = 16
         private const val NOISE_GATE = 0.012f
         private const val LEVEL_GAIN = 14f
         private const val AGC_TARGET_RMS = 0.12f

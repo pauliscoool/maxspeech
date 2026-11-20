@@ -164,6 +164,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun setOverlayMicColor(argb: Long) = viewModelScope.launch { ms.settings.setOverlayMicColor(argb) }
     fun setOverlayStyle(style: OverlayStyle) = viewModelScope.launch { ms.settings.setOverlayStyle(style) }
     fun setSoundVolume(v: Float) = viewModelScope.launch { ms.settings.setSoundVolume(v) }
+    fun setCleanupLevel(level: String) = viewModelScope.launch { ms.settings.setCleanupLevel(level) }
     fun previewSound() = ms.dictation.previewSoundCue()
     fun setDeepgramKey(v: String) = viewModelScope.launch { ms.settings.setDeepgramKey(v) }
     fun resetOverlayPosition() = viewModelScope.launch {

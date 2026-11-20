@@ -68,6 +68,7 @@ fun SettingsScreen(
     overlayOn: Boolean,
     onTheme: (UiTheme) -> Unit,
     onSoundVolume: (Float) -> Unit,
+    onCleanupLevel: (String) -> Unit,
     onOpenPlan: () -> Unit,
     onSoundVolumePreview: () -> Unit,
     onResetMicPosition: () -> Unit,
@@ -226,6 +227,33 @@ fun SettingsScreen(
                     "Fix misheard words, fillers, self-corrections and lists",
                     settings.aiEnhance,
                 ) { onToggle("enhance", it) }
+                if (settings.aiEnhance) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        listOf(
+                            Triple("light", "Light", "Fix words only"),
+                            Triple("medium", "Medium", "Default"),
+                            Triple("high", "High", "Polish phrasing"),
+                        ).forEach { (value, title, desc) ->
+                            val on = settings.cleanupLevel == value
+                            Column(
+                                Modifier
+                                    .weight(1f)
+                                    .background(
+                                        if (on) c.turquoise.copy(alpha = 0.16f) else c.bgSoft,
+                                        RoundedCornerShape(14.dp),
+                                    )
+                                    .clickable { onCleanupLevel(value) }
+                                    .padding(horizontal = 10.dp, vertical = 12.dp),
+                            ) {
+                                Text(title, color = if (on) c.turquoise else c.text, fontSize = 14.sp)
+                                Text(desc, color = c.textDim, fontSize = 11.sp)
+                            }
+                        }
+                    }
+                }
                 ToggleRow(
                     "Trailing space",
                     "Add a space after each insertion so you can keep typing",

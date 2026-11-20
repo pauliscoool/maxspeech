@@ -50,6 +50,7 @@ class AgentEnhanceClient(private val assets: AssetManager) {
     fun systemPrompt(c: CleanupContext): String = buildString {
         append(asset("agent_cleanup"))
         append("\n\nStyle: ").append(toneLine(c.tone))
+        levelLine(c.level)?.let { append("\nStrength: ").append(it) }
         if (c.multilingual) append("\n").append(asset("multilingual_rules"))
         val terms = c.dictionary.map { it.trim() }.filter { it.isNotEmpty() }.take(60)
         if (terms.isNotEmpty()) {
@@ -83,6 +84,7 @@ class AgentEnhanceClient(private val assets: AssetManager) {
         val multilingual: Boolean,
         val fieldText: String = "",
         val screenText: String = "",
+        val level: String = "medium",
     )
 
     inner class Session(private val key: String, private val system: String, private val model: String) {
@@ -246,6 +248,14 @@ class AgentEnhanceClient(private val assets: AssetManager) {
     }
 
     companion object {
+        /** Medium is the base prompt; light and high nudge it either way (same text as desktop tone.rs). */
+        fun levelLine(level: String): String? = when (level) {
+            "light" -> "light. Only fix misheard words, punctuation, capitals, ums/uhs and spoken corrections. " +
+                "Do not reword, reorder, merge sentences or turn speech into lists unless the speaker said \"list\" or \"bullet points\"."
+            "high" -> "high. Also smooth awkward spoken phrasing into clean written sentences and fix grammar, " +
+                "while keeping every idea, fact and the speaker's tone. Still never add new content."
+            else -> null
+        }
         private const val TAG = "MaxSpeechAgent"
         private const val AGENT_URL = "wss://agent.deepgram.com/v1/agent/converse"
         /** Fastest faithful model in the 2026-10 probe (~0.65 s, fixed "mom or retrospect"). */
@@ -262,14 +272,14 @@ class AgentEnhanceClient(private val assets: AssetManager) {
 
         /**
          * The reply must look like an edit of the input, not an answer or a summary.
-         * Lists add characters and filler removal drops some, so the bounds are loose.
+         * Lists add characters; filler removal and spoken corrections ("X, scratch that, Y") drop some.
          */
         fun looksLikeEdit(input: String, reply: String): Boolean {
             val i = input.trim().length
             val r = reply.trim().length
             if (r == 0) return false
             if (i < 30) return r <= i * 3 + 25
-            return r * 100 >= i * 45 && r * 100 <= i * 180
+            return r * 100 >= i * 30 && r * 100 <= i * 180
         }
     }
 }

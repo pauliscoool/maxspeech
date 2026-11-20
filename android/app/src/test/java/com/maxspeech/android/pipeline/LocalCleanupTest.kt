@@ -187,4 +187,21 @@ class LocalCleanupTest {
         val out = localSelfCorrect("Yesterday I met Samuel at noon")
         has(out, "yesterday"); has(out, "i met"); has(out, "samuel")
     }
+
+    @Test fun weekdayCorrectionKeepsRestatedTime() {
+        assertEquals("Let's meet on Wednesday at three", localSelfCorrect("Let's meet on Tuesday no wait Wednesday at three"))
+    }
+
+    @Test fun ohNoChatterIsDropped() {
+        assertEquals("Would you like to go on a trip on Monday?", localSelfCorrect("Would you like to go on a trip on Tuesday? Oh, no. I meant Monday."))
+    }
+
+    @Test fun correctionAlignsOnSharedWord() {
+        assertEquals("I need three tickets for Saturday", localSelfCorrect("I need two tickets wait no three tickets for Saturday"))
+        assertEquals("I want the red one", localSelfCorrect("I want the blue shirt wait no the red one"))
+    }
+
+    @Test fun unanchoredCorrectionReplacesOnlyLastWord() {
+        assertEquals("I'll be there at six", localSelfCorrect("I'll be there at five no wait six"))
+    }
 }
