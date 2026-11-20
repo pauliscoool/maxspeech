@@ -10,7 +10,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 
 /// Serialize all keyboard/clipboard injection so two sessions never interleave.
-static INJECT_LOCK: Mutex<()> = Mutex::new(());
+pub(crate) static INJECT_LOCK: Mutex<()> = Mutex::new(());
 /// Bumped on every inject so a cancelled attempt cannot race a newer paste.
 static CLIPBOARD_GEN: AtomicU64 = AtomicU64::new(0);
 
@@ -38,6 +38,8 @@ where
     let _guard = INJECT_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
+    // Typing autocorrect must forget what it knew about the field once we change it.
+    crate::autocorrect::note_external_edit();
     let start = Instant::now();
 
     if !still_wanted() {
@@ -301,6 +303,7 @@ pub fn undo_insertion(insertion: &LastInsertion) -> Result<(), Box<dyn std::erro
     let _guard = INJECT_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
+    crate::autocorrect::note_external_edit();
     wait_for_modifiers_up(Duration::from_millis(300));
     let mut enigo = Enigo::new(&Settings::default()).map_err(|e| format!("{e}"))?;
     for _ in 0..insertion.char_count {

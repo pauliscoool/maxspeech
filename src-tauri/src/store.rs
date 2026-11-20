@@ -70,6 +70,9 @@ impl Store {
                  word TEXT NOT NULL UNIQUE,
                  boost REAL NOT NULL DEFAULT 1.0
              );
+             CREATE TABLE IF NOT EXISTS autocorrect_ignore (
+                 word TEXT PRIMARY KEY
+             );
              CREATE TABLE IF NOT EXISTS learned_substitutions (
                  from_phrase TEXT PRIMARY KEY,
                  to_phrase TEXT NOT NULL,
@@ -524,6 +527,30 @@ impl Store {
         Ok(())
     }
 
+    /// Words typing autocorrect must leave alone. Separate from the dictionary on purpose:
+    /// the dictionary also boosts speech recognition and is only ever edited by the user.
+    pub fn get_autocorrect_ignore(&self) -> Result<Vec<String>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT word FROM autocorrect_ignore ORDER BY word")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        rows.collect()
+    }
+
+    pub fn add_autocorrect_ignore(&self, word: &str) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO autocorrect_ignore (word) VALUES (?1)",
+            params![word.trim().to_lowercase()],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_autocorrect_ignore(&self, word: &str) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM autocorrect_ignore WHERE word = ?1", params![word.to_lowercase()])?;
+        Ok(())
+    }
+
     /// Remove every learned "heard → meant" pair; they were auto-learned from edits and did harm.
     pub fn clear_substitutions(&self) -> Result<usize, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
@@ -677,27 +704,24 @@ impl Store {
 
     pub fn get_stats(&self) -> Result<Stats, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
-        let total_entries: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM history WHERE status IS NULL",
+        // Word count via SQL space estimate — never materialize every history text.
+        let (total_entries, total_words, days_active): (i64, i64, i64) = conn.query_row(
+            "SELECT
+                COUNT(*),
+                COALESCE(SUM(
+                    CASE
+                        WHEN TRIM(text) = '' THEN 0
+                        ELSE LENGTH(TRIM(text))
+                             - LENGTH(REPLACE(TRIM(text), ' ', ''))
+                             + 1
+                    END
+                ), 0),
+                COUNT(DISTINCT date(created_at))
+             FROM history
+             WHERE status IS NULL",
             [],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )?;
-        let texts: Vec<String> = {
-            let mut stmt = conn.prepare("SELECT text FROM history WHERE status IS NULL")?;
-            let rows = stmt.query_map([], |row| row.get(0))?;
-            rows.filter_map(|r| r.ok()).collect()
-        };
-        let total_words: i64 = texts
-            .iter()
-            .map(|t| t.split_whitespace().count() as i64)
-            .sum();
-        let days_active: i64 = conn
-            .query_row(
-                "SELECT COUNT(DISTINCT date(created_at)) FROM history WHERE status IS NULL",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap_or(0);
         Ok(Stats {
             total_words,
             total_entries,
@@ -876,4 +900,52 @@ pub fn data_dir() -> String {
             .into_owned();
     }
     "maxspeech_data".to_string()
+}
+
+#[cfg(test)]
+mod stats_tests {
+    use super::*;
+
+    fn mem_store() -> Store {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE history (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 text TEXT NOT NULL,
+                 app_name TEXT NOT NULL DEFAULT '',
+                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                 recording_path TEXT,
+                 status TEXT
+             );",
+        )
+        .unwrap();
+        Store {
+            conn: Mutex::new(conn),
+        }
+    }
+
+    #[test]
+    fn get_stats_uses_sql_aggregates_not_row_loads() {
+        let store = mem_store();
+        {
+            let conn = store.conn.lock().unwrap();
+            for text in ["one two", "three four five", ""] {
+                conn.execute(
+                    "INSERT INTO history (text, app_name) VALUES (?1, 'test')",
+                    params![text],
+                )
+                .unwrap();
+            }
+            conn.execute(
+                "INSERT INTO history (text, app_name, status) VALUES ('ignored failed', 'test', 'failed')",
+                [],
+            )
+            .unwrap();
+        }
+        let stats = store.get_stats().unwrap();
+        assert_eq!(stats.total_entries, 3);
+        // Space-count estimate: "one two"=2, "three four five"=3, ""=0
+        assert_eq!(stats.total_words, 5);
+        assert!(stats.days_active >= 1);
+    }
 }

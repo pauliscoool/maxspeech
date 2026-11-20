@@ -67,23 +67,45 @@ pub fn deepgram_key_candidates() -> Vec<String> {
     keys
 }
 
-/// Resolve the OpenAI / LLM key without any Settings UI.
+fn push_candidate(out: &mut Vec<String>, raw: Option<String>) {
+    if let Some(k) = raw.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
+        if !out.iter().any(|x| x == &k) {
+            out.push(k);
+        }
+    }
+}
+
+/// True for OpenAI (`sk-…`) or OpenRouter (`sk-or-…`) keys — not Deepgram hex tokens.
+fn looks_like_chat_llm_key(k: &str) -> bool {
+    k.starts_with("sk-")
+}
+
+/// Resolve the OpenAI / OpenRouter key without any Settings UI.
 ///
-/// Order: keyring `llm_api_key` → env `MAXSPEECH_LLM_API_KEY`.
-/// Does **not** use the Deepgram app fallback — that key is STT-only and causes
-/// enhance calls to 401 when treated as a valid LLM key.
+/// Collects keyring `llm_api_key` + env `MAXSPEECH_LLM_API_KEY` / `OPENAI_API_KEY` /
+/// `OPENROUTER_API_KEY`, then prefers a real chat key (`sk-…`). Deepgram-shaped
+/// values often end up in `OPENAI_API_KEY` by mistake and must not win.
 pub fn resolve_llm_api_key() -> Option<String> {
-    if let Ok(Some(k)) = get_secret("llm_api_key") {
-        if !k.is_empty() {
-            return Some(k);
-        }
+    let mut candidates = Vec::new();
+    push_candidate(
+        &mut candidates,
+        get_secret("llm_api_key").ok().flatten(),
+    );
+    for var in [
+        "MAXSPEECH_LLM_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+    ] {
+        push_candidate(&mut candidates, std::env::var(var).ok());
     }
-    if let Ok(k) = std::env::var("MAXSPEECH_LLM_API_KEY") {
-        if !k.trim().is_empty() {
-            return Some(k.trim().to_string());
-        }
+    // Prefer direct OpenAI over OpenRouter when both look valid.
+    if let Some(k) = candidates
+        .iter()
+        .find(|k| looks_like_chat_llm_key(k) && !k.starts_with("sk-or-"))
+    {
+        return Some(k.clone());
     }
-    None
+    candidates.into_iter().find(|k| looks_like_chat_llm_key(k))
 }
 
 pub fn has_llm_api_key() -> bool {

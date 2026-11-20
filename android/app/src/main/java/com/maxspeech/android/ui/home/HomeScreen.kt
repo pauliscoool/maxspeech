@@ -81,6 +81,8 @@ fun HomeScreen(
     onOpenHistory: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenStyle: () -> Unit,
+    onOpenDictionary: () -> Unit,
+    onOpenSnippets: () -> Unit,
     onCopy: (String) -> Unit,
 ) {
     val c = LocalMsColors.current
@@ -188,7 +190,7 @@ fun HomeScreen(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 ToolbarIcon(Icons.Filled.AutoAwesome, "Enhance", onOpenStyle)
-                ToolbarIcon(Icons.Outlined.EmojiEmotions, "Snippets", onOpenStyle)
+                ToolbarIcon(Icons.Outlined.EmojiEmotions, "Snippets", onOpenSnippets)
                 ToolbarIcon(Icons.Filled.ContentCopy, "Copy") {
                     val t = ui.finalText.ifBlank { history.firstOrNull()?.text.orEmpty() }
                     if (t.isNotBlank()) {
@@ -198,7 +200,7 @@ fun HomeScreen(
                 }
                 ToolbarIcon(Icons.Outlined.FilterNone, "History", onOpenHistory)
                 ToolbarIcon(Icons.Filled.Settings, "Settings", onOpenSettings)
-                ToolbarIcon(Icons.Filled.MoreHoriz, "More", onOpenSettings)
+                ToolbarIcon(Icons.Filled.MoreHoriz, "Dictionary", onOpenDictionary)
             }
         }
         Spacer(Modifier.height(24.dp))

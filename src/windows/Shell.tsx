@@ -1,10 +1,11 @@
-import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 const HomePage = lazy(() => import("./pages/HomePage"));
 const InsightsPage = lazy(() => import("./pages/InsightsPage"));
 const DictionaryPage = lazy(() => import("./pages/DictionaryPage"));
+const AutocorrectPage = lazy(() => import("./pages/AutocorrectPage"));
 const SnippetsPage = lazy(() => import("./pages/SnippetsPage"));
 const StylePage = lazy(() => import("./pages/StylePage"));
 const TransformsPage = lazy(() => import("./pages/TransformsPage"));
@@ -46,6 +47,7 @@ export type PageId =
   | "home"
   | "insights"
   | "dictionary"
+  | "autocorrect"
   | "snippets"
   | "style"
   | "transforms"
@@ -59,6 +61,7 @@ const NAV: { id: PageId; label: string; icon: (active: boolean) => ReactNode }[]
   { id: "home", label: "Home", icon: (a) => <IconHome active={a} /> },
   { id: "insights", label: "Insights", icon: (a) => <IconChart active={a} /> },
   { id: "dictionary", label: "Dictionary", icon: (a) => <IconBook active={a} /> },
+  { id: "autocorrect", label: "Autocorrect", icon: (a) => <IconAutocorrect active={a} /> },
   { id: "snippets", label: "Snippets", icon: (a) => <IconSnippets active={a} /> },
   { id: "style", label: "Style", icon: (a) => <IconSpark active={a} /> },
   { id: "transforms", label: "Transforms", icon: (a) => <IconRefresh active={a} /> },
@@ -230,6 +233,7 @@ export default function Shell({ authUser }: { authUser: AuthUser | null }) {
         next === "home" ||
         next === "insights" ||
         next === "dictionary" ||
+        next === "autocorrect" ||
         next === "snippets" ||
         next === "style" ||
         next === "transforms" ||
@@ -255,13 +259,13 @@ export default function Shell({ authUser }: { authUser: AuthUser | null }) {
     };
   }, []);
 
-  async function refresh() {
+  const refresh = useCallback(async () => {
     try {
       setPlan(await invoke<PlanStatus>("get_plan_status"));
     } catch {
       setPlan(null);
     }
-  }
+  }, []);
 
   async function applyUpdate() {
     if (updating) return;
@@ -493,6 +497,7 @@ export default function Shell({ authUser }: { authUser: AuthUser | null }) {
         )}
         {page === "insights" && <InsightsPage />}
         {page === "dictionary" && <DictionaryPage />}
+        {page === "autocorrect" && <AutocorrectPage />}
         {page === "snippets" && <SnippetsPage />}
         {page === "style" && <StylePage />}
         {page === "transforms" && <TransformsPage />}
@@ -758,6 +763,15 @@ function IconBook({ active: _a }: { active: boolean }) {
     <svg {...iconProps()}>
       <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
       <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+    </svg>
+  );
+}
+
+function IconAutocorrect({ active: _a }: { active: boolean }) {
+  return (
+    <svg {...iconProps()}>
+      <path d="M4 7h16M4 12h9M4 17h6" />
+      <path d="m15 17 2.5 2.5L22 14" />
     </svg>
   );
 }

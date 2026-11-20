@@ -1,0 +1,16 @@
+[
+  { "typed": "i dont know wich one to pick ", "expected": "I don't know which one to pick " },
+  { "typed": "teh meeting is tommorow at 3pm ", "expected": "The meeting is tomorrow at 3pm " },
+  { "typed": "send it to sarah@example.com or see https://maxspeech.app/pricing now ", "expected": "Send it to sarah@example.com or see https://maxspeech.app/pricing now " },
+  { "typed": "We use MaxSpeech and Tailscale on my iPhone ", "expected": "We use MaxSpeech and Tailscale on my iPhone " },
+  { "typed": "gonna grab some food lol ", "expected": "Gonna grab some food lol " },
+  { "typed": "I recieved your email adn will respond tomorow ", "expected": "I received your email and will respond tomorrow " },
+  { "typed": "the quick brown fox jumps over the lazy dog. then it ran away ", "expected": "The quick brown fox jumps over the lazy dog. Then it ran away " },
+  { "typed": "run npm install and check the user_name variable ", "expected": "Run npm install and check the user_name variable " },
+  { "typed": "Dr. Smith vs. the committee said no ", "expected": "Dr. Smith vs. the committee said no " },
+  { "typed": "can u pls help ", "expected": "Can u pls help " },
+  { "typed": "Thanks Sarah, see you at the office on Monday ", "expected": "Thanks Sarah, see you at the office on Monday " },
+  { "typed": "its a nice day and ill be there ", "expected": "Its a nice day and ill be there " },
+  { "typed": "(this is fine) and so is \"this\" ", "expected": "(This is fine) and so is \"this\" " },
+  { "typed": "the API returns JSON over HTTP ", "expected": "The API returns JSON over HTTP " }
+]

@@ -64,6 +64,7 @@ fun OnboardingScreen(
     info: String?,
     authed: Boolean,
     onSignIn: (String, String) -> Unit,
+    onContinueLocal: () -> Unit,
     onSignUp: (String, String, String) -> Unit,
     onForgot: (String) -> Unit,
     onClearFlash: () -> Unit,
@@ -150,6 +151,7 @@ fun OnboardingScreen(
                             onPassword = { password = it },
                             onUsername = { username = it },
                             onSignIn = { onSignIn(email, password) },
+                        onContinueLocal = onContinueLocal,
                             onSignUp = { onSignUp(email, password, username) },
                             onForgot = { onForgot(email) },
                             onMode = {
@@ -191,6 +193,7 @@ private fun AuthStep(
     onPassword: (String) -> Unit,
     onUsername: (String) -> Unit,
     onSignIn: () -> Unit,
+    onContinueLocal: () -> Unit,
     onSignUp: () -> Unit,
     onForgot: () -> Unit,
     onMode: (AuthMode) -> Unit,
@@ -268,6 +271,13 @@ private fun AuthStep(
                 border = BorderStroke(1.dp, Turquoise),
             ) {
                 Text("Sign up")
+            }
+            TextButton(
+                onClick = onContinueLocal,
+                enabled = !busy,
+                modifier = Modifier.padding(top = 4.dp),
+            ) {
+                Text("Continue locally", color = c.textDim, fontSize = 15.sp)
             }
         }
         AuthMode.SignUp -> {

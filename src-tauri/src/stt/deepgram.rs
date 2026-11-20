@@ -70,6 +70,8 @@ const BUILTIN_KEYTERMS: &[&str] = &[
     "Covenant Core",
     // Product — ASR hears "Tailscale" as "tail scale" / "tale scale".
     "Tailscale",
+    // Everyday clean word ASR often swaps for a swear ("flip" → "fuck").
+    "flip",
 ];
 
 #[derive(Debug, Clone)]
@@ -313,7 +315,7 @@ fn build_url(config: &DeepgramConfig) -> String {
     // on a brief pause; hold-to-talk can wait a bit for a complete phrase.
     let endpointing = if config.language == "multi" { 700 } else { 1100 };
     let mut url = format!(
-        "wss://api.deepgram.com/v1/listen?model={}&language={}&punctuate=true&interim_results=true&smart_format=true&numerals=true&endpointing={}&encoding=linear16&sample_rate=16000&channels=1",
+        "wss://api.deepgram.com/v1/listen?model={}&language={}&punctuate=true&interim_results=true&smart_format=true&numerals=false&endpointing={}&encoding=linear16&sample_rate=16000&channels=1",
         config.model, config.language, endpointing
     );
     // Nova-3 rejects legacy `keywords` (HTTP 400). Use `keyterm` instead.
@@ -422,6 +424,27 @@ async fn connect_with_fallback(
     Err(last_err.unwrap_or_else(|| "Deepgram connect failed".into()))
 }
 
+/// Keep at most this much pre-connect PCM (~2s @ 16 kHz). Longer buffers from
+/// slow TLS/WS handshakes explode memory and flood Deepgram on connect.
+const MAX_PRECONNECT_SAMPLES: usize = 16_000 * 2;
+
+fn trim_pending_pcm(pending: &mut Vec<Vec<i16>>, max_samples: usize) {
+    let total: usize = pending.iter().map(|c| c.len()).sum();
+    if total <= max_samples {
+        return;
+    }
+    let mut drop = total - max_samples;
+    while drop > 0 && !pending.is_empty() {
+            if pending[0].len() <= drop {
+                drop -= pending[0].len();
+                pending.remove(0);
+            } else {
+                pending[0].drain(..drop);
+                break;
+            }
+        }
+}
+
 /// Keep consuming mic audio until the user stops. When the connection is down the
 /// session must still last until release, otherwise the pipeline would finish
 /// (and paste a partial transcript) while the user is still talking.
@@ -496,9 +519,13 @@ pub async fn stream_audio(
                     }
                 }
             }
-            Some(chunk) = audio_rx.recv() => pending.push(chunk),
+            Some(chunk) = audio_rx.recv() => {
+                pending.push(chunk);
+                trim_pending_pcm(&mut pending, MAX_PRECONNECT_SAMPLES);
+            },
         }
     };
+    trim_pending_pcm(&mut pending, MAX_PRECONNECT_SAMPLES);
     if !pending.is_empty() {
         let samples: usize = pending.iter().map(|c| c.len()).sum();
         log::info!(
@@ -661,6 +688,29 @@ fn urlenc(s: &str) -> String {
 }
 
 #[cfg(test)]
+mod preconnect_tests {
+    use super::{trim_pending_pcm, MAX_PRECONNECT_SAMPLES};
+
+    #[test]
+    fn trim_pending_keeps_tail_under_cap() {
+        let mut pending = vec![vec![1i16; 20_000], vec![2i16; 20_000], vec![3i16; 10_000]];
+        trim_pending_pcm(&mut pending, MAX_PRECONNECT_SAMPLES);
+        let total: usize = pending.iter().map(|c| c.len()).sum();
+        assert_eq!(total, MAX_PRECONNECT_SAMPLES);
+        // Tail samples (value 3, then 2) must survive.
+        assert!(pending.last().unwrap().iter().all(|&s| s == 3));
+    }
+
+    #[test]
+    fn trim_pending_noop_when_under_cap() {
+        let mut pending = vec![vec![9i16; 100]];
+        trim_pending_pcm(&mut pending, MAX_PRECONNECT_SAMPLES);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].len(), 100);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -767,7 +817,7 @@ mod tests {
         let wavs = std::env::var("PROBE_WAVS").unwrap_or_else(|_| "2413.wav,2414.wav,2416.wav".into());
         let key = secrets::deepgram_key_candidates().into_iter().last().unwrap();
         let targets = [
-            ("nova-3", "wss://api.deepgram.com/v1/listen?model=nova-3&language=en&punctuate=true&interim_results=true&smart_format=true&numerals=true&endpointing=1100&encoding=linear16&sample_rate=16000&channels=1"),
+            ("nova-3", "wss://api.deepgram.com/v1/listen?model=nova-3&language=en&punctuate=true&interim_results=true&smart_format=true&numerals=false&endpointing=1100&encoding=linear16&sample_rate=16000&channels=1"),
             ("flux-en", "wss://api.deepgram.com/v2/listen?model=flux-general-en&encoding=linear16&sample_rate=16000"),
         ];
         for wav in wavs.split(',') {

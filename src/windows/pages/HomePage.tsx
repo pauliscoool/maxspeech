@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -21,6 +21,8 @@ interface HistoryEntry {
 type BtnState = "idle" | "loading" | "ok";
 
 const PAGE_SIZE = 10;
+const RELOAD_DEBOUNCE_MS = 200;
+const LOADING_TIMEOUT_MS = 8000;
 
 export default function HomePage({
   displayName,
@@ -62,6 +64,13 @@ export default function HomePage({
   const loadingMoreRef = useRef(false);
   const hasMoreRef = useRef(false);
   const entriesLenRef = useRef(0);
+  const searchRef = useRef(search);
+  const onChangedRef = useRef(onChanged);
+  const reloadTimerRef = useRef<number | null>(null);
+  const loadingTimeoutRef = useRef<number | null>(null);
+
+  searchRef.current = search;
+  onChangedRef.current = onChanged;
 
   useEffect(() => {
     if (displayName) {
@@ -71,12 +80,27 @@ export default function HomePage({
     invoke<string>("get_user_name").then(setName).catch(() => {});
   }, [displayName]);
 
-  async function loadPage(offset: number, replace: boolean) {
+  const clearLoadingTimeout = useCallback(() => {
+    if (loadingTimeoutRef.current != null) {
+      window.clearTimeout(loadingTimeoutRef.current);
+      loadingTimeoutRef.current = null;
+    }
+  }, []);
+
+  const loadPage = useCallback(async (offset: number, replace: boolean) => {
     const gen = ++loadGen.current;
     if (replace) {
       setLoading(true);
       loadingMoreRef.current = false;
       setLoadingMore(false);
+      clearLoadingTimeout();
+      loadingTimeoutRef.current = window.setTimeout(() => {
+        if (gen === loadGen.current) {
+          setLoading(false);
+          loadingMoreRef.current = false;
+          setLoadingMore(false);
+        }
+      }, LOADING_TIMEOUT_MS);
     } else {
       if (loadingMoreRef.current || !hasMoreRef.current) return;
       loadingMoreRef.current = true;
@@ -84,7 +108,7 @@ export default function HomePage({
     }
     try {
       const rows = await invoke<HistoryEntry[]>("get_history", {
-        search,
+        search: searchRef.current,
         limit: PAGE_SIZE,
         offset,
       });
@@ -107,39 +131,55 @@ export default function HomePage({
       setHasMore(false);
     } finally {
       if (gen === loadGen.current) {
+        clearLoadingTimeout();
         setLoading(false);
         loadingMoreRef.current = false;
         setLoadingMore(false);
       }
     }
-  }
+  }, [clearLoadingTimeout]);
 
-  function reloadHistory() {
-    void loadPage(0, true);
-    invoke<{
-      total_words: number;
-      total_entries: number;
-      days_active: number;
-      avg_wpm: number;
-    }>("get_stats")
-      .then(setStats)
-      .catch(() => {});
-  }
+  const reloadHistory = useCallback(
+    (immediate = false) => {
+      const run = () => {
+        void loadPage(0, true);
+        invoke<{
+          total_words: number;
+          total_entries: number;
+          days_active: number;
+          avg_wpm: number;
+        }>("get_stats")
+          .then(setStats)
+          .catch(() => {});
+      };
+      if (reloadTimerRef.current != null) {
+        window.clearTimeout(reloadTimerRef.current);
+        reloadTimerRef.current = null;
+      }
+      if (immediate) {
+        run();
+        return;
+      }
+      reloadTimerRef.current = window.setTimeout(run, RELOAD_DEBOUNCE_MS);
+    },
+    [loadPage],
+  );
 
-  function loadMore() {
+  const loadMore = useCallback(() => {
     void loadPage(entriesLenRef.current, false);
-  }
+  }, [loadPage]);
 
+  // Search changes: debounced reload only (listeners live in a stable effect).
   useEffect(() => {
-    const t = window.setTimeout(() => reloadHistory(), 150);
-    return () => window.clearTimeout(t);
-  }, [search]);
+    reloadHistory();
+  }, [search, reloadHistory]);
 
   // Refresh when returning to the app / this page so new dictations show up.
   useEffect(() => {
-    const onFocus = () => reloadHistory();
+    const schedule = () => reloadHistory();
+    const onFocus = () => schedule();
     const onVis = () => {
-      if (document.visibilityState === "visible") reloadHistory();
+      if (document.visibilityState === "visible") schedule();
     };
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVis);
@@ -151,8 +191,8 @@ export default function HomePage({
     void getCurrentWindow()
       .onFocusChanged(({ payload: focused }) => {
         if (focused) {
-          reloadHistory();
-          onChanged();
+          schedule();
+          onChangedRef.current();
         }
       })
       .then((fn) => {
@@ -160,26 +200,26 @@ export default function HomePage({
       })
       .catch(() => {});
     void listen("history-added", () => {
-      reloadHistory();
-      onChanged();
+      schedule();
+      onChangedRef.current();
     }).then((fn) => {
       unlistenHistory = fn;
     });
     void listen("history-failed", () => {
-      reloadHistory();
-      onChanged();
+      schedule();
+      onChangedRef.current();
     }).then((fn) => {
       unlistenFailed = fn;
     });
     void listen("history-updated", () => {
-      reloadHistory();
-      onChanged();
+      schedule();
+      onChangedRef.current();
     }).then((fn) => {
       unlistenUpdated = fn;
     });
 
     // Immediate refresh on mount (e.g. navigating back to Home).
-    reloadHistory();
+    reloadHistory(true);
 
     return () => {
       window.removeEventListener("focus", onFocus);
@@ -188,8 +228,13 @@ export default function HomePage({
       unlistenHistory?.();
       unlistenFailed?.();
       unlistenUpdated?.();
+      if (reloadTimerRef.current != null) {
+        window.clearTimeout(reloadTimerRef.current);
+        reloadTimerRef.current = null;
+      }
+      clearLoadingTimeout();
     };
-  }, [search, onChanged]);
+  }, [reloadHistory, clearLoadingTimeout]);
 
   // Load the next page when the bottom sentinel scrolls into view.
   useEffect(() => {

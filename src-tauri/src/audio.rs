@@ -1,7 +1,7 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, SampleFormat, SupportedStreamConfig};
 use serde::Serialize;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 use tauri::Emitter;
@@ -59,9 +59,19 @@ impl SttGate {
 pub const MIC_DEVICE_DEFAULT: &str = "default";
 
 static FRAME: AtomicU64 = AtomicU64::new(0);
+/// Loudest raw (pre-gate) sample this take, as f32 bits. Near zero = muted/dead mic.
+static RAW_PEAK_BITS: AtomicU32 = AtomicU32::new(0);
+/// Bumped on every start/stop so a stale silent-mic check can tell its take is over.
+static TAKE: AtomicU64 = AtomicU64::new(0);
+/// About -66 dBFS: a muted or disconnected input; any real room noise is far louder.
+const SILENT_MIC_PEAK: f32 = 0.0005;
+const SILENT_MIC_CHECK_MS: u64 = 2_500;
 
 /// Ms since `VOICE_EPOCH` (+1, so 0 = never) of the last frame the gate heard as speech.
 static LAST_VOICE_MS: AtomicU64 = AtomicU64::new(0);
+/// Throttle overlay meter emits (~30 Hz) so WASAPI callbacks don't flood the WebView.
+static LAST_LEVEL_EMIT_MS: AtomicU64 = AtomicU64::new(0);
+const LEVEL_EMIT_MIN_MS: u64 = 33;
 static VOICE_EPOCH: OnceLock<Instant> = OnceLock::new();
 
 fn voice_clock_ms() -> u64 {
@@ -126,6 +136,27 @@ impl AudioCapture {
         self.sample_rate = native_rate;
         FRAME.store(0, Ordering::Relaxed);
         LAST_VOICE_MS.store(0, Ordering::Relaxed);
+        RAW_PEAK_BITS.store(0, Ordering::Relaxed);
+        let take = TAKE.fetch_add(1, Ordering::SeqCst) + 1;
+        {
+            // Wrong or muted mic used to end as a silent "nothing happened"; say why instead.
+            let app = app.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(SILENT_MIC_CHECK_MS));
+                if TAKE.load(Ordering::SeqCst) != take {
+                    return;
+                }
+                let peak = f32::from_bits(RAW_PEAK_BITS.load(Ordering::Relaxed));
+                if peak < SILENT_MIC_PEAK {
+                    log::warn!("Silent mic: raw peak {peak:.6} after {SILENT_MIC_CHECK_MS}ms");
+                    crate::pipeline::recovery::notify(
+                        &app,
+                        "No sound from your microphone",
+                        "Check that it isn't muted, or pick another mic in MaxSpeech Settings.",
+                    );
+                }
+            });
+        }
 
         log::info!(
             "Audio: {:?} @ {}Hz {}ch {:?} (preferred={:?})",
@@ -267,6 +298,7 @@ impl AudioCapture {
         // Stop the callback first, then flush any leftover < chunk_size samples
         // so the last ~50ms of speech still reaches Deepgram.
         self.stream = None;
+        TAKE.fetch_add(1, Ordering::SeqCst);
         if let (Some(buf), Some(tx)) = (self.pcm_buffer.take(), self.pcm_tx.take()) {
             let leftover = {
                 let mut b = buf.lock().unwrap();
@@ -415,6 +447,10 @@ fn process_f32(
     if mono.is_empty() {
         return;
     }
+    let raw_peak = mono.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+    if raw_peak > f32::from_bits(RAW_PEAK_BITS.load(Ordering::Relaxed)) {
+        RAW_PEAK_BITS.store(raw_peak.to_bits(), Ordering::Relaxed);
+    }
 
     // Gate quieter room / call voices before AGC so gain can't lift them up.
     let native_rate = (TARGET_RATE as f64 * ratio).round().max(1.0) as u32;
@@ -423,8 +459,16 @@ fn process_f32(
 
     let frame = FRAME.fetch_add(1, Ordering::Relaxed);
     // Meter the AGC'd signal so quiet PC/USB mics animate like loud laptop mics.
-    let bars = compute_bars(&gained, BAR_COUNT, frame);
-    let _ = app.emit("audio-level", bars);
+    let now_ms = voice_clock_ms();
+    let last_emit = LAST_LEVEL_EMIT_MS.load(Ordering::Relaxed);
+    if now_ms.saturating_sub(last_emit) >= LEVEL_EMIT_MIN_MS
+        && LAST_LEVEL_EMIT_MS
+            .compare_exchange(last_emit, now_ms, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+    {
+        let bars = compute_bars(&gained, BAR_COUNT, frame);
+        let _ = app.emit("audio-level", bars);
+    }
 
     let resampled = if (ratio - 1.0).abs() < 0.001 {
         gained

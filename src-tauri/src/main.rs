@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod audio;
+mod autocorrect;
 mod context;
 mod enhancer;
 mod hotkey;
@@ -59,22 +60,51 @@ fn logs_dir() -> std::path::PathBuf {
 }
 
 fn ensure_logs_dir() {
-    let _ = std::fs::create_dir_all(logs_dir());
+    let dir = logs_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    // Plain guide so anyone opening the folder knows which file to read first.
+    let guide = dir.join("README.txt");
+    if !guide.exists() {
+        let _ = std::fs::write(
+            guide,
+            "MaxSpeech logs — start here\r\n\
+             \r\n\
+             session.log   = plain English timeline (start, quit, crash, close)\r\n\
+             maxspeech.log = detailed technical log\r\n\
+             crash.log     = panics / fatal errors only\r\n\
+             diagnose.txt  = snapshot from --diagnose\r\n\
+             \r\n\
+             If the app freezes or closes oddly, send session.log + the last\r\n\
+             lines of maxspeech.log.\r\n",
+        );
+    }
 }
 
-fn append_crash_log(text: &str) {
+fn append_log_file(name: &str, text: &str) {
     ensure_logs_dir();
-    let path = logs_dir().join("crash.log");
-    let stamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
-    let line = format!("\n===== {stamp} =====\n{text}\n");
+    let path = logs_dir().join(name);
     let _ = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&path)
         .and_then(|mut f| {
             use std::io::Write;
-            f.write_all(line.as_bytes())
+            f.write_all(text.as_bytes())
         });
+}
+
+/// Plain-English lifecycle line. Easy to skim after a crash or close.
+fn append_session_log(event: &str) {
+    let stamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+    append_log_file("session.log", &format!("[{stamp}] {event}\n"));
+    log::info!("SESSION: {event}");
+}
+
+fn append_crash_log(text: &str) {
+    let stamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+    let line = format!("\n===== {stamp} =====\n{text}\n");
+    append_log_file("crash.log", &line);
+    append_session_log(&format!("CRASH: {}", text.lines().next().unwrap_or("unknown")));
 }
 
 fn install_panic_hook() {
@@ -295,7 +325,54 @@ async fn set_setting(app: tauri::AppHandle, key: String, value: String) -> Resul
         value
     };
 
-    store.set_setting(&key, &value).map_err(|e| e.to_string())
+    store.set_setting(&key, &value).map_err(|e| e.to_string())?;
+    if key == "autocorrect_enabled" {
+        let on = value == "true";
+        let handle = app.clone();
+        tauri::async_runtime::spawn_blocking(move || autocorrect::set_enabled(&handle, on));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn get_autocorrect_status() -> Result<autocorrect::Status, String> {
+    Ok(autocorrect::status())
+}
+
+#[tauri::command]
+fn autocorrect_accept(id: u64) {
+    autocorrect::accept(id);
+}
+
+#[tauri::command]
+fn autocorrect_dismiss(id: u64, ignore: bool) {
+    autocorrect::dismiss(id, ignore);
+}
+
+#[tauri::command]
+async fn get_autocorrect_excluded(app: tauri::AppHandle) -> Result<Vec<String>, String> {
+    let mut apps: Vec<String> = autocorrect::excluded_apps(&app.state::<Store>()).into_iter().collect();
+    apps.sort();
+    Ok(apps)
+}
+
+#[tauri::command]
+async fn get_autocorrect_ignore(app: tauri::AppHandle) -> Result<Vec<String>, String> {
+    app.state::<Store>().get_autocorrect_ignore().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn add_autocorrect_ignore(app: tauri::AppHandle, word: String) -> Result<(), String> {
+    let word = word.trim();
+    if word.is_empty() {
+        return Err("Enter a word.".into());
+    }
+    app.state::<Store>().add_autocorrect_ignore(word).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn delete_autocorrect_ignore(app: tauri::AppHandle, word: String) -> Result<(), String> {
+    app.state::<Store>().delete_autocorrect_ignore(&word).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -378,10 +455,15 @@ async fn get_history(
     limit: Option<i64>,
     offset: Option<i64>,
 ) -> Result<Vec<store::HistoryEntry>, String> {
-    let store = app.state::<Store>();
-    store
-        .get_history(&search, limit.unwrap_or(10), offset.unwrap_or(0))
-        .map_err(|e| e.to_string())
+    let limit = limit.unwrap_or(10);
+    let offset = offset.unwrap_or(0);
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Store>()
+            .get_history(&search, limit, offset)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -424,7 +506,11 @@ async fn clear_session(app: tauri::AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 async fn get_stats(app: tauri::AppHandle) -> Result<store::Stats, String> {
-    app.state::<Store>().get_stats().map_err(|e| e.to_string())
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Store>().get_stats().map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -924,15 +1010,23 @@ async fn remake_core(
             .as_ref()
             .map(|a| context::friendly_app_name(&a.exe))
             .unwrap_or_default();
-        let system = pipeline::tone::cleanup_system_prompt(&pipeline::tone::CleanupContext {
+        let cleanup_level = pipeline::tone::cleanup_level(&store);
+        let system = pipeline::tone::cleanup_system_prompt_chat(&pipeline::tone::CleanupContext {
             tone: &tone_name,
+            level: &cleanup_level,
             app_name: &app_name,
             window_title: &title,
             dictionary: &dict_terms,
             multilingual,
         });
         let input = format!("<t>{}</t>", expanded.trim());
-        match pipeline::agent_llm::rewrite(&system, &input, || false).await {
+        match pipeline::openai_llm::polish(
+            &system,
+            &input,
+            pipeline::tone::cleanup_timeout(&expanded),
+        )
+        .await
+        {
             Ok(reply) => {
                 let reply = reply.replace("<t>", "").replace("</t>", "").trim().to_string();
                 if pipeline::tone::looks_like_edit(&expanded, &reply) {
@@ -947,13 +1041,15 @@ async fn remake_core(
         corrected
     };
 
+    output = pipeline::tone::scrub_profanity(&output);
+
     let trailing = store
         .get_setting("trailing_space")
         .ok()
         .flatten()
         .map(|v| v != "false")
         .unwrap_or(true);
-    if trailing && !output.ends_with(' ') {
+    if trailing && !output.is_empty() && !output.ends_with(' ') {
         output.push(' ');
     }
 
@@ -997,7 +1093,7 @@ async fn update_history_text(
         .get_history_by_id(id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Dictation not found".to_string())?;
-    let cleaned = text.trim().to_string();
+    let cleaned = pipeline::tone::scrub_profanity(text.trim());
     store
         .update_history_text(id, &cleaned)
         .map_err(|e| e.to_string())?;
@@ -1033,6 +1129,11 @@ fn ensure_default_autostart(app: &tauri::AppHandle) {
 
 fn main() {
     install_panic_hook();
+    ensure_logs_dir();
+    append_session_log(&format!(
+        "Process starting (pid={})",
+        std::process::id()
+    ));
     ensure_logs_dir();
     // Must run before WebView2 / single-instance — the helper is a renamed
     // copy of this exe and must not open the tray app.
@@ -1178,10 +1279,28 @@ fn main() {
             enhancer::enhancer_stop,
             enhancer::enhancer_close,
             enhancer::enhancer_replace,
+            get_autocorrect_status,
+            autocorrect_accept,
+            autocorrect_dismiss,
+            get_autocorrect_excluded,
+            get_autocorrect_ignore,
+            add_autocorrect_ignore,
+            delete_autocorrect_ignore,
         ])
         .setup(|app| {
             let handle = app.handle().clone();
             pipeline::vocab::purge_learned_junk(&handle.state::<Store>());
+            let autocorrect_on = handle
+                .state::<Store>()
+                .get_setting("autocorrect_enabled")
+                .ok()
+                .flatten()
+                .as_deref()
+                == Some("true");
+            if autocorrect_on {
+                let h = handle.clone();
+                tauri::async_runtime::spawn_blocking(move || autocorrect::set_enabled(&h, true));
+            }
             log::info!(
                 "MaxSpeech starting; data_dir={} webview2={:?}",
                 store::data_dir(),
@@ -1224,6 +1343,7 @@ fn main() {
                             }
                         }
                         "quit" => {
+                            append_session_log("Quit chosen from tray menu");
                             app.exit(0);
                         }
                         _ => {}
@@ -1309,6 +1429,7 @@ fn main() {
                 ensure_overlay_window(&warm_ui);
             });
 
+            append_session_log("App ready (hotkeys + tray + overlay warming)");
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -1320,16 +1441,21 @@ fn main() {
                             api.prevent_close();
                             let _ = window.show();
                             let _ = window.set_focus();
+                            append_session_log("Onboarding close blocked (not finished yet)");
                             return;
                         }
                         api.prevent_close();
                         let _ = window.hide();
+                        append_session_log("Onboarding window hidden (app stays in tray)");
                     }
                     "settings" => {
                         api.prevent_close();
                         let _ = window.hide();
+                        append_session_log("Main window hidden (app stays in tray)");
                     }
-                    _ => {}
+                    label => {
+                        append_session_log(&format!("Window '{label}' close requested"));
+                    }
                 }
             }
         })
@@ -1349,12 +1475,24 @@ fn main() {
         }
     };
 
-    app.run(|_app, event| {
-        if let tauri::RunEvent::ExitRequested { api, code, .. } = event {
+    append_session_log(&format!(
+        "App running — logs at {}",
+        logs_dir().display()
+    ));
+
+    app.run(|_app, event| match event {
+        tauri::RunEvent::ExitRequested { api, code, .. } => {
             if code.is_none() {
+                append_session_log("Exit requested without code — staying in tray");
                 api.prevent_exit();
+            } else {
+                append_session_log(&format!("Exit requested (code={code:?})"));
             }
         }
+        tauri::RunEvent::Exit => {
+            append_session_log("App exited cleanly");
+        }
+        _ => {}
     });
 }
 

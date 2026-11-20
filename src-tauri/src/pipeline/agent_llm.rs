@@ -1,12 +1,8 @@
-//! Text rewriting through Deepgram's Voice Agent "think" step.
+//! Legacy Deepgram Voice Agent text rewrite.
 //!
-//! MaxSpeech only ships a Deepgram key. Deepgram hosts managed LLMs (OpenAI,
-//! Anthropic, ...) behind the Voice Agent socket, so we open a session and inject
-//! the text as a user message. The agent normally releases its reply one spoken
-//! sentence at a time (seconds of pacing), so the model is told to hand the result
-//! to a client-side function instead: the whole text arrives in one
-//! FunctionCallRequest as soon as the LLM finishes (~0.6 s). No audio is ever sent
-//! (only silence to keep the session alive); the agent's TTS audio is ignored.
+//! Dictation polish, enhancer, rewrite, and remake now use `openai_llm` (GPT-6 Luna).
+//! This module remains for `split_chunks` and ignored live probes.
+#![allow(dead_code)]
 
 use futures_util::{SinkExt, StreamExt};
 use std::time::{Duration, Instant};
@@ -604,6 +600,7 @@ mod cleanup_live {
     async fn prewarmed_cleanup_latency() {
         let system = cleanup_system_prompt(&CleanupContext {
             tone: "casual",
+            level: "medium",
             app_name: "Discord",
             window_title: "minecraft-mods - Discord",
             dictionary: &["CurseForge".to_string()],

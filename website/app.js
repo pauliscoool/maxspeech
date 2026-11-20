@@ -133,8 +133,7 @@
     const platforms = document.getElementById("cta-platforms");
     if (!primary || !label || !icon) return;
 
-    const WIN =
-      "https://github.com/pauliscoool/maxspeech/releases/latest/download/MaxSpeech_x64-setup.exe";
+    const WIN = "/downloads/MaxSpeech_x64-setup.exe";
     const ICONS = {
       windows:
         '<svg class="os-svg os-win" viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M3 5.2 10.6 4.1v7.1H3zm8.4-1.3L21 2.5v8.7h-9.6zM3 12.8h7.6v7.1L3 18.8zm8.4 0H21v8.7l-9.6-1.4z"/></svg>',
@@ -204,7 +203,7 @@
       }
     } else {
       primary.href = WIN;
-      primary.removeAttribute("download");
+      primary.setAttribute("download", "MaxSpeech_x64-setup.exe");
       label.textContent = "Download for Windows";
       if (auto) auto.textContent = "Auto-select · Windows detected";
       if (meta) {

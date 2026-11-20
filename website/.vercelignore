@@ -1,1 +1,4 @@
+# Keep old fat installers off the CDN; ship only the stable + current versioned EXE.
 downloads/*.exe
+!downloads/MaxSpeech_x64-setup.exe
+!downloads/MaxSpeech_0.5.3-beta_x64-setup.exe

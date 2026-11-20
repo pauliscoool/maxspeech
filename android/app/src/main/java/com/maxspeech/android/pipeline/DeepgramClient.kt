@@ -128,7 +128,7 @@ class DeepgramClient {
     private fun buildUrl(language: String, keyterms: List<String>): String {
         val endpointing = if (language == "multi") 350 else 650
         val sb = StringBuilder(
-            "wss://api.deepgram.com/v1/listen?model=nova-3&language=$language&punctuate=true&interim_results=true&smart_format=true&numerals=true&endpointing=$endpointing&encoding=linear16&sample_rate=16000&channels=1",
+            "wss://api.deepgram.com/v1/listen?model=nova-3&language=$language&punctuate=true&interim_results=true&smart_format=true&numerals=false&endpointing=$endpointing&encoding=linear16&sample_rate=16000&channels=1",
         )
         for (term in keyterms.take(80)) {
             val t = term.trim()

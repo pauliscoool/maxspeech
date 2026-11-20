@@ -39,7 +39,8 @@
       <a
         class="btn-primary"
         id="dl"
-        href="https://github.com/pauliscoool/maxspeech/releases/latest/download/MaxSpeech_x64-setup.exe"
+        href="/downloads/MaxSpeech_x64-setup.exe"
+        download="MaxSpeech_x64-setup.exe"
       >
         Download MaxSpeech for Windows
       </a>
@@ -107,7 +108,9 @@
         </ul>
         <p class="get-alt">
           Direct link:
-          <a href="https://github.com/pauliscoool/maxspeech/releases/latest/download/MaxSpeech_x64-setup.exe">GitHub Releases installer</a>
+          <a href="/downloads/MaxSpeech_x64-setup.exe">MaxSpeech_x64-setup.exe</a>
+          · fallback
+          <a href="https://github.com/pauliscoool/maxspeech/releases/latest/download/MaxSpeech_x64-setup.exe">GitHub Releases</a>
         </p>
       </div>
 
@@ -119,6 +122,7 @@
 
     <script>
       (function () {
+        var LOCAL = "/downloads/MaxSpeech_x64-setup.exe";
         var GH =
           "https://github.com/pauliscoool/maxspeech/releases/latest/download/MaxSpeech_x64-setup.exe";
         var btn = document.getElementById("dl");
@@ -127,15 +131,22 @@
         function winUrl(j) {
           var u =
             (j && (j.download || j.url || (j.platforms && j.platforms.windows))) ||
-            GH;
-          if (/maxspeech\.vercel\.app\/downloads\/.*\.exe/i.test(String(u))) return GH;
-          if (/^\/downloads\/.*\.exe/i.test(String(u))) return GH;
-          return u;
+            LOCAL;
+          u = String(u);
+          // Prefer the Vercel-hosted installer so the site always matches latest.json.
+          if (/maxspeech\.vercel\.app\/downloads\/.*\.exe/i.test(u)) return u;
+          if (/^\/downloads\/.*\.exe/i.test(u)) return u;
+          if (/^https?:\/\//i.test(u)) return u;
+          return LOCAL;
         }
 
         function applyVersion(ver, href) {
           btn.href = href;
-          btn.removeAttribute("download");
+          if (/^\/downloads\//i.test(href) || /maxspeech\.vercel\.app\/downloads\//i.test(href)) {
+            btn.setAttribute("download", "MaxSpeech_x64-setup.exe");
+          } else {
+            btn.removeAttribute("download");
+          }
           if (verEl) {
             verEl.hidden = false;
             verEl.textContent = "Version " + ver;
@@ -148,7 +159,7 @@
 
         function loadLatest() {
           try {
-            var cached = sessionStorage.getItem("ms-latest-v2");
+            var cached = sessionStorage.getItem("ms-latest-v3");
             if (cached) {
               var parsed = JSON.parse(cached);
               if (parsed && parsed.version) return Promise.resolve(parsed);
@@ -160,7 +171,7 @@
             })
             .then(function (j) {
               try {
-                sessionStorage.setItem("ms-latest-v2", JSON.stringify(j));
+                sessionStorage.setItem("ms-latest-v3", JSON.stringify(j));
               } catch (e) {}
               return j;
             });
@@ -169,7 +180,8 @@
         loadLatest()
           .then(function (j) {
             var ver = String((j && j.version) || "").trim();
-            if (!/^\d+\.\d+\.\d+$/.test(ver)) throw new Error("bad version");
+            // Allow 0.5.1-beta style versions (previous regex rejected betas → GitHub fallback).
+            if (!/^\d+\.\d+\.\d+(-[A-Za-z0-9.]+)?$/.test(ver)) throw new Error("bad version");
             var href = winUrl(j);
             applyVersion(ver, href);
             setTimeout(function () {
@@ -177,10 +189,9 @@
             }, 300);
           })
           .catch(function () {
-            btn.href = GH;
-            btn.removeAttribute("download");
+            applyVersion("latest", LOCAL);
             setTimeout(function () {
-              kick(GH);
+              kick(LOCAL);
             }, 300);
           });
       })();

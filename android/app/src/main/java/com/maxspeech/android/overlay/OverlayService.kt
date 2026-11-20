@@ -206,8 +206,8 @@ class OverlayService : LifecycleService(), SavedStateRegistryOwner, ViewModelSto
                     val ui by MaxSpeechApp.instance.dictation.ui.collectAsState()
                     val focus by TextInjector.inputFocus.collectAsState()
                     val dictating = ui.phase != DictationPhase.Idle && ui.phase != DictationPhase.Error
-                    val overOtherApp = focus.editable && focus.packageName != null &&
-                        focus.packageName != packageName
+                    val overOtherApp = focus.packageName != null && focus.packageName != packageName &&
+                        (focus.editable || focus.imeTop > 0)
                     val fromOverlay = dictating && MaxSpeechApp.instance.dictation.pasteIntoFocusedApp
                     val visible = overOtherApp || fromOverlay || ui.phase == DictationPhase.Error
                     MaxSpeechTheme(
@@ -249,7 +249,13 @@ class OverlayService : LifecycleService(), SavedStateRegistryOwner, ViewModelSto
                 }
             }
             composeView = compose
-            val frame = FrameLayout(this).apply { addView(compose) }
+            // Compose resolves owners from the window's root view, which is this frame.
+            val frame = FrameLayout(this).apply {
+                setViewTreeLifecycleOwner(this@OverlayService)
+                setViewTreeSavedStateRegistryOwner(this@OverlayService)
+                setViewTreeViewModelStoreOwner(this@OverlayService)
+                addView(compose)
+            }
             wm.addView(frame, params)
             host = frame
             startPlacing()

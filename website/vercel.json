@@ -1,17 +1,5 @@
 {
   "cleanUrls": true,
-  "redirects": [
-    {
-      "source": "/downloads/MaxSpeech_x64-setup.exe",
-      "destination": "https://github.com/pauliscoool/maxspeech/releases/latest/download/MaxSpeech_x64-setup.exe",
-      "permanent": false
-    },
-    {
-      "source": "/downloads/MaxSpeech_:version(\\d+\\.\\d+\\.\\d+)_x64-setup.exe",
-      "destination": "https://github.com/pauliscoool/maxspeech/releases/latest/download/MaxSpeech_x64-setup.exe",
-      "permanent": false
-    }
-  ],
   "headers": [
     {
       "source": "/(.*)",

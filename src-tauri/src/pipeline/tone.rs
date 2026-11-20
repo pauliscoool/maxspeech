@@ -1,10 +1,10 @@
 use crate::context::ForegroundApp;
-use crate::pipeline::agent_llm;
+use crate::pipeline::{agent_llm, openai_llm};
 use crate::store::Store;
 use futures_util::StreamExt;
 use std::time::Duration;
 
-pub use super::faithful::{has_non_latin_script, local_cleanup};
+pub use super::faithful::{has_non_latin_script, local_cleanup, scrub_profanity};
 
 pub fn get_tone_for_app(app: &ForegroundApp, store: &Store) -> Option<String> {
     let profiles = store.get_app_profiles().unwrap_or_default();
@@ -53,8 +53,28 @@ fn tone_line(tone: &str) -> &'static str {
     }
 }
 
+/// Medium is the base prompt; light and high nudge it either way.
+fn level_line(level: &str) -> Option<&'static str> {
+    match level {
+        "light" => Some("light. Only fix misheard words, punctuation, capitals, ums/uhs and spoken corrections. Do not reword, reorder, merge sentences or turn speech into lists unless the speaker said \"list\" or \"bullet points\"."),
+        "high" => Some("high. Also smooth awkward spoken phrasing into clean written sentences and fix grammar, while keeping every idea, fact and the speaker's tone. Still never add new content."),
+        _ => None,
+    }
+}
+
+/// Settings value for the cleanup strength; anything unknown is medium.
+pub fn cleanup_level(store: &crate::store::Store) -> String {
+    match store.get_setting("cleanup_level").ok().flatten().as_deref() {
+        Some("light") => "light".into(),
+        Some("high") => "high".into(),
+        _ => "medium".into(),
+    }
+}
+
 pub struct CleanupContext<'a> {
     pub tone: &'a str,
+    /// "light" | "medium" | "high" (Settings → AI enhance strength).
+    pub level: &'a str,
     pub app_name: &'a str,
     pub window_title: &'a str,
     pub dictionary: &'a [String],
@@ -64,6 +84,10 @@ pub struct CleanupContext<'a> {
 /// System prompt for the dictation cleanup agent: fixes misheard words, fillers, casing and lists.
 pub fn cleanup_system_prompt(c: &CleanupContext) -> String {
     let mut out = format!("{CLEANUP_RULES}\n\nStyle: {}", tone_line(c.tone));
+    if let Some(line) = level_line(c.level) {
+        out.push_str("\nStrength: ");
+        out.push_str(line);
+    }
     if c.multilingual {
         out.push('\n');
         out.push_str(MULTILINGUAL_RULES);
@@ -90,6 +114,19 @@ pub fn cleanup_system_prompt(c: &CleanupContext) -> String {
         out.push_str(&format!("\nWindow title: {}", c.window_title.trim()));
     }
     out
+}
+
+/// Same cleanup rules for OpenAI Chat Completions (plain text out, no function call).
+pub fn cleanup_system_prompt_chat(c: &CleanupContext) -> String {
+    let base = cleanup_system_prompt(c);
+    let filtered: String = base
+        .lines()
+        .filter(|line| !line.contains("deliver_text"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "{filtered}\n\nOutput ONLY the final edited transcript. No quotes, labels, markdown fences, or commentary."
+    )
 }
 
 /// Release-to-text budget: a short dictation should never wait long on the LLM.
@@ -133,10 +170,10 @@ pub async fn rewrite_with_llm(
     instruction: &str,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let system = format!("Rewrite the text per the user's explicit instruction: {instruction}. Preserve names, numbers and language. Return only the rewritten text.");
-    agent_llm::rewrite_whole(&system, text, || false).await
+    openai_llm::rewrite_whole(&system, text, || false).await
 }
 
-/// Deepgram agent sessions edited at once; more risks rate limits.
+/// Parallel chunk edits for the enhancer widget (OpenAI rate-limit friendly).
 const AGENT_PARALLEL: usize = 8;
 
 fn formality_instruction(formality: &str) -> &'static str {
@@ -152,9 +189,9 @@ fn formality_instruction(formality: &str) -> &'static str {
     }
 }
 
-/// Grammarly-style rewrite of typed text via Deepgram's managed LLM. The agent
-/// replies whole, so the text is typed out to `on_text` (full text so far) to keep
-/// the widget live. `is_cancelled` ends it early and returns what was shown.
+/// Grammarly-style rewrite of typed text via GPT-6 Luna. Chunks return whole, then
+/// are typed out to `on_text` (full text so far) to keep the widget live.
+/// `is_cancelled` ends it early and returns what was shown.
 pub async fn stream_enhance_selection<F, C>(
     text: &str,
     formality: &str,
@@ -186,7 +223,7 @@ where
         .map(|body: String| {
             let sys = &system;
             let cancel = &is_cancelled;
-            async move { agent_llm::rewrite_chunk(sys, &body, cancel).await }
+            async move { openai_llm::rewrite_chunk(sys, &body, cancel).await }
         })
         .buffered(AGENT_PARALLEL);
     let mut idx = 0;
@@ -258,6 +295,7 @@ mod tests {
         let dict = vec!["CurseForge".to_string(), " ".to_string()];
         let prompt = cleanup_system_prompt(&CleanupContext {
             tone: "casual",
+            level: "medium",
             app_name: "Discord",
             window_title: "mods - Discord",
             dictionary: &dict,
@@ -269,6 +307,22 @@ mod tests {
         assert!(prompt.contains("App: Discord"));
         assert!(prompt.contains("mods - Discord"));
         assert!(!prompt.contains("multilingual / code-switched"));
+        assert!(!prompt.contains("Strength:"));
+    }
+
+    #[test]
+    fn chat_cleanup_prompt_drops_function_call_instruction() {
+        let prompt = cleanup_system_prompt_chat(&CleanupContext {
+            tone: "default",
+            level: "light",
+            app_name: "Notepad",
+            window_title: "",
+            dictionary: &[],
+            multilingual: false,
+        });
+        assert!(!prompt.contains("deliver_text"));
+        assert!(prompt.contains("Output ONLY the final edited transcript"));
+        assert!(prompt.contains("Strength: light"));
     }
 
     #[test]
@@ -441,7 +495,7 @@ fn prompt_style(target: &str) -> &'static str {
 
 /// Rewrites a dictated request into a prompt for a coding agent (`claude_code` or
 /// `cursor_codex`). The result is a different length than the input, so it goes
-/// through the agent as one whole passage and is typed out to `on_text` afterwards.
+/// through Luna as one whole passage and is typed out to `on_text` afterwards.
 pub async fn stream_enhance_prompt<F, C>(
     text: &str,
     target: &str,
@@ -453,8 +507,8 @@ where
     F: FnMut(&str),
     C: Fn() -> bool,
 {
-    // Single-line delivery: the agent releases a reply one sentence at a time, so tokens
-    // stand in for sentence-ending marks and line breaks (restored below).
+    // Keep the tokenized single-line format so punctuation restore stays shared
+    // with the previous Deepgram-agent path.
     let system = with_dictionary(
         format!(
             "OUTPUT FORMAT, most important rule: your reply is delivered as one single line, so \
@@ -467,7 +521,7 @@ where
         dict_terms,
     );
 
-    let raw = agent_llm::rewrite_whole(&system, text, &is_cancelled)
+    let raw = openai_llm::rewrite_whole(&system, text, &is_cancelled)
         .await?
         .replace("END_OF_TEXT", "");
     if is_cancelled() {

@@ -37,6 +37,10 @@ class InjectAccessibilityService : AccessibilityService() {
         instance = this
         _bound.value = true
         focusHandler.post(publishRunnable)
+        // Start the capsule from here so it survives app updates/process death without the UI open.
+        runCatching {
+            if (Settings.canDrawOverlays(this)) com.maxspeech.android.overlay.OverlayService.start(this)
+        }.onFailure { Log.w(TAG, "overlay start failed", it) }
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -71,18 +75,62 @@ class InjectAccessibilityService : AccessibilityService() {
     }
 
     fun insert(text: String): Boolean = runCatching {
-        val root = rootInActiveWindow ?: return false
-        val focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: findEditable(root)
-        if (focused == null) return false
+        val focused = focusedEditable() ?: return false
         lastPackage = focused.packageName?.toString() ?: lastPackage
+        val current = focused.text?.toString().orEmpty()
+        val start = focused.textSelectionStart.let { if (it < 0) current.length else it.coerceIn(0, current.length) }
+        val end = focused.textSelectionEnd.let { if (it < 0) start else it.coerceIn(0, current.length) }
+        val before = current.substring(0, minOf(start, end))
+        val after = current.substring(maxOf(start, end))
+        val combined = before + text + after
         val args = Bundle().apply {
-            putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+            putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, combined)
         }
-        if (focused.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)) return true
+        if (focused.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)) {
+            lastInsertBefore = before
+            lastInsertText = text
+            lastInsertAfter = after
+            return true
+        }
         val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         cm.setPrimaryClip(ClipData.newPlainText("MaxSpeech", text))
-        focused.performAction(AccessibilityNodeInfo.ACTION_PASTE)
+        val pasted = focused.performAction(AccessibilityNodeInfo.ACTION_PASTE)
+        if (pasted) {
+            lastInsertBefore = before
+            lastInsertText = text
+            lastInsertAfter = after
+        }
+        pasted
     }.getOrDefault(false)
+
+    /** Swap the last dictation insert in-place (paste-first → enhance replace). */
+    fun replaceLastInsert(newText: String): Boolean = runCatching {
+        val old = lastInsertText ?: return insert(newText)
+        val focused = focusedEditable() ?: return false
+        lastPackage = focused.packageName?.toString() ?: lastPackage
+        val current = focused.text?.toString().orEmpty()
+        val before = lastInsertBefore.orEmpty()
+        val after = lastInsertAfter.orEmpty()
+        val expected = before + old + after
+        val combined = when {
+            current == expected || current == old -> before + newText + after
+            current.endsWith(old + after) && after.isEmpty() ->
+                current.removeSuffix(old) + newText
+            current.contains(old) -> current.replaceFirst(old, newText)
+            else -> return insert(newText)
+        }
+        val args = Bundle().apply {
+            putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, combined)
+        }
+        if (!focused.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)) return false
+        lastInsertText = newText
+        true
+    }.getOrDefault(false)
+
+    private fun focusedEditable(): AccessibilityNodeInfo? {
+        val root = rootInActiveWindow ?: return null
+        return root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: findEditable(root)
+    }
 
     private fun publishFocusNow() {
         val imeTop = imeTopPx()
@@ -141,6 +189,9 @@ class InjectAccessibilityService : AccessibilityService() {
         private const val TAG = "MaxSpeechA11y"
         @Volatile var instance: InjectAccessibilityService? = null
         @Volatile var lastPackage: String? = null
+        @Volatile var lastInsertBefore: String? = null
+        @Volatile var lastInsertText: String? = null
+        @Volatile var lastInsertAfter: String? = null
         private val _focus = MutableStateFlow(InputFocus())
         val focus: StateFlow<InputFocus> = _focus.asStateFlow()
         private val _bound = MutableStateFlow(false)
@@ -186,6 +237,12 @@ object TextInjector {
             throw IllegalStateException("MaxSpeech could not paste or copy the transcript.")
         }
         return false
+    }
+
+    fun replaceLastInsert(context: Context, text: String): Boolean {
+        val svc = InjectAccessibilityService.instance
+        if (svc != null && svc.replaceLastInsert(text)) return true
+        return insert(context, text)
     }
 
     fun copyToClipboard(context: Context, text: String): Boolean = runCatching {

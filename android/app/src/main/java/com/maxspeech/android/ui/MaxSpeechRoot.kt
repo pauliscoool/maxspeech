@@ -23,7 +23,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.MenuBook
 import androidx.compose.material.icons.outlined.Mic
+import androidx.compose.material.icons.outlined.Notes
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.SnackbarHost
@@ -54,7 +56,9 @@ import com.maxspeech.android.ui.components.MsSpinner
 import com.maxspeech.android.ui.components.PageEnter
 import com.maxspeech.android.ui.components.SplashPane
 import com.maxspeech.android.ui.components.ThemeWipe
+import com.maxspeech.android.ui.dictionary.DictionaryScreen
 import com.maxspeech.android.ui.history.HistoryScreen
+import com.maxspeech.android.ui.snippets.SnippetsScreen
 import com.maxspeech.android.ui.home.HomeScreen
 import com.maxspeech.android.ui.onboarding.OnboardingScreen
 import com.maxspeech.android.ui.settings.SettingsScreen
@@ -65,7 +69,7 @@ import com.maxspeech.android.ui.theme.MaxSpeechTheme
 import com.maxspeech.android.ui.theme.Turquoise
 import android.provider.Settings as AndroidSettings
 
-enum class Tab { Home, History, Style, Settings }
+enum class Tab { Home, History, Dictionary, Snippets, Style, Settings }
 
 @Composable
 fun MaxSpeechRoot(vm: AppViewModel) {
@@ -97,10 +101,9 @@ fun MaxSpeechRoot(vm: AppViewModel) {
             }
         }
 
-        // Floating paste is OFF by default. Only start when the user enables it in Settings
-        // and both overlay + Accessibility are granted — never during first-run setup.
-        LaunchedEffect(state.settings.overlayEnabled, overlayOk, a11yOk, state.settings.onboarded) {
-            val want = state.settings.overlayEnabled && overlayOk && a11yOk && state.settings.onboarded
+        // Keyboard capsule sits above the IME. On unless the user turns it off.
+        LaunchedEffect(state.settings.overlayEnabled, overlayOk, a11yOk) {
+            val want = state.settings.overlayEnabled && overlayOk && a11yOk
             if (want) {
                 // Keep the service foreground for reliability without requesting permission
                 // for its notification. Android 13+ still exposes the service in Task Manager.
@@ -116,7 +119,7 @@ fun MaxSpeechRoot(vm: AppViewModel) {
             state.dictation.error?.let { snack.showSnackbar(it) }
         }
 
-        val signedIn = state.user != null && state.user?.local != true
+        val signedIn = state.user != null
         Box(Modifier.fillMaxSize().background(LocalMsColors.current.bg)) {
             when {
                 !state.ready -> {
@@ -137,6 +140,7 @@ fun MaxSpeechRoot(vm: AppViewModel) {
                         info = state.authInfo,
                         authed = signedIn,
                         onSignIn = { e, p -> vm.signIn(e, p) },
+                        onContinueLocal = { vm.continueLocal() },
                         onSignUp = { e, p, u -> vm.signUp(e, p, u) },
                         onForgot = { e -> vm.resetPassword(e) },
                         onClearFlash = { vm.clearAuthFlash() },
@@ -205,9 +209,21 @@ fun MaxSpeechRoot(vm: AppViewModel) {
                                     onOpenHistory = { tab = Tab.History },
                                     onOpenSettings = { tab = Tab.Settings },
                                     onOpenStyle = { tab = Tab.Style },
+                                    onOpenDictionary = { tab = Tab.Dictionary },
+                                    onOpenSnippets = { tab = Tab.Snippets },
                                     onCopy = vm::copied,
                                 )
                                 Tab.History -> HistoryScreen(state.history, vm::deleteHistory)
+                                Tab.Dictionary -> DictionaryScreen(
+                                    words = state.dictionary,
+                                    onAdd = vm::addWord,
+                                    onDelete = vm::deleteWord,
+                                )
+                                Tab.Snippets -> SnippetsScreen(
+                                    snippets = state.snippets,
+                                    onAdd = vm::addSnippet,
+                                    onDelete = vm::deleteSnippet,
+                                )
                                 Tab.Style -> StyleScreen(
                                     selected = state.settings.toneOverride,
                                     onSelect = vm::setChip,

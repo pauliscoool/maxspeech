@@ -2226,3 +2226,42 @@ html[data-window="enhancer"] #root {
     transform: none;
   }
 }
+
+/* Typing-autocorrect suggestion chip: small, solid, never steals focus. */
+html[data-window="autocorrect-chip"],
+html[data-window="autocorrect-chip"] body,
+html[data-window="autocorrect-chip"] #root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: #18181b !important;
+}
+.ac-chip {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 100%;
+  padding: 0 6px;
+  font: 500 13px/1 system-ui, "Segoe UI", sans-serif;
+  color: #f4f4f5;
+  user-select: none;
+}
+.ac-chip button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  border-radius: 8px;
+  padding: 6px 8px;
+}
+.ac-chip button:hover { background: rgba(34, 211, 238, 0.14); }
+.ac-chip-main { min-width: 0; flex: 1; color: #22d3ee; }
+.ac-chip-from { color: #a1a1aa; text-decoration: line-through; max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ac-chip-arrow { color: #71717a; }
+.ac-chip-to { color: #f4f4f5; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ac-chip-link { color: #a1a1aa; font-size: 12px; }
+.ac-chip-x { color: #71717a; padding: 6px; }

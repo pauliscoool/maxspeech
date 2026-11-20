@@ -283,11 +283,55 @@ class DictationController(
                 sessionTone,
                 sessionLanguage.startsWith("en") && !multilingual,
             )
+            if (local.isBlank()) {
+                reportFailure(token, "No usable text came back from transcription. Please try again.", streamFailure, raw)
+                return
+            }
+            val isFormattingCommand = sessionLanguage.startsWith("en") && FaithfulDictation.formattingCommand(raw) != null
+            fun withTrail(text: String): String =
+                if (snap.trailingSpace && !isFormattingCommand && text.isNotBlank()) "$text " else text
+
+            // Paste local cleanup immediately — do not wait on the LLM or storage.
             var out = local
-            if (local.isNotBlank() && snap.aiEnhance && snap.llmKey.isNotBlank() && !multilingual &&
+            var injectionText = withTrail(local)
+            val confirm = streamFailure != null || (confirmOnly && (snap.overlayConfirm || !paste))
+            confirmToken = token
+            confirmInjectionText = injectionText
+            _ui.value = _ui.value.copy(
+                phase = if (confirm) DictationPhase.Confirm else DictationPhase.Idle,
+                finalText = out,
+                originalText = raw,
+                liveText = out,
+                error = streamFailure?.let {
+                    "Transcription connection dropped. Review the recovered words before pasting."
+                },
+            )
+            Log.i(
+                "MaxSpeech",
+                "Dictation ready release_to_ready_ms=${SystemClock.elapsedRealtime() - releasedAt} " +
+                    "processing_ms=${SystemClock.elapsedRealtime() - processingStarted}",
+            )
+
+            var pastedQuick = false
+            if (!confirm && paste && session.claimPaste(token)) {
+                val inserted = TextInjector.insert(context, injectionText)
+                if (!inserted) {
+                    reportFailure(
+                        token,
+                        "Couldn't paste directly. The transcript was copied to the clipboard; paste it manually.",
+                        null,
+                        out,
+                    )
+                    return
+                }
+                pastedQuick = true
+            }
+
+            val wantEnhance = local.isNotBlank() && snap.aiEnhance &&
+                EnhanceClient.looksLikeChatKey(snap.llmKey) && !multilingual &&
                 durationSecs >= EnhanceClient.quickSkipSecs(snap.enhanceSpeed)
-            ) {
-                val remaining = (420 - (SystemClock.elapsedRealtime() - processingStarted)).coerceAtLeast(0)
+            if (wantEnhance && session.isCurrent(token)) {
+                val remaining = EnhanceClient.timeoutMs(snap.enhanceSpeed)
                 val candidate = withTimeoutOrNull(remaining) {
                     enhance.enhance(
                         local,
@@ -299,20 +343,30 @@ class DictationController(
                         remaining,
                     )
                 }
-                if (candidate == null) Log.w("MaxSpeech", "Dictation enhance fallback reason=deadline")
-                out = candidate ?: local
+                if (candidate == null) {
+                    Log.w("MaxSpeech", "Dictation enhance fallback reason=deadline")
+                } else if (candidate.isNotBlank() && candidate != local && session.isCurrent(token)) {
+                    out = candidate
+                    injectionText = withTrail(candidate)
+                    confirmInjectionText = injectionText
+                    _ui.value = _ui.value.copy(finalText = out, liveText = out)
+                    if (pastedQuick) {
+                        // Replace the quick paste in place (do not append / wipe the field).
+                        TextInjector.replaceLastInsert(context, injectionText)
+                    }
+                }
             }
+
             if (!session.isCurrent(token)) return
-            val enhanced = out != raw
-            if (out.isBlank()) {
-                reportFailure(token, "No usable text came back from transcription. Please try again.", streamFailure, raw)
-                return
-            }
-            val isFormattingCommand = sessionLanguage.startsWith("en") && FaithfulDictation.formattingCommand(raw) != null
-            val injectionText = if (snap.trailingSpace && !isFormattingCommand) "$out " else out
             val historyFailure = try {
                 withContext(Dispatchers.IO) {
-                    db.historyDao().insert(HistoryEntity(text = out, appName = friendlyApp(target), enhanced = enhanced))
+                    db.historyDao().insert(
+                        HistoryEntity(
+                            text = out,
+                            appName = friendlyApp(target),
+                            enhanced = out != raw,
+                        ),
+                    )
                     db.usageDao().insert(UsageEntity(wordCount = PlanCalculator.wordCount(out)))
                 }
                 null
@@ -323,39 +377,13 @@ class DictationController(
                 "Dictation completed, but MaxSpeech couldn't save all session data."
             }
             if (!session.isCurrent(token)) return
-            val confirm = streamFailure != null || (confirmOnly && (snap.overlayConfirm || !paste))
-            confirmToken = token
-            confirmInjectionText = injectionText
-            val status = listOfNotNull(
-                historyFailure,
-                streamFailure?.let { "Transcription connection dropped. Review the recovered words before pasting." },
-            ).joinToString(" ").ifBlank { null }
-            _ui.value = _ui.value.copy(
-                phase = if (confirm) DictationPhase.Confirm else DictationPhase.Idle,
-                finalText = out,
-                originalText = raw,
-                liveText = out,
-                error = status,
-            )
-            Log.i(
-                "MaxSpeech",
-                "Dictation ready release_to_ready_ms=${SystemClock.elapsedRealtime() - releasedAt} " +
-                    "processing_ms=${SystemClock.elapsedRealtime() - processingStarted}",
-            )
-            if (!confirm && paste && session.claimPaste(token)) {
-                val inserted = TextInjector.insert(context, injectionText)
-                if (!inserted) {
-                    reportFailure(
-                        token,
-                        "Couldn't paste directly. The transcript was copied to the clipboard; paste it manually.",
-                        null,
-                        out,
-                    )
-                } else if (historyFailure != null) {
-                    reportFailure(token, historyFailure, null, out)
-                } else {
-                    delay(400)
-                    if (session.isCurrent(token)) _ui.value = DictationUi()
+            if (historyFailure != null && _ui.value.phase != DictationPhase.Error) {
+                _ui.value = _ui.value.copy(error = listOfNotNull(_ui.value.error, historyFailure).joinToString(" "))
+            }
+            if (pastedQuick && historyFailure == null && session.isCurrent(token)) {
+                delay(400)
+                if (session.isCurrent(token) && _ui.value.phase == DictationPhase.Idle) {
+                    _ui.value = DictationUi()
                 }
             }
         } catch (e: CancellationException) {

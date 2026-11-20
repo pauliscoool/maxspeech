@@ -1,6 +1,7 @@
 pub mod agent_llm;
 pub mod commands;
 pub mod faithful;
+pub mod openai_llm;
 pub mod recovery;
 pub mod tone;
 pub mod vocab;
@@ -254,12 +255,12 @@ fn spawn_mic_start(
     }
 }
 
-/// Open the cleanup agent now, with this session's app/tone/dictionary as context.
-fn prewarm_agent(
+/// Build the OpenAI cleanup system prompt for this session (no network yet).
+fn prepare_cleanup_prompt(
     app: &tauri::AppHandle,
     dictionary: &[String],
     multilingual: bool,
-) -> Option<agent_llm::AgentSession> {
+) -> Option<String> {
     let store = app.try_state::<Store>()?;
     let enabled = store
         .get_setting("ai_enhance")
@@ -268,6 +269,10 @@ fn prewarm_agent(
         .map(|v| v != "false")
         .unwrap_or(true);
     if !enabled {
+        return None;
+    }
+    if !crate::secrets::has_llm_api_key() {
+        log::warn!("AI enhance on but no LLM API key — polish will be skipped");
         return None;
     }
     let fg = app.state::<PipelineState>().session_fg.lock().unwrap().clone();
@@ -280,14 +285,14 @@ fn prewarm_agent(
         .and_then(|a| tone::get_tone_for_app(a, &store))
         .unwrap_or_else(|| "default".to_string());
     let title = fg.as_ref().map(|a| a.title.clone()).unwrap_or_default();
-    let system = tone::cleanup_system_prompt(&tone::CleanupContext {
+    Some(tone::cleanup_system_prompt_chat(&tone::CleanupContext {
         tone: &tone_name,
+        level: &tone::cleanup_level(&store),
         app_name: &app_name,
         window_title: &title,
         dictionary,
         multilingual,
-    });
-    Some(agent_llm::prewarm(system))
+    }))
 }
 
 pub fn start_dictation(app: &tauri::AppHandle) {
@@ -433,7 +438,7 @@ pub fn start_dictation(app: &tauri::AppHandle) {
     log::info!("STT language={language} multilingual={multilingual} selected={languages:?}");
     let language_for_pipeline = language.clone();
 
-    let agent = prewarm_agent(app, &keywords, language_for_pipeline == "multi");
+    let cleanup_prompt = prepare_cleanup_prompt(app, &keywords, language_for_pipeline == "multi");
 
     // Empty api_key → stream_audio tries cached / user / app fallback keys.
     let config = DeepgramConfig {
@@ -552,7 +557,7 @@ pub fn start_dictation(app: &tauri::AppHandle) {
     let session_pcm_task = session_pcm.clone();
     let app_handle = app.clone();
     tauri::async_runtime::spawn(async move {
-        let mut agent_session = agent;
+        let mut cleanup_system = cleanup_prompt;
         let mut final_text = String::new();
         let mut last_interim = String::new();
         while let Some(chunk) = transcript_rx.recv().await {
@@ -599,9 +604,7 @@ pub fn start_dictation(app: &tauri::AppHandle) {
             let _ = store.record_duration(duration_secs);
         }
 
-        // Don't flash "Enhancing…" until we know we'll actually call the LLM.
-        // Paste happens after enhance — showing Enhancing while only doing local
-        // cleanup/paste is confusing (text already looks "done" to the user).
+        // Paste uses local cleanup first; AI enhance may replace in place afterward.
 
         let fg = {
             let state = app_handle.state::<PipelineState>();
@@ -614,6 +617,14 @@ pub fn start_dictation(app: &tauri::AppHandle) {
             .unwrap_or_else(|| "Unknown".to_string());
 
         let mut text = text;
+        // Newer dictation already owns the mic — drop agent + skip expensive recovery.
+        if !paste_still_current(&app_handle, paste_token) {
+            log::info!(
+                "Aborting post-stream work for stale paste={paste_token} (newer dictation started)"
+            );
+            drop(cleanup_system.take());
+            return;
+        }
         let stream_incomplete = !stream_complete.load(std::sync::atomic::Ordering::SeqCst);
         if text.is_empty() || stream_incomplete {
             let pcm: Vec<i16> = session_pcm_task
@@ -625,6 +636,14 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                 clear_session_pcm_if_current(&app_handle, paste_token);
                 hide_overlay_if_current(&app_handle, paste_token);
                 emit_state_if_current(&app_handle, paste_token, "idle");
+                return;
+            }
+
+            if !paste_still_current(&app_handle, paste_token) {
+                log::info!(
+                    "Skipping batch retry for stale paste={paste_token}"
+                );
+                drop(cleanup_system.take());
                 return;
             }
 
@@ -734,7 +753,11 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                         };
                         match produced {
                             Ok(rewritten) => {
-                                let rewritten = format!("{}{}", rewritten.trim_end(), trailing);
+                                let rewritten = format!(
+                                    "{}{}",
+                                    tone::scrub_profanity(rewritten.trim_end()),
+                                    trailing
+                                );
                                 if !epoch_alive() {
                                     log::info!(
                                         "Skipping rewrite inject for stale paste={paste_token}"
@@ -782,6 +805,7 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                     }
                 }
                 commands::CommandResult::InsertText(t) => {
+                    let t = tone::scrub_profanity(&t);
                     match inject::inject_text_if(&t, epoch_alive) {
                         Ok(ins) => {
                             let mut last = pipeline_state.last_insertion.lock().unwrap();
@@ -808,7 +832,7 @@ pub fn start_dictation(app: &tauri::AppHandle) {
             }
         } else {
             let store = app_handle.state::<Store>();
-            let expanded = vocab::expand_macros(&text, &store);
+            let expanded = faithful::fix_slang(&vocab::expand_macros(&text, &store));
 
             // Multilingual / non-Latin: skip English-only local heuristics that
             // can chop or mangle code-switched transcripts (e.g. Russian→English).
@@ -824,42 +848,10 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                 language_for_pipeline.starts_with("en") && !multilingual_session,
             );
             if corrected.is_empty() {
+                drop(cleanup_system.take());
                 emit_state_if_current(&app_handle, paste_token, "idle");
                 return;
             }
-
-            // The agent session was opened when recording started, so only the LLM itself is
-            // left to wait for. Anything it can't deliver in time falls back to local cleanup.
-            let words = expanded.split_whitespace().count();
-            let mut final_output = match agent_session.take() {
-                Some(agent) if words >= AI_MIN_WORDS => {
-                    emit_state_if_current(&app_handle, paste_token, "processing");
-                    let started = Instant::now();
-                    let input = format!("<t>{}</t>", expanded.trim());
-                    match agent.run(&input, tone::cleanup_timeout(&expanded)).await {
-                        Ok(reply) => {
-                            let reply = reply.replace("<t>", "").replace("</t>", "").trim().to_string();
-                            if tone::looks_like_edit(&expanded, &reply) {
-                                log::info!(
-                                    "AI cleanup ok ({} → {} chars, {} ms)",
-                                    expanded.len(),
-                                    reply.len(),
-                                    started.elapsed().as_millis()
-                                );
-                                reply
-                            } else {
-                                log::warn!("AI cleanup reply off-size, using local cleanup");
-                                corrected
-                            }
-                        }
-                        Err(e) => {
-                            log::warn!("AI cleanup failed, using local cleanup: {e}");
-                            corrected
-                        }
-                    }
-                }
-                _ => corrected,
-            };
 
             let trailing = store
                 .get_setting("trailing_space")
@@ -867,91 +859,120 @@ pub fn start_dictation(app: &tauri::AppHandle) {
                 .flatten()
                 .map(|v| v != "false")
                 .unwrap_or(true);
-            if trailing && !final_output.ends_with(' ') {
-                final_output.push(' ');
+            let mut quick = tone::scrub_profanity(&corrected);
+            if trailing && !quick.is_empty() && !quick.ends_with(' ') {
+                quick.push(' ');
             }
 
             let pipeline_state = app_handle.state::<PipelineState>();
-            // If the user started a newer recording while we were enhancing, skip
-            // paste so two injections don't land as "half, then half".
-            let still_current = {
-                let epoch = pipeline_state.paste_epoch.lock().unwrap();
-                *epoch == paste_token
-            };
-            // ✗ pressed while the thinking wave was running (toggle mode).
             if *pipeline_state.discarded_paste.lock().unwrap() == paste_token {
                 log::info!("Skipping paste for cancelled session paste={paste_token}");
+                drop(cleanup_system.take());
                 return;
             }
-            if !still_current {
+            if !paste_still_current(&app_handle, paste_token) {
                 log::info!(
                     "Skipping paste for stale session paste={paste_token} (newer dictation started)"
                 );
-                // Do not emit idle — that would hide the newer session's listening pill.
+                drop(cleanup_system.take());
                 return;
             }
 
+            // Paste local cleanup immediately — do not wait on the LLM or storage.
             let epoch_alive = || paste_still_current(&app_handle, paste_token);
-            match inject::inject_text_if(&final_output, epoch_alive) {
+            let pasted_ok = match inject::inject_text_if(&quick, epoch_alive) {
                 Ok(ins) => {
                     if let Some(released) = *pipeline_state.released_at.lock().unwrap() {
-                        log::info!("Dictation release_to_paste_ms={}", released.elapsed().as_millis());
+                        log::info!(
+                            "Dictation release_to_paste_ms={}",
+                            released.elapsed().as_millis()
+                        );
                     }
                     *pipeline_state.last_insertion.lock().unwrap() = Some(ins);
+                    true
                 }
                 Err(e) if e.to_string().contains("cancelled") => {
                     log::info!(
                         "Paste cancelled mid-inject for stale session paste={paste_token}"
                     );
-                    // Newer session owns the field — don't emit idle / toast.
+                    drop(cleanup_system.take());
                     return;
                 }
                 Err(e) => {
                     log::warn!("Paste failed: {e}");
-                    // Never lose the text: leave it on the clipboard and say so.
-                    let _ = inject::copy_text(&final_output);
+                    let _ = inject::copy_text(&quick);
                     let _ = app_handle.emit(
                         "dictation-error",
                         "Couldn't paste — text copied, press Ctrl+V",
                     );
                     emit_state_if_current(&app_handle, paste_token, "error");
+                    false
                 }
-            }
+            };
 
-            // Paste is done — park instantly. No "Fixed grammar" toast: it only delays the pill.
+            // User-facing path is done: park the pill before enhance / history.
             hide_overlay_if_current(&app_handle, paste_token);
             emit_state_if_current(&app_handle, paste_token, "idle");
 
-            let history_text = final_output.trim_end().to_string();
-            if let Ok(hid) = store.add_history(&history_text, &app_name) {
-                // Persist local Remake WAV (newest 10 only).
-                let pcm = session_pcm_task
-                    .lock()
-                    .map(|g| g.clone())
-                    .unwrap_or_default();
-                clear_session_pcm_if_current(&app_handle, paste_token);
-                if !pcm.is_empty() {
-                    let path = recording::wav_path_for_history_id(hid);
-                    if let Err(e) = recording::write_wav_i16(&path, &pcm, WAV_SAMPLE_RATE) {
-                        log::warn!("Failed to save Remake recording: {e}");
-                    } else {
-                        let path_str = path.to_string_lossy().into_owned();
-                        let _ = store.set_history_recording_path(hid, Some(&path_str));
-                        if let Err(e) = store.prune_recordings(MAX_REMAKE_RECORDINGS) {
-                            log::warn!("prune_recordings: {e}");
+            let words = expanded.split_whitespace().count();
+            let mut history_text = quick.trim_end().to_string();
+
+            // Enhance for history only — never undo+repaste.
+            // In-place replace erased/rewrote the field and re-pasted into empty
+            // agent chat boxes after the user had already hit Enter/send.
+            if pasted_ok {
+                if let Some(system) = cleanup_system.take().filter(|_| words >= AI_MIN_WORDS) {
+                    let started = Instant::now();
+                    let input = format!("<t>{}</t>", expanded.trim());
+                    match openai_llm::polish(
+                        &system,
+                        &input,
+                        tone::cleanup_timeout(&expanded),
+                    )
+                    .await
+                    {
+                        Ok(reply) => {
+                            let reply = tone::scrub_profanity(
+                                &reply.replace("<t>", "").replace("</t>", "").trim(),
+                            );
+                            if tone::looks_like_edit(&expanded, &reply) {
+                                let mut enhanced = reply;
+                                if trailing
+                                    && !enhanced.is_empty()
+                                    && !enhanced.ends_with(' ')
+                                {
+                                    enhanced.push(' ');
+                                }
+                                if enhanced != quick {
+                                    history_text = enhanced.trim_end().to_string();
+                                    log::info!(
+                                        "AI cleanup kept quick paste; history updated ({} → {} chars, {} ms)",
+                                        quick.len(),
+                                        enhanced.len(),
+                                        started.elapsed().as_millis()
+                                    );
+                                }
+                            } else {
+                                log::warn!("AI cleanup reply off-size, keeping quick paste");
+                            }
+                        }
+                        Err(e) => {
+                            log::warn!("AI cleanup failed, keeping quick paste: {e}");
                         }
                     }
                 }
-
-                let _ = app_handle.emit(
-                    "history-added",
-                    serde_json::json!({
-                        "id": hid,
-                        "text": history_text,
-                        "app_name": app_name,
-                    }),
-                );
+            } else {
+                drop(cleanup_system.take());
             }
+
+            // Local history + Remake WAV + UI/cloud event — never on the paste path.
+            spawn_persist_history(
+                app_handle.clone(),
+                paste_token,
+                history_text,
+                app_name,
+                session_pcm_task.clone(),
+            );
             return;
         }
 
@@ -966,6 +987,49 @@ const LAST_INSERTION_TTL: std::time::Duration = std::time::Duration::from_secs(3
 
 fn insertion_is_fresh(ins: &LastInsertion) -> bool {
     ins.pasted_at.elapsed() < LAST_INSERTION_TTL
+}
+
+/// SQLite history + Remake WAV + `history-added` (Supabase listens in the UI).
+/// Always spawned after paste so storage never delays inject.
+fn spawn_persist_history(
+    app: tauri::AppHandle,
+    paste_token: u64,
+    history_text: String,
+    app_name: String,
+    session_pcm: Arc<Mutex<Vec<i16>>>,
+) {
+    tauri::async_runtime::spawn(async move {
+        let Some(store) = app.try_state::<Store>() else {
+            clear_session_pcm_if_current(&app, paste_token);
+            return;
+        };
+        let Ok(hid) = store.add_history(&history_text, &app_name) else {
+            clear_session_pcm_if_current(&app, paste_token);
+            return;
+        };
+        let pcm = session_pcm.lock().map(|g| g.clone()).unwrap_or_default();
+        clear_session_pcm_if_current(&app, paste_token);
+        if !pcm.is_empty() {
+            let path = recording::wav_path_for_history_id(hid);
+            if let Err(e) = recording::write_wav_i16(&path, &pcm, WAV_SAMPLE_RATE) {
+                log::warn!("Failed to save Remake recording: {e}");
+            } else {
+                let path_str = path.to_string_lossy().into_owned();
+                let _ = store.set_history_recording_path(hid, Some(&path_str));
+                if let Err(e) = store.prune_recordings(MAX_REMAKE_RECORDINGS) {
+                    log::warn!("prune_recordings: {e}");
+                }
+            }
+        }
+        let _ = app.emit(
+            "history-added",
+            serde_json::json!({
+                "id": hid,
+                "text": history_text,
+                "app_name": app_name,
+            }),
+        );
+    });
 }
 
 /// True while this paste token is still the newest recording start (even if ✗ discarded it).
@@ -1104,8 +1168,7 @@ pub fn stop_dictation(app: &tauri::AppHandle) {
         emit_state_if_current(app, paste_token, "idle");
         return;
     }
-    // Switch to the thinking wave while Deepgram drains + enhance runs — frozen
-    // mic bars after release look stuck when transcription takes a moment.
+    // Thinking wave only while Deepgram drains — paste runs before enhance.
     emit_state_if_current(app, paste_token, "processing");
 }
 

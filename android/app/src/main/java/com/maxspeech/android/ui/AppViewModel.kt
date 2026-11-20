@@ -115,8 +115,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             runCatching {
                 val started = System.currentTimeMillis()
                 ms.settings.snapshot()
-                val user = ms.auth.current()
-                if (user?.local == true) ms.auth.signOut()
+                // Fresh install / wiped data: don't trap on cloud sign-in.
+                // Mirror desktop "Continue locally" so dictation works offline immediately.
+                if (ms.auth.current() == null) {
+                    ms.auth.continueLocal()
+                }
                 val wait = max(0L, 520L - (System.currentTimeMillis() - started))
                 kotlinx.coroutines.delay(wait)
             }
@@ -195,6 +198,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun toggleProfile(p: AppProfileEntity) = viewModelScope.launch {
         ms.db.profileDao().update(p.copy(enabled = !p.enabled))
+    }
+
+    fun continueLocal() = viewModelScope.launch {
+        authBusy.value = true
+        authError.value = null
+        authInfo.value = null
+        runCatching { ms.auth.continueLocal() }
+            .onFailure { authError.value = it.message ?: "Could not continue locally" }
+        authBusy.value = false
     }
 
     fun signIn(email: String, password: String) = viewModelScope.launch {

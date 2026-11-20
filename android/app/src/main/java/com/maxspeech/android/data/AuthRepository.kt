@@ -120,6 +120,20 @@ class AuthRepository(
         execute(authRequest("auth/v1/recover", body, redirect = true))
     }
 
+    suspend fun continueLocal(): AuthUser {
+        val user = AuthUser(
+            id = "local",
+            email = "local@maxspeech",
+            username = "Local",
+            planTier = "pro",
+            local = true,
+            accessToken = null,
+        )
+        persist(user)
+        settings.setLocalMode(true)
+        return user
+    }
+
     suspend fun signOut() {
         context.authStore.edit { it.clear() }
         settings.setLocalMode(false)

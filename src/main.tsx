@@ -22,6 +22,10 @@ if (label === "overlay") {
   void import("./windows/Overlay").then(({ default: Overlay }) => {
     ReactDOM.createRoot(root).render(<Overlay />);
   });
+} else if (label === "autocorrect-chip") {
+  void import("./windows/AutocorrectChip").then(({ default: Chip }) => {
+    ReactDOM.createRoot(root).render(<Chip />);
+  });
 } else if (label === "enhancer") {
   void import("./windows/Enhancer").then(({ default: Enhancer }) => {
     ReactDOM.createRoot(root).render(<Enhancer />);

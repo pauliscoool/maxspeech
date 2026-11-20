@@ -78,7 +78,7 @@ class FaithfulDictationTest {
     fun httpErrorsMalformedAndTruncatedResponsesFallBack() = runBlocking {
         MockWebServer().use { server ->
             server.start()
-            val client = EnhanceClient(fixture("prompt.txt"), endpoint = server.url("/").toString())
+            val client = EnhanceClient(fixture("prompt.txt"), endpointOverride = server.url("/").toString())
             val responses = listOf(
                 MockResponse().setResponseCode(500),
                 MockResponse().setBody("not json"),
@@ -96,13 +96,13 @@ class FaithfulDictationTest {
     fun allSpeedsUseSameModelAndRejectParaphrases() = runBlocking {
         MockWebServer().use { server ->
             server.start()
-            val client = EnhanceClient(fixture("prompt.txt"), endpoint = server.url("/").toString())
+            val client = EnhanceClient(fixture("prompt.txt"), endpointOverride = server.url("/").toString())
             for (speed in EnhanceSpeed.entries) {
                 server.enqueue(MockResponse().setBody("""{"choices":[{"finish_reason":"stop","message":{"content":"Please get me a beverage."}}]}"""))
-                assertEquals("I need coffee.", client.enhance("I need coffee.", "default", "test-key", speed, false, listOf("MaxSpeech"), 1000))
+                assertEquals("I need coffee.", client.enhance("I need coffee.", "default", "sk-test-key", speed, false, listOf("MaxSpeech"), 1000))
                 val body = JSONObject(server.takeRequest(2, TimeUnit.SECONDS)!!.body.readUtf8())
-                assertEquals("gpt-4o-mini", body.getString("model"))
-                assertEquals(0.0, body.getDouble("temperature"), 0.0)
+                assertEquals("gpt-6-luna", body.getString("model"))
+                assertEquals("none", body.getString("reasoning_effort"))
             }
         }
     }
@@ -116,7 +116,7 @@ class FaithfulDictationTest {
             val http = OkHttpClient.Builder().eventListener(object : EventListener() {
                 override fun canceled(call: Call) { cancelled.set(true) }
             }).build()
-            val client = EnhanceClient(fixture("prompt.txt"), http, server.url("/").toString())
+            val client = EnhanceClient(fixture("prompt.txt"), http, server.url("/").toString()) // endpointOverride
             val start = System.nanoTime()
             try {
                 withTimeout(150) {

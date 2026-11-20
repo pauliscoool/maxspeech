@@ -1,0 +1,12 @@
+# Deploy only the static site. Project Root Directory is `website/`, but the
+# CLI still uploads from the repo root — without this, Vercel tries to ship the
+# whole monorepo (target/, node_modules/, old installers) and either hits the
+# 15k-file cap or uploads multi-GB archives.
+*
+!website
+!website/**
+
+# Keep historical fat installers off the CDN; ship only stable + current.
+website/downloads/*.exe
+!website/downloads/MaxSpeech_x64-setup.exe
+!website/downloads/MaxSpeech_0.5.1-beta_x64-setup.exe

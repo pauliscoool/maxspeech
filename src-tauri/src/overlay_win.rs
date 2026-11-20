@@ -71,7 +71,7 @@ pub fn set_click_through(w: &WebviewWindow, on: bool) {
         use windows::Win32::UI::WindowsAndMessaging::{
             GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, SWP_FRAMECHANGED,
             SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_EX_LAYERED, WS_EX_NOACTIVATE,
-            WS_EX_TRANSPARENT,
+            WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
         };
         let Ok(hwnd) = w.hwnd() else { return };
         if !on {
@@ -81,7 +81,9 @@ pub fn set_click_through(w: &WebviewWindow, on: bool) {
             let cur = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
             // NOACTIVATE: clicking the pill's ✗ / ✓ must not steal focus from the
             // app being dictated into.
-            let mut next = (cur & !WS_EX_LAYERED.0) | WS_EX_NOACTIVATE.0;
+            // TOOLWINDOW: the idle pill stays "shown" off-screen, so without it the
+            // overlay is listed in screen-share pickers and Alt+Tab.
+            let mut next = (cur & !WS_EX_LAYERED.0) | WS_EX_NOACTIVATE.0 | WS_EX_TOOLWINDOW.0;
             if on {
                 next |= WS_EX_TRANSPARENT.0;
             } else {

@@ -66,6 +66,7 @@ export default function SettingsPage({
   const [openOnLaunch, setOpenOnLaunch] = useState(false);
   const [showLive, setShowLive] = useState(true);
   const [aiEnhance, setAiEnhance] = useState(true);
+  const [cleanupLevel, setCleanupLevel] = useState<"light" | "medium" | "high">("medium");
   const [soundCue, setSoundCue] = useState(false);
   const [soundCueVolume, setSoundCueVolume] = useState<"soft" | "medium" | "loud">(
     "medium",
@@ -197,6 +198,8 @@ export default function SettingsPage({
       setShowLive(live !== "false");
       const enhance = await invoke<string>("get_setting", { key: "ai_enhance" });
       setAiEnhance(enhance !== "false");
+      const level = await invoke<string>("get_setting", { key: "cleanup_level" });
+      setCleanupLevel(level === "light" || level === "high" ? level : "medium");
       const sound = await invoke<string>("get_setting", { key: "sound_cue" });
       setSoundCue(sound === "true");
       const soundVol = await invoke<string>("get_setting", { key: "sound_cue_volume" });
@@ -691,12 +694,41 @@ export default function SettingsPage({
             <div className="settings-row-text">
               <div className="settings-row-title">AI enhance</div>
               <div className="settings-row-desc">
-                {aiEnhance
-                  ? "Fixes misheard words, filler, capitals and lists using the surrounding app."
-                  : "Keep your words; clean punctuation, hesitations, and clear corrections."}
+                {!aiEnhance
+                  ? "Keep your words; clean punctuation, hesitations, and clear corrections."
+                  : cleanupLevel === "light"
+                    ? "Light: fixes misheard words, ums and punctuation. Never rewords."
+                    : cleanupLevel === "high"
+                      ? "High: also smooths phrasing and grammar into clean writing."
+                      : "Fixes misheard words, filler, capitals and lists using the surrounding app."}
               </div>
             </div>
             <div className="flex items-center gap-2 shrink-0">
+              {aiEnhance ? (
+                <div className="sound-vol-seg" role="group" aria-label="AI enhance strength">
+                  {(
+                    [
+                      ["light", "Light"],
+                      ["medium", "Med"],
+                      ["high", "High"],
+                    ] as const
+                  ).map(([value, label]) => (
+                    <button
+                      key={value}
+                      type="button"
+                      className={`sound-vol-opt${cleanupLevel === value ? " is-active" : ""}`}
+                      onClick={() => {
+                        setCleanupLevel(value);
+                        void invoke("set_setting", { key: "cleanup_level", value }).then(() =>
+                          scheduleCloudSettingsPush(),
+                        );
+                      }}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
               <Toggle
                 checked={aiEnhance}
                 onChange={() => toggleBool("ai_enhance", aiEnhance, setAiEnhance)}

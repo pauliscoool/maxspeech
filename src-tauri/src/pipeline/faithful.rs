@@ -32,6 +32,21 @@ pub fn formatting_command(text: &str) -> Option<&'static str> {
     }
 }
 
+/// Slang Deepgram splits or mishears ("low key", "Loki"). Applied before cleanup so even
+/// dictations too short for the AI come out right.
+pub fn fix_slang(text: &str) -> String {
+    const FIXES: &[(&str, &str)] = &[
+        ("low key", "lowkey"),
+        ("low-key", "lowkey"),
+        ("loki", "lowkey"),
+        ("high key", "highkey"),
+        ("high-key", "highkey"),
+    ];
+    FIXES
+        .iter()
+        .fold(text.to_string(), |acc, (from, to)| replace_phrase(&acc, from, to))
+}
+
 pub fn replace_phrase(text: &str, from: &str, to: &str) -> String {
     if from.is_empty() {
         return text.to_string();
@@ -47,7 +62,20 @@ pub fn replace_phrase(text: &str, from: &str, to: &str) -> String {
             && (end == chars.len() || !chars[end].is_alphanumeric())
             && chars[i..end].iter().collect::<String>().to_lowercase() == from.to_lowercase()
         {
-            out.push_str(to);
+            // Keep a sentence-start capital ("Low key" -> "Lowkey"); never lowercase "GitHub".
+            let sentence_start = chars[..i]
+                .iter()
+                .rev()
+                .find(|c| !c.is_whitespace())
+                .map_or(true, |c| matches!(c, '.' | '!' | '?' | '\n'));
+            let mut rep = to.chars();
+            match rep.next() {
+                Some(c) if sentence_start && chars[i].is_uppercase() => {
+                    out.extend(c.to_uppercase());
+                    out.push_str(rep.as_str());
+                }
+                _ => out.push_str(to),
+            }
             i = end;
         } else {
             out.push(chars[i]);
@@ -55,6 +83,68 @@ pub fn replace_phrase(text: &str, from: &str, to: &str) -> String {
         }
     }
     out
+}
+
+/// Strong swears MaxSpeech never types. Longer forms first so `replace_phrase`
+/// matches "fucking" before "fuck".
+const PROFANITY_LEMMAS: &[&str] = &[
+    "motherfuckers",
+    "motherfucking",
+    "motherfucker",
+    "goddammit",
+    "goddamn",
+    "bullshit",
+    "dickheads",
+    "assholes",
+    "bastards",
+    "fuckers",
+    "fucking",
+    "fucked",
+    "fucker",
+    "bitches",
+    "dickhead",
+    "asshole",
+    "bastard",
+    "fucks",
+    "fuck",
+    "shitty",
+    "shits",
+    "shit",
+    "bitch",
+    "cunts",
+    "cunt",
+    "dammit",
+    "damn",
+    "pissed",
+    "piss",
+];
+
+fn normalize_scrubbed(text: &str) -> String {
+    let trailing_nl = text.ends_with('\n');
+    let mut out = String::new();
+    for (i, line) in text.lines().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        let collapsed = line.split_whitespace().collect::<Vec<_>>().join(" ");
+        out.push_str(&collapsed);
+    }
+    if trailing_nl {
+        out.push('\n');
+    }
+    out
+}
+
+/// Strip whole-word profanity before paste/history. Hard gate — ASR and the
+/// cleanup LLM can still hallucinate swears; this is what blocks them.
+pub fn scrub_profanity(text: &str) -> String {
+    let mut result = text.to_string();
+    let mut lemmas: Vec<&str> = PROFANITY_LEMMAS.to_vec();
+    lemmas.sort_by_key(|s| std::cmp::Reverse(s.chars().count()));
+    for word in lemmas {
+        result = replace_phrase(&result, word, "");
+    }
+    normalize_scrubbed(&result)
 }
 
 pub fn expand_explicit(text: &str, dictionary: &[String], snippets: &[(String, String)]) -> String {
@@ -491,5 +581,51 @@ pub fn guard_output(local: &str, candidate: &str) -> GuardDecision {
         text: local.to_string(),
         drift,
         reason,
+    }
+}
+
+#[cfg(test)]
+mod scrub_tests {
+    use super::scrub_profanity;
+
+    #[test]
+    fn flip_is_unchanged() {
+        assert_eq!(scrub_profanity("flip"), "flip");
+        assert_eq!(scrub_profanity("Please flip that."), "Please flip that.");
+    }
+
+    #[test]
+    fn strips_fuck_and_inflections() {
+        assert_eq!(scrub_profanity("fuck"), "");
+        assert_eq!(scrub_profanity("Fucking hell"), "hell");
+        assert_eq!(scrub_profanity("What the fuck was that"), "What the was that");
+        assert_eq!(scrub_profanity("I fucked up"), "I up");
+    }
+
+    #[test]
+    fn respects_word_boundaries() {
+        // "class" must not match "ass"; "scaffold" must not match "fuck" substrings.
+        assert_eq!(scrub_profanity("class scaffold"), "class scaffold");
+        assert_eq!(scrub_profanity("hello, FUCK!"), "hello, !");
+    }
+
+    #[test]
+    fn idempotent() {
+        let once = scrub_profanity("this fucking shit");
+        assert_eq!(scrub_profanity(&once), once);
+        assert_eq!(once, "this");
+    }
+}
+
+#[cfg(test)]
+mod slang_tests {
+    use super::fix_slang;
+
+    #[test]
+    fn joins_lowkey() {
+        assert_eq!(fix_slang("Low key fire."), "Lowkey fire.");
+        assert_eq!(fix_slang("I Loki want it, high-key need it"), "I lowkey want it, highkey need it");
+        assert_eq!(fix_slang("bro I loki forgot"), "bro I lowkey forgot");
+        assert_eq!(fix_slang("a lowkey day"), "a lowkey day");
     }
 }

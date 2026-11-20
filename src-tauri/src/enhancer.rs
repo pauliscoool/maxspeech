@@ -110,7 +110,7 @@ fn foreground_hwnd() -> isize {
 
 /// Top-left of the text caret in screen pixels, when the app exposes one.
 #[cfg(windows)]
-fn caret_anchor(hwnd: isize) -> Option<(i32, i32)> {
+pub(crate) fn caret_anchor(hwnd: isize) -> Option<(i32, i32)> {
     use windows::Win32::Foundation::{HWND, POINT};
     use windows::Win32::Graphics::Gdi::ClientToScreen;
     use windows::Win32::UI::WindowsAndMessaging::{
@@ -141,13 +141,13 @@ fn caret_anchor(hwnd: isize) -> Option<(i32, i32)> {
 }
 
 #[cfg(not(windows))]
-fn caret_anchor(_hwnd: isize) -> Option<(i32, i32)> {
+pub(crate) fn caret_anchor(_hwnd: isize) -> Option<(i32, i32)> {
     None
 }
 
 /// Never steal focus from the app being edited — its selection must survive.
 #[cfg(windows)]
-fn make_no_activate(w: &tauri::WebviewWindow) {
+pub(crate) fn make_no_activate(w: &tauri::WebviewWindow) {
     use windows::Win32::Graphics::Dwm::{
         DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
     };
@@ -173,7 +173,7 @@ fn make_no_activate(w: &tauri::WebviewWindow) {
 }
 
 #[cfg(not(windows))]
-fn make_no_activate(_w: &tauri::WebviewWindow) {}
+pub(crate) fn make_no_activate(_w: &tauri::WebviewWindow) {}
 
 /// Blur whatever is behind the widget; the CSS tint keeps it readable when
 /// the OS can't (older Windows just gets the tint).
@@ -423,6 +423,7 @@ pub async fn enhancer_replace(app: AppHandle) -> Result<(), String> {
         let _ = w.hide();
     }
     tokio::task::spawn_blocking(move || {
+        let text = tone::scrub_profanity(&text);
         inject::focus_window(target);
         inject::inject_text(&text)
             .map(|_| ())
