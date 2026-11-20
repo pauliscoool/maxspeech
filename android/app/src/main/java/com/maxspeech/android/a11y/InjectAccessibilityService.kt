@@ -1,5 +1,6 @@
 package com.maxspeech.android.a11y
 
+import com.maxspeech.android.pipeline.LocalCleanup
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.ClipData
@@ -131,8 +132,9 @@ class InjectAccessibilityService : AccessibilityService() {
      * Web / browser fields: clipboard paste first (SET_TEXT applies late or is ignored by rich
      * editors). Native fields: ACTION_SET_TEXT splice first, so the clipboard is untouched.
      */
-    fun insert(text: String): Boolean = runCatching {
+    fun insert(raw: String): Boolean = runCatching {
         val focused = findBestEditable() ?: return false
+        val text = fitToCaret(focused, raw)
         lastPackage = focused.packageName?.toString() ?: lastPackage
         insertedPackage = focused.packageName?.toString()
         val web = isWebField(focused)
@@ -160,7 +162,8 @@ class InjectAccessibilityService : AccessibilityService() {
         val pkg = focused.packageName?.toString()
         if (pkg == null || pkg != insertedPackage || focused.isPassword || isSensitiveApp(pkg)) return false
         val existing = realText(focused)
-        val needle = old.trim()
+        // fitAtCaret may have dropped the final period of a mid-sentence insert.
+        val needle = old.trim().let { n -> if (n.endsWith('.') && existing.lastIndexOf(n) < 0) n.dropLast(1) else n }
         if (needle.isEmpty()) return false
         val at = existing.lastIndexOf(needle)
         if (at < 0) return false
@@ -214,6 +217,13 @@ class InjectAccessibilityService : AccessibilityService() {
         return if (showingHint) "" else node.text?.toString().orEmpty()
     }
 
+    private fun fitToCaret(node: AccessibilityNodeInfo, text: String): String {
+        val existing = realText(node)
+        val caret = node.textSelectionStart.takeIf { it in 0..existing.length } ?: existing.length
+        val end = node.textSelectionEnd.takeIf { it in caret..existing.length } ?: caret
+        return LocalCleanup.fitAtCaret(existing.substring(0, caret), text, existing.substring(end))
+    }
+
     /** Splice [text] at the caret (or append) via ACTION_SET_TEXT. */
     private fun insertViaSetText(node: AccessibilityNodeInfo, text: String, trustResult: Boolean): Boolean {
         val existing = realText(node)
@@ -225,6 +235,15 @@ class InjectAccessibilityService : AccessibilityService() {
         val b = maxOf(start, end)
         val next = existing.substring(0, a) + text + existing.substring(b)
         if (!setText(node, next)) return false
+        // TextView jumps the caret to the end after SET_TEXT; put it right after the dictation.
+        val caret = a + text.length
+        if (caret < next.length) {
+            val sel = Bundle().apply {
+                putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, caret)
+                putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, caret)
+            }
+            node.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, sel)
+        }
         if (trustResult) return true
         runCatching { node.refresh() }
         val after = node.text?.toString() ?: return true

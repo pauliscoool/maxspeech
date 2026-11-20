@@ -459,6 +459,22 @@ object LocalCleanup {
         "or rather" to Kind.Generic,
     )
 
+    /**
+     * Fit dictation between the text before and after the caret: a space on each side
+     * where words would otherwise touch, and no sentence-ending period when the text after
+     * continues in lowercase ("went to the| store" + "big." -> "big").
+     */
+    fun fitAtCaret(before: String, text: String, after: String): String {
+        var t = text.trim()
+        if (t.isEmpty()) return text
+        val nextWord = after.trimStart().firstOrNull()
+        if (nextWord != null && nextWord.isLowerCase() && t.last() == '.' && !t.endsWith("..")) t = t.dropLast(1)
+        if (after.firstOrNull()?.isLetterOrDigit() == true) t = "$t "
+        val prev = before.lastOrNull()
+        if (prev != null && !prev.isWhitespace() && t.first() !in ",.!?;:)") t = " $t"
+        return t
+    }
+
     private val CHATTER_TAIL = Regex("""(?i)\b(?:oh,? no|oh|oops|sorry|no wait|wait no|wait)[\s,.!?;:]*$""")
 
     fun selfCorrectMarkers(text: String): String {

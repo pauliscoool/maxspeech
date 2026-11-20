@@ -12,6 +12,15 @@ import org.junit.Test
 class LocalCleanupTest {
 
     private fun has(out: String, s: String) = assertTrue(out, out.lowercase().contains(s))
+
+    @Test
+    fun fitAtCaretSpacesMidSentenceInserts() {
+        assertEquals(" big", LocalCleanup.fitAtCaret("went to the", "big.", " store"))
+        assertEquals(" big ", LocalCleanup.fitAtCaret("went to the", "big.", "store"))
+        assertEquals("Hello there. ", LocalCleanup.fitAtCaret("", "Hello there.", "Bye"))
+        assertEquals("ok.", LocalCleanup.fitAtCaret("Fine. ", " ok. ", ""))
+        assertEquals(", right", LocalCleanup.fitAtCaret("yes", ", right", ""))
+    }
     private fun lacks(out: String, s: String) = assertFalse(out, out.lowercase().contains(s))
 
     @Test fun tenTimesBecomesPercent() {
