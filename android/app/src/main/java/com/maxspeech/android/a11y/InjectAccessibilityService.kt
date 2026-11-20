@@ -89,6 +89,7 @@ class InjectAccessibilityService : AccessibilityService() {
         if (focused.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)) {
             lastInsertBefore = before
             lastInsertText = text
+            lastInsertPackage = focused.packageName?.toString()
             lastInsertAfter = after
             return true
         }
@@ -98,6 +99,7 @@ class InjectAccessibilityService : AccessibilityService() {
         if (pasted) {
             lastInsertBefore = before
             lastInsertText = text
+            lastInsertPackage = focused.packageName?.toString()
             lastInsertAfter = after
         }
         pasted
@@ -107,6 +109,8 @@ class InjectAccessibilityService : AccessibilityService() {
     fun replaceLastInsert(newText: String): Boolean = runCatching {
         val old = lastInsertText ?: return insert(newText)
         val focused = focusedEditable() ?: return false
+        // Never edit a different app or field than the one we pasted into.
+        if (focused.isPassword || focused.packageName?.toString() != lastInsertPackage) return false
         lastPackage = focused.packageName?.toString() ?: lastPackage
         val current = focused.text?.toString().orEmpty()
         val before = lastInsertBefore.orEmpty()
@@ -116,8 +120,7 @@ class InjectAccessibilityService : AccessibilityService() {
             current == expected || current == old -> before + newText + after
             current.endsWith(old + after) && after.isEmpty() ->
                 current.removeSuffix(old) + newText
-            current.contains(old) -> current.replaceFirst(old, newText)
-            else -> return insert(newText)
+            else -> return false
         }
         val args = Bundle().apply {
             putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, combined)
@@ -191,6 +194,7 @@ class InjectAccessibilityService : AccessibilityService() {
         @Volatile var lastPackage: String? = null
         @Volatile var lastInsertBefore: String? = null
         @Volatile var lastInsertText: String? = null
+        @Volatile var lastInsertPackage: String? = null
         @Volatile var lastInsertAfter: String? = null
         private val _focus = MutableStateFlow(InputFocus())
         val focus: StateFlow<InputFocus> = _focus.asStateFlow()

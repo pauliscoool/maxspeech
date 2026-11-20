@@ -365,6 +365,8 @@ struct Worker {
     epoch: u64,
     checked: bool,
     suspended: bool,
+    /// The field the safety check approved; fixes stop if focus moves off it.
+    field: Option<IUIAutomationElement>,
     last_fix: Option<LastFix>,
     session_ignore: HashSet<String>,
     user_words: HashSet<String>,
@@ -391,6 +393,7 @@ fn run_worker(app: AppHandle, rx: Receiver<Msg>) {
         epoch: EPOCH.load(Ordering::SeqCst),
         checked: false,
         suspended: false,
+        field: None,
         last_fix: None,
         session_ignore: HashSet::new(),
         user_words: HashSet::new(),
@@ -533,6 +536,7 @@ impl Worker {
         self.tracker.feed(Event::Reset);
         self.checked = false;
         self.suspended = false;
+        self.field = None;
         self.last_fix = None;
         self.sentence.clear();
         self.sentence_complete = false;
@@ -628,6 +632,11 @@ impl Worker {
     }
 
     fn on_boundary(&mut self, b: Boundary, hwnd: isize, rx: &Receiver<Msg>, pending: &mut VecDeque<Msg>) {
+        if !self.focus_unchanged() {
+            // Start over; the next typed character re-runs the full safety check.
+            self.hard_reset();
+            return;
+        }
         if let Some(engine) = ENGINE.get().cloned() {
             self.refresh_user_words();
             let fix = {
@@ -729,7 +738,7 @@ impl Worker {
         }
         let Some(live) = self.live.take() else { return };
         chip::hide(&self.app);
-        if foreground_hwnd() != live.hwnd || modifiers_held() {
+        if foreground_hwnd() != live.hwnd || modifiers_held() || !self.focus_unchanged() {
             return;
         }
         let backspaces = live.tail.chars().count() + 1 + live.typed_after.chars().count();
@@ -848,7 +857,20 @@ impl Worker {
             Ok(_) => return Err("password field"),
             Err(_) => return Err("couldn't tell if this is a password field"),
         }
-        Ok(field_is_empty(&element))
+        let empty = field_is_empty(&element);
+        self.field = Some(element);
+        Ok(empty)
+    }
+
+    /// Apps can move focus without a key or click we see (auto-advance to a password box),
+    /// so re-check before every fix: same approved field, still not a password field.
+    fn focus_unchanged(&self) -> bool {
+        let (Some(automation), Some(field)) = (&self.automation, &self.field) else { return false };
+        let Ok(current) = (unsafe { automation.GetFocusedElement() }) else { return false };
+        if !matches!(unsafe { current.CurrentIsPassword() }, Ok(b) if !b.as_bool()) {
+            return false;
+        }
+        unsafe { automation.CompareElements(field, &current) }.is_ok_and(|same| same.as_bool())
     }
 
     fn safe_to_correct(&mut self, hwnd: isize) -> bool {

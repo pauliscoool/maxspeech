@@ -1,16 +1,16 @@
 {
-    "url":  "https://maxspeech.vercel.app/downloads/MaxSpeech_x64-setup.exe",
-    "filename":  "MaxSpeech_0.5.5-beta_x64-setup.exe",
-    "size":  14729290,
-    "version":  "0.5.5-beta",
-    "notes":  "MaxSpeech 0.5.5-beta - Windows installer (downloads WebView2 only if missing)",
-    "github":  "https://github.com/pauliscoool/maxspeech/releases/latest",
-    "sha256":  "1dcd16bc3d139bf1bde440a255adee89f8533451fbbea2e43c15dd065a2e5e1a",
-    "platforms":  {
-                      "linux":  "https://maxspeech.vercel.app/downloads/MaxSpeech_0.1.1_amd64.AppImage",
-                      "macos":  "https://maxspeech.vercel.app/mac",
-                      "android":  "https://maxspeech.vercel.app/android",
-                      "windows":  "https://maxspeech.vercel.app/downloads/MaxSpeech_x64-setup.exe"
-                  },
-    "download":  "https://maxspeech.vercel.app/downloads/MaxSpeech_x64-setup.exe"
+  "filename": "MaxSpeech_0.5.6-beta_x64-setup.exe",
+  "url": "https://maxspeech.vercel.app/downloads/MaxSpeech_x64-setup.exe",
+  "notes": "MaxSpeech 0.5.6-beta - Windows installer (downloads WebView2 only if missing)",
+  "platforms": {
+    "windows": "https://maxspeech.vercel.app/downloads/MaxSpeech_x64-setup.exe",
+    "android": "https://maxspeech.vercel.app/android",
+    "macos": "https://maxspeech.vercel.app/mac",
+    "linux": "https://maxspeech.vercel.app/downloads/MaxSpeech_0.1.1_amd64.AppImage"
+  },
+  "github": "https://github.com/pauliscoool/maxspeech/releases/latest",
+  "size": 14724025,
+  "download": "https://maxspeech.vercel.app/downloads/MaxSpeech_x64-setup.exe",
+  "sha256": "1146e368e830c23d237d5a525201e1a3d7eecaa21bdcb9545ae11772a0280d47",
+  "version": "0.5.6-beta"
 }
