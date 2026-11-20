@@ -781,6 +781,10 @@ impl Worker {
             return false;
         }
         let Ok(_inject_guard) = crate::inject::INJECT_LOCK.try_lock() else { return false };
+        // Last check right before typing: focus can move while we were deciding.
+        if !self.focus_unchanged() {
+            return false;
+        }
 
         let before = format!("{}{}{}", b.leading, b.core, b.trailing);
         let fixed = format!("{}{}{}", b.leading, replacement, b.trailing);
@@ -799,7 +803,7 @@ impl Worker {
     /// The user pressed Backspace straight after a fix (the app already removed the space):
     /// put their original word back and stop correcting it this session.
     fn undo(&mut self, last: LastFix) {
-        if foreground_hwnd() != self.hwnd {
+        if foreground_hwnd() != self.hwnd || !self.focus_unchanged() {
             return;
         }
         let Ok(_inject_guard) = crate::inject::INJECT_LOCK.try_lock() else { return };
