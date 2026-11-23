@@ -1072,6 +1072,15 @@ fn emit_state_if_current(app: &tauri::AppHandle, paste_token: u64, state: &str) 
     }
 }
 
+/// "Quieter when PC volume is high" — on unless the user turned it off.
+pub fn follows_system_volume(store: &Store) -> bool {
+    store
+        .get_setting("sound_cue_follow_system")
+        .ok()
+        .flatten()
+        .map_or(true, |v| v != "false")
+}
+
 fn play_sound_cue(app: &tauri::AppHandle, kind: crate::sound::CueKind) {
     let Some(store) = app.try_state::<Store>() else {
         return;
@@ -1092,7 +1101,7 @@ fn play_sound_cue(app: &tauri::AppHandle, kind: crate::sound::CueKind) {
             .flatten()
             .as_deref(),
     );
-    crate::sound::play_cue(kind, vol);
+    crate::sound::play_cue(kind, vol, follows_system_volume(&store));
 }
 
 pub fn stop_dictation(app: &tauri::AppHandle) {

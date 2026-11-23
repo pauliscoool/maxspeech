@@ -11,6 +11,7 @@ export const SYNC_SETTING_KEYS = [
   "trailing_space",
   "sound_cue",
   "sound_cue_volume",
+  "sound_cue_follow_system",
   "ui_theme",
   "launch_at_startup",
   "open_window_on_launch",

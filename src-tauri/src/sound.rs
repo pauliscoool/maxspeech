@@ -16,25 +16,79 @@ pub enum CueKind {
     Stop,
 }
 
-/// Map settings volume label → linear gain.
+/// Map the saved volume (0-100, or the old soft/medium/loud labels) to linear gain.
 pub fn volume_from_setting(raw: Option<&str>) -> f32 {
-    match raw.unwrap_or("medium").trim().to_ascii_lowercase().as_str() {
+    let raw = raw.unwrap_or("medium").trim().to_ascii_lowercase();
+    if let Ok(n) = raw.parse::<f32>() {
+        // 100 = the old "loud" gain; the chime clips well before 1.0.
+        return (n.clamp(0.0, 100.0) / 100.0) * 0.72;
+    }
+    match raw.as_str() {
         "soft" | "low" | "quiet" => 0.22,
         "loud" | "high" => 0.72,
         _ => 0.45,
     }
 }
 
-pub fn play_cue(kind: CueKind, volume: f32) {
+/// The louder the PC is turned up, the quieter the chime: full gain up to 35 % system volume,
+/// then it falls off so the perceived level stays close to what it is at low volume.
+pub fn loudness_compensation(system_volume: f32) -> f32 {
+    let v = system_volume.clamp(0.0, 1.0);
+    if v <= 0.35 {
+        1.0
+    } else {
+        (0.35 / v).powf(1.4)
+    }
+}
+
+/// `follow_system`: scale by [loudness_compensation] of the current Windows master volume.
+pub fn play_cue(kind: CueKind, volume: f32, follow_system: bool) {
     let vol = volume.clamp(0.0, 1.0);
     if vol <= 0.001 {
         return;
     }
     thread::spawn(move || {
+        let vol = if follow_system {
+            system_volume().map_or(vol, |v| vol * loudness_compensation(v))
+        } else {
+            vol
+        };
         if let Err(e) = play_cue_blocking(kind, vol) {
             log::debug!("sound cue skipped: {e}");
         }
     });
+}
+
+/// Default output device master volume (0-1), 0 when muted.
+#[cfg(windows)]
+fn system_volume() -> Option<f32> {
+    use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
+    use windows::Win32::Media::Audio::{eConsole, eRender, IMMDeviceEnumerator, MMDeviceEnumerator};
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED,
+    };
+    unsafe {
+        let inited = CoInitializeEx(None, COINIT_MULTITHREADED).is_ok();
+        let read = || -> windows::core::Result<f32> {
+            let en: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
+            let dev = en.GetDefaultAudioEndpoint(eRender, eConsole)?;
+            let ep: IAudioEndpointVolume = dev.Activate(CLSCTX_ALL, None)?;
+            if ep.GetMute()?.as_bool() {
+                return Ok(0.0);
+            }
+            ep.GetMasterVolumeLevelScalar()
+        };
+        let out = read();
+        if inited {
+            CoUninitialize();
+        }
+        out.map_err(|e| log::debug!("system volume unavailable: {e}")).ok()
+    }
+}
+
+#[cfg(not(windows))]
+fn system_volume() -> Option<f32> {
+    None
 }
 
 fn play_cue_blocking(kind: CueKind, volume: f32) -> Result<(), String> {
@@ -240,4 +294,25 @@ fn synthesize(kind: CueKind, sample_rate: u32, volume: f32) -> Vec<f32> {
         out[i] *= g;
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn louder_pc_means_quieter_cue() {
+        assert_eq!(loudness_compensation(0.2), 1.0);
+        let half = loudness_compensation(0.5);
+        let full = loudness_compensation(1.0);
+        assert!(half < 1.0 && full < half && full > 0.15, "{half} {full}");
+    }
+
+    #[test]
+    fn volume_accepts_numbers_and_old_labels() {
+        assert!((volume_from_setting(Some("100")) - 0.72).abs() < 1e-6);
+        assert_eq!(volume_from_setting(Some("0")), 0.0);
+        assert_eq!(volume_from_setting(Some("soft")), 0.22);
+        assert_eq!(volume_from_setting(None), 0.45);
+    }
 }

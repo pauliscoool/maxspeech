@@ -68,9 +68,8 @@ export default function SettingsPage({
   const [aiEnhance, setAiEnhance] = useState(true);
   const [cleanupLevel, setCleanupLevel] = useState<"light" | "medium" | "high">("medium");
   const [soundCue, setSoundCue] = useState(false);
-  const [soundCueVolume, setSoundCueVolume] = useState<"soft" | "medium" | "loud">(
-    "medium",
-  );
+  const [soundCueVolume, setSoundCueVolume] = useState(60);
+  const [soundFollowSystem, setSoundFollowSystem] = useState(true);
   const [insertSpace, setInsertSpace] = useState(true);
   const [hotkey, setHotkey] = useState(defaultHotkey());
   const [hotkeyMode, setHotkeyMode] = useState<"hold" | "toggle">("hold");
@@ -203,10 +202,9 @@ export default function SettingsPage({
       const sound = await invoke<string>("get_setting", { key: "sound_cue" });
       setSoundCue(sound === "true");
       const soundVol = await invoke<string>("get_setting", { key: "sound_cue_volume" });
-      const volNorm = (soundVol || "medium").toLowerCase();
-      setSoundCueVolume(
-        volNorm === "soft" || volNorm === "loud" ? volNorm : "medium",
-      );
+      setSoundCueVolume(cueVolumePercent(soundVol));
+      const follow = await invoke<string>("get_setting", { key: "sound_cue_follow_system" });
+      setSoundFollowSystem(follow !== "false");
       const space = await invoke<string>("get_setting", { key: "trailing_space" });
       setInsertSpace(space !== "false");
       const theme = await invoke<string>("get_setting", { key: "ui_theme" });
@@ -358,6 +356,13 @@ export default function SettingsPage({
       await invoke("set_setting", { key: "launch_at_startup", value: "true" });
       scheduleCloudSettingsPush();
     }
+  }
+
+  function saveCueVolume(value: number) {
+    void invoke("set_setting", { key: "sound_cue_volume", value: String(value) }).then(() => {
+      scheduleCloudSettingsPush();
+      void invoke("preview_sound_cue", { volume: String(value) });
+    });
   }
 
   async function toggleBool(
@@ -751,35 +756,19 @@ export default function SettingsPage({
             </div>
             <div className="flex items-center gap-2 shrink-0">
               {soundCue ? (
-                <div className="sound-vol-seg" role="group" aria-label="Sound cue volume">
-                  {(
-                    [
-                      ["soft", "Soft"],
-                      ["medium", "Med"],
-                      ["loud", "Loud"],
-                    ] as const
-                  ).map(([value, label]) => (
-                    <button
-                      key={value}
-                      type="button"
-                      className={`sound-vol-opt${
-                        soundCueVolume === value ? " is-active" : ""
-                      }`}
-                      onClick={() => {
-                        setSoundCueVolume(value);
-                        void invoke("set_setting", {
-                          key: "sound_cue_volume",
-                          value,
-                        }).then(() => {
-                          scheduleCloudSettingsPush();
-                          void invoke("preview_sound_cue", { volume: value });
-                        });
-                      }}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
+                <input
+                  type="range"
+                  className="sound-vol-slider"
+                  min={0}
+                  max={100}
+                  step={5}
+                  value={soundCueVolume}
+                  aria-label="Sound cue volume"
+                  title={`${soundCueVolume}%`}
+                  onChange={(e) => setSoundCueVolume(Number(e.currentTarget.value))}
+                  onPointerUp={(e) => saveCueVolume(Number(e.currentTarget.value))}
+                  onKeyUp={(e) => saveCueVolume(Number(e.currentTarget.value))}
+                />
               ) : null}
               <Toggle
                 checked={soundCue}
@@ -793,7 +782,7 @@ export default function SettingsPage({
                     scheduleCloudSettingsPush();
                     if (next) {
                       void invoke("preview_sound_cue", {
-                        volume: soundCueVolume,
+                        volume: String(soundCueVolume),
                       });
                     }
                   });
@@ -802,6 +791,24 @@ export default function SettingsPage({
               />
             </div>
           </div>
+          {soundCue ? (
+            <SettingsToggle
+              title="Quieter when PC volume is high"
+              desc="The louder your PC is turned up, the softer the chime plays"
+              checked={soundFollowSystem}
+              onChange={() => {
+                const next = !soundFollowSystem;
+                setSoundFollowSystem(next);
+                void invoke("set_setting", {
+                  key: "sound_cue_follow_system",
+                  value: next ? "true" : "false",
+                }).then(() => {
+                  scheduleCloudSettingsPush();
+                  void invoke("preview_sound_cue", { volume: String(soundCueVolume) });
+                });
+              }}
+            />
+          ) : null}
           <SettingsToggle
             title="Multilingual"
             desc={
@@ -1053,6 +1060,16 @@ export default function SettingsPage({
       </section>
     </div>
   );
+}
+
+/** Saved value is 0-100; older builds saved soft/medium/loud. */
+function cueVolumePercent(raw: string | null | undefined): number {
+  const v = (raw || "").trim().toLowerCase();
+  const n = Number(v);
+  if (v && Number.isFinite(n)) return Math.min(100, Math.max(0, Math.round(n)));
+  if (v === "soft" || v === "low" || v === "quiet") return 30;
+  if (v === "loud" || v === "high") return 100;
+  return 60;
 }
 
 function SettingsToggle({

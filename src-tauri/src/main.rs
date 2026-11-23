@@ -772,7 +772,7 @@ async fn preview_sound_cue(app: tauri::AppHandle, volume: Option<String>) -> Res
             .flatten()
     });
     let vol = sound::volume_from_setting(label.as_deref());
-    sound::play_cue(sound::CueKind::Start, vol);
+    sound::play_cue(sound::CueKind::Start, vol, pipeline::follows_system_volume(&store));
     Ok(())
 }
 

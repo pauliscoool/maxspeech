@@ -4658,7 +4658,7 @@ dependencies = [
 
 [[package]]
 name = "maxspeech"
-version = "0.5.7-beta"
+version = "0.5.8-beta"
 dependencies = [
  "arboard",
  "base64 0.22.1",
