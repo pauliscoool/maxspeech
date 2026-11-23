@@ -216,14 +216,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun deleteHistory(id: Long) = viewModelScope.launch {
         ms.db.historyDao().delete(id)
+        ms.dictation.deleteAudio(id)
     }
 
-    /** Paste a past transcript into the focused field again. */
+    /** Re-run the saved recording through speech-to-text and cleanup; the entry updates in place. */
     fun retranscribe(id: Long) = viewModelScope.launch {
-        val row = ms.db.historyDao().latest(200).firstOrNull { it.id == id } ?: return@launch
-        if (row.text.isBlank() || row.failed) return@launch
-        TextInjector.insert(getApplication(), row.text.trim())
-        toast.value = "Pasted again"
+        toast.value = "Retranscribing…"
+        toast.value = ms.dictation.retranscribe(id).fold(
+            onSuccess = { "Retranscribed and copied" },
+            onFailure = { it.message ?: "Couldn't retranscribe" },
+        )
+        val shown = toast.value
+        kotlinx.coroutines.delay(2500)
+        if (toast.value == shown) toast.value = null
     }
 
     /** Retry a failed dictation session (starts a fresh listen). */

@@ -122,7 +122,7 @@ fun GlassScrim(modifier: Modifier = Modifier) {
     )
 }
 
-/** Bottom tab bar — solid pill, no liquid frost. */
+/** Bottom tab bar — light liquid glass: tinted see-through body, bright rim and top sheen. */
 @Composable
 fun FloatingGlassBar(
     modifier: Modifier = Modifier,
@@ -131,18 +131,24 @@ fun FloatingGlassBar(
     content: @Composable BoxScope.() -> Unit,
 ) {
     val c = LocalMsColors.current
-    val fill = if (c.bg.luminance() > 0.5f) {
-        Color.White
-    } else {
-        Color(0xFF1C1C1E)
-    }
-    val rim = if (c.bg.luminance() > 0.5f) {
-        Color.Black.copy(alpha = 0.08f)
-    } else {
-        Color.White.copy(alpha = 0.10f)
-    }
+    val light = c.bg.luminance() > 0.5f
+    // ~90 % tint keeps labels readable over scrolling content (Compose has no backdrop blur).
+    val fill = if (light) Color.White.copy(alpha = 0.9f) else Color(0xFF1C1C1E).copy(alpha = 0.9f)
+    val sheen = Brush.verticalGradient(
+        listOf(Color.White.copy(alpha = if (light) 0.55f else 0.09f), Color.Transparent),
+    )
+    val rim = Brush.verticalGradient(
+        listOf(
+            Color.White.copy(alpha = if (light) 0.95f else 0.24f),
+            (if (light) Color.Black else Color.White).copy(alpha = 0.05f),
+        ),
+    )
     Box(
-        modifier = modifier.plainSurface(shape, fill, rim, elevation = 16.dp),
+        modifier = modifier
+            .clip(shape)
+            .background(fill, shape)
+            .background(sheen, shape)
+            .border(1.dp, rim, shape),
         contentAlignment = contentAlignment,
         content = content,
     )

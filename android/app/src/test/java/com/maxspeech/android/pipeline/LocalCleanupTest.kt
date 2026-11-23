@@ -213,4 +213,14 @@ class LocalCleanupTest {
     @Test fun unanchoredCorrectionReplacesOnlyLastWord() {
         assertEquals("I'll be there at six", localSelfCorrect("I'll be there at five no wait six"))
     }
+
+    @Test fun tidyDictationDotsDropsPausesAndRejoinsFileNames() {
+        assertEquals(
+            "Anytime there's, like, a, like, anytime I ask",
+            LocalCleanup.tidyDictationDots("Anytime there's, like, a... Like, anytime I ask"),
+        )
+        assertEquals("saved in the project.md. Anytime", LocalCleanup.tidyDictationDots("saved in the project. MD. Anytime"))
+        assertEquals("well, I think so", LocalCleanup.tidyDictationDots("well... I think so"))
+        assertEquals("It ends here...", LocalCleanup.tidyDictationDots("It ends here..."))
+    }
 }

@@ -1,5 +1,8 @@
 package com.maxspeech.android.ui.style
 
+import androidx.compose.material.icons.outlined.Mic
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.width
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -77,6 +80,9 @@ fun StyleScreen(
     onAddWord: (String) -> Unit,
     onDeleteWord: (String) -> Unit,
     onStyleGroups: (String, String, String, String) -> Unit,
+    overlayReady: Boolean,
+    a11yReady: Boolean,
+    onOpenSettings: () -> Unit,
 ) {
     val c = LocalMsColors.current
     var query by remember { mutableStateOf("") }
@@ -267,6 +273,43 @@ fun StyleScreen(
             }
         }
         Spacer(Modifier.height(24.dp))
+        DictateAnywhereCard(overlayReady, a11yReady, onOpenSettings)
+        Spacer(Modifier.height(24.dp))
+    }
+}
+
+@Composable
+private fun DictateAnywhereCard(overlayReady: Boolean, a11yReady: Boolean, onOpenSettings: () -> Unit) {
+    val c = LocalMsColors.current
+    val ready = overlayReady && a11yReady
+    GlassSurface(Modifier.fillMaxWidth()) {
+        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.Top) {
+            Icon(
+                Icons.Outlined.Mic,
+                contentDescription = null,
+                tint = Turquoise,
+                modifier = Modifier.size(22.dp).padding(top = 2.dp),
+            )
+            Spacer(Modifier.width(12.dp))
+            Column {
+                Text("Dictate anywhere", color = c.text, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                Text(
+                    if (ready) {
+                        "Tap a text field in any app. Tap the mic to dictate, or hold it and talk."
+                    } else {
+                        "Enable Overlay + Accessibility in Settings so the floating mic can show."
+                    },
+                    color = c.textDim,
+                    fontSize = 13.sp,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+                if (!ready) {
+                    TextButton(onClick = onOpenSettings, contentPadding = PaddingValues(0.dp)) {
+                        Text("Open Settings", color = Turquoise, fontSize = 13.sp)
+                    }
+                }
+            }
+        }
     }
 }
 

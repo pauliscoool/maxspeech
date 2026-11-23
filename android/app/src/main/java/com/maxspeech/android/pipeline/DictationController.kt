@@ -64,6 +64,8 @@ private const val BATCH_RACE_COMPLETE_MS = 0L
 /** "Okay", "Thanks so much" — not worth a round trip. */
 private const val AI_MIN_WORDS = 3
 private const val SILENT_MIC_CHECK_MS = 2_500L
+/** ~30 recordings x up to 3.8 MB, private app storage. */
+private const val KEEP_RECORDINGS = 30
 
 class DictationController(
     private val context: Context,
@@ -627,48 +629,11 @@ class DictationController(
         }
         _ui.value = _ui.value.copy(originalText = raw, liveText = raw)
 
-        // snippets/dictionary → local cleanup → AI cleanup → punctuation.
-        val expanded = Vocab.expand(
-            raw,
-            snippets = snippets,
-            dictionary = dictionary,
-            phraseFixes = phraseFixes,
-            learned = emptyList(),
-            clipboard = ::clipboardText,
-        )
-        val multilingual = snap.multilingual || LocalCleanup.hasNonLatinScript(expanded)
-        // Spoken self-corrections are left for the AI: the rule-based pass guesses spans and used
-        // to delete words ("I need two tickets wait no three…" -> "three…") before the AI saw them.
-        val corrected = if (multilingual) expanded else LocalCleanup.localAsrCleanup(expanded)
         val tone = resolveTone(sessionApp, snap.toneOverride)
-        var out = corrected
-        val wholeSnippet = snippets.any { raw.trim().trimEnd('.', '!', '?').equals(it.first, ignoreCase = true) }
         val session = agentSession
         agentSession = null
-        var aiRan = false
-        if (snap.aiEnhance && !wholeSnippet && PlanCalculator.wordCount(corrected) > AI_MIN_WORDS) {
-            val started = SystemClock.elapsedRealtime()
-            val live = session ?: agent.prewarm(
-                sessionKeys,
-                AgentEnhanceClient.CleanupContext(tone, friendlyApp(sessionApp), dictionary, multilingual, level = snap.cleanupLevel),
-            )
-            val reply = live.run(corrected, AgentEnhanceClient.timeoutFor(corrected))
-            val ms = SystemClock.elapsedRealtime() - started
-            if (reply != null && AgentEnhanceClient.looksLikeEdit(corrected, reply)) {
-                out = reply
-                aiRan = true
-                Log.i(TAG, "AI cleanup ${ms}ms prewarmed=${session != null}")
-            } else {
-                Log.w(TAG, "AI cleanup unusable after ${ms}ms (reply=${reply?.length ?: -1} chars), using local text")
-            }
-        } else {
-            session?.close()
-        }
-        if (!aiRan && !multilingual) {
-            out = LocalCleanup.selfCorrectMarkers(out)
-            out = LocalCleanup.fixCasualAddressCommas(out)
-            out = LocalCleanup.normalizeTerminalPunctuation(out, tone)
-        }
+        var out = cleanUp(raw, snap, tone, friendlyApp(sessionApp), session, sessionKeys)
+        val pcm = synchronized(pcmLock) { pcmCapture.toByteArray() }
 
         if (snap.trailingSpace && !out.endsWith(" ")) out = "$out "
         val enhanced = out.trim() != raw.trim()
@@ -687,7 +652,7 @@ class DictationController(
                 liveText = historyText,
                 levels = List(BAR_COUNT) { 0.14f },
             )
-            saveHistoryAndUsage(historyText, historyApp, enhanced, wordCount)
+            saveHistoryAndUsage(historyText, historyApp, enhanced, wordCount, pcm)
             return
         }
 
@@ -711,14 +676,102 @@ class DictationController(
         } else {
             presentError(pasteFailure, transcript = historyText)
         }
-        saveHistoryAndUsage(historyText, historyApp, enhanced, wordCount)
+        saveHistoryAndUsage(historyText, historyApp, enhanced, wordCount, pcm)
     }
 
-    private fun saveHistoryAndUsage(text: String, appName: String, enhanced: Boolean, wordCount: Int) {
+    /** snippets/dictionary → local cleanup → AI cleanup → punctuation. */
+    private suspend fun cleanUp(
+        raw: String,
+        snap: AppSettings,
+        tone: String,
+        appName: String,
+        session: AgentEnhanceClient.Session?,
+        keys: List<String>,
+    ): String {
+        val expanded = Vocab.expand(
+            raw,
+            snippets = snippets,
+            dictionary = dictionary,
+            phraseFixes = phraseFixes,
+            learned = emptyList(),
+            clipboard = ::clipboardText,
+        )
+        val multilingual = snap.multilingual || LocalCleanup.hasNonLatinScript(expanded)
+        // Spoken self-corrections are left for the AI: the rule-based pass guesses spans and used
+        // to delete words ("I need two tickets wait no three…" -> "three…") before the AI saw them.
+        val corrected = if (multilingual) expanded else LocalCleanup.localAsrCleanup(expanded)
+        var out = corrected
+        val wholeSnippet = snippets.any { raw.trim().trimEnd('.', '!', '?').equals(it.first, ignoreCase = true) }
+        var aiRan = false
+        if (snap.aiEnhance && !wholeSnippet && PlanCalculator.wordCount(corrected) > AI_MIN_WORDS) {
+            val started = SystemClock.elapsedRealtime()
+            val live = session ?: agent.prewarm(
+                keys,
+                AgentEnhanceClient.CleanupContext(tone, appName, dictionary, multilingual, level = snap.cleanupLevel),
+            )
+            val reply = live.run(corrected, AgentEnhanceClient.timeoutFor(corrected))
+            val ms = SystemClock.elapsedRealtime() - started
+            if (reply != null && AgentEnhanceClient.looksLikeEdit(corrected, reply)) {
+                out = reply
+                aiRan = true
+                Log.i(TAG, "AI cleanup ${ms}ms prewarmed=${session != null}")
+            } else {
+                Log.w(TAG, "AI cleanup unusable after ${ms}ms (reply=${reply?.length ?: -1} chars), using local text")
+            }
+        } else {
+            session?.close()
+        }
+        if (!aiRan && !multilingual) {
+            out = LocalCleanup.selfCorrectMarkers(out)
+            out = LocalCleanup.fixCasualAddressCommas(out)
+            out = LocalCleanup.normalizeTerminalPunctuation(out, tone)
+        }
+        return if (multilingual) out else LocalCleanup.tidyDictationDots(out)
+    }
+
+    /** Re-run a saved recording through speech-to-text and cleanup, then update the entry. */
+    suspend fun retranscribe(id: Long): Result<String> = withContext(Dispatchers.IO) {
+        val row = db.historyDao().byId(id) ?: return@withContext Result.failure(IOException("Entry not found."))
+        val file = audioFile(id)
+        if (!file.exists()) {
+            return@withContext Result.failure(IOException("No recording saved for this one. New dictations keep their audio."))
+        }
+        val snap = settings.snapshot()
+        val keys = com.maxspeech.android.data.Secrets.deepgramKeys(snap.deepgramKey.ifBlank { null })
+        val lang = if (snap.multilingual &&
+            com.maxspeech.android.data.SttLanguages.multilingualAllowed(PlanCalculator.from(auth.current(), 0).tier)
+        ) {
+            "multi"
+        } else {
+            snap.languages.firstOrNull() ?: "en"
+        }
+        val raw = try {
+            stt.transcribeBatch(file.readBytes(), keys, lang, Vocab.mergeKeyterms(dictionary, builtinKeyterms))
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "retranscribe failed", e)
+            return@withContext Result.failure(IOException("Couldn't reach the speech service. Try again."))
+        }
+        if (raw.isBlank()) return@withContext Result.failure(IOException("No words found in the recording."))
+        val text = cleanUp(raw, snap, resolveTone("", snap.toneOverride), row.appName, null, keys).trim()
+        db.historyDao().update(row.copy(text = text, enhanced = text != raw.trim()))
+        withContext(Dispatchers.Main) { copyTranscriptToClipboard(text) }
+        Result.success(text)
+    }
+
+    private fun audioFile(id: Long) = java.io.File(context.filesDir, "audio/$id.pcm")
+
+    fun deleteAudio(id: Long) {
+        audioFile(id).delete()
+    }
+
+    private fun saveHistoryAndUsage(text: String, appName: String, enhanced: Boolean, wordCount: Int, pcm: ByteArray) {
         scope.launch(Dispatchers.IO) {
             try {
-                db.historyDao().insert(HistoryEntity(text = text, appName = appName, enhanced = enhanced))
+                val id = db.historyDao().insert(HistoryEntity(text = text, appName = appName, enhanced = enhanced))
                 db.usageDao().insert(UsageEntity(wordCount = wordCount))
+                saveAudio(id, pcm)
             } catch (e: Exception) {
                 Log.e(TAG, "Could not save completed dictation", e)
                 withContext(Dispatchers.Main.immediate) {
@@ -731,6 +784,19 @@ class DictationController(
                 }
             }
         }
+    }
+
+    /** Keep the newest recordings on device so Retranscribe can re-run them. */
+    private fun saveAudio(id: Long, pcm: ByteArray) {
+        if (pcm.size < MIN_PCM_BYTES) return
+        runCatching {
+            val dir = java.io.File(context.filesDir, "audio").apply { mkdirs() }
+            java.io.File(dir, "$id.pcm").writeBytes(pcm)
+            dir.listFiles()
+                ?.sortedByDescending { it.nameWithoutExtension.toLongOrNull() ?: 0L }
+                ?.drop(KEEP_RECORDINGS)
+                ?.forEach { it.delete() }
+        }.onFailure { Log.w(TAG, "Could not save recording for retranscribe", it) }
     }
 
     private fun recordPcm(samples: ShortArray) {

@@ -13,6 +13,8 @@ Turn the transcript into exactly what the speaker meant to type:
 6. Keep the speaker's own words, meaning, slang and voice. Never add ideas, greetings, sign-offs or facts. Never summarize or shorten beyond removing fillers. Never translate; keep every language as spoken. Never emit profanity — if ASR produced a swear and a clean near-homophone is plausible (e.g. "fuck" vs "flip"), prefer the clean word. Never swap clean words for swears.
 7. Spell out numbers zero to twenty in casual prose; keep digits for times, codes, versions, prices and numbers above twenty. Write times without a leading zero ("6:30", not "06:30").
 8. Keep slang spelled the way people text it: "lowkey", "highkey", "ngl", "tbh". Never hyphenate or split "lowkey".
+9. Never write ellipses ("..."). A pause or trailed-off phrase is joined with a comma or dropped. Do not chop one spoken thought into many short sentences. File names stay joined: "project dot md" or "project. MD" -> "project.md".
+10. The context below is other text on the screen (often other people's messages). Use it only to spell words correctly. Never copy it, quote it, or continue it: the output contains only what the speaker said.
 
 Examples:
 <t>um so I was thinking we could uh meet on Tuesday no wait Wednesday at like 3</t> -> So I was thinking we could meet on Wednesday at 3.

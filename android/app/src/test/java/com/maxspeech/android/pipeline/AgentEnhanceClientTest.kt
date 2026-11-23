@@ -26,6 +26,15 @@ class AgentEnhanceClientTest {
         assertFalse(AgentEnhanceClient.looksLikeEdit(long, ""))
     }
 
+    @Test fun rejectsScreenTextPastedInsteadOfDictation() {
+        val said = "okay so I was talking about the quest update and how long it took me to finish the whole thing honestly"
+        val copied = "36 | Builder 101 | Minecraft Dungeons II OST now on my YouTube channel | builder101 | WOAHH the quests just got updated"
+        assertFalse(AgentEnhanceClient.looksLikeEdit(said, copied))
+        assertTrue(
+            AgentEnhanceClient.looksLikeEdit(said, "Okay, so I was talking about the quest update and how long it took me to finish the whole thing, honestly."),
+        )
+    }
+
     @Test fun cleanupLevels() {
         assertTrue(AgentEnhanceClient.levelLine("light")!!.contains("Do not reword"))
         assertTrue(AgentEnhanceClient.levelLine("high")!!.contains("smooth"))

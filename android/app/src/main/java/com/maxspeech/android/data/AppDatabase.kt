@@ -68,6 +68,9 @@ interface HistoryDao {
     @Query("SELECT * FROM history ORDER BY id DESC LIMIT :limit")
     suspend fun latest(limit: Int = 20): List<HistoryEntity>
 
+    @Query("SELECT * FROM history WHERE id = :id")
+    suspend fun byId(id: Long): HistoryEntity?
+
     @Query("SELECT * FROM history WHERE text LIKE '%' || :q || '%' ORDER BY id DESC LIMIT 80")
     suspend fun search(q: String): List<HistoryEntity>
 

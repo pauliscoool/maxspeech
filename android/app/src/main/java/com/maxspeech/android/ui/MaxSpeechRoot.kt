@@ -1,5 +1,16 @@
 package com.maxspeech.android.ui
 
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.graphics.Brush
 import android.Manifest
 import android.content.Intent
 import android.net.Uri
@@ -273,6 +284,9 @@ fun MaxSpeechRoot(vm: AppViewModel) {
                                             onAddWord = vm::addWord,
                                             onDeleteWord = vm::deleteWord,
                                             onStyleGroups = vm::saveStyleGroups,
+                                            overlayReady = overlayOk,
+                                            a11yReady = a11yOk,
+                                            onOpenSettings = { tab = Tab.Settings },
                                         )
                                         Tab.Settings -> {
                                             when (settingsSub) {
@@ -496,15 +510,36 @@ private fun GlassTabBar(
     var tabLefts by remember { mutableStateOf(FloatArray(tabs.size)) }
     var tabWidths by remember { mutableStateOf(FloatArray(tabs.size)) }
     val selected = tabs.indexOfFirst { it.first == current }.coerceAtLeast(0)
-    val targetLeft = tabLefts.getOrElse(selected) { 0f }
-    val targetWidth = tabWidths.getOrElse(selected) { 0f }
+    val haptics = LocalHapticFeedback.current
+    // Finger x while the pill is held and dragged (iOS-style); null when not dragging.
+    var dragX by remember { mutableStateOf<Float?>(null) }
+    fun indexAt(x: Float): Int {
+        val i = tabLefts.indices.firstOrNull { x >= tabLefts[it] && x < tabLefts[it] + tabWidths[it] }
+        return i ?: if (x < (tabLefts.firstOrNull() ?: 0f)) 0 else tabs.lastIndex
+    }
+    val hover = dragX?.let { indexAt(it) }
+    LaunchedEffect(hover) {
+        if (hover != null) haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+    }
+    val shown = hover ?: selected
+    val targetWidth = tabWidths.getOrElse(shown) { 0f }
+    val targetLeft = dragX?.let { x ->
+        val minLeft = tabLefts.firstOrNull() ?: 0f
+        val maxLeft = (tabLefts.lastOrNull() ?: 0f) + (tabWidths.lastOrNull() ?: 0f) - targetWidth
+        (x - targetWidth / 2f).coerceIn(minLeft, maxLeft.coerceAtLeast(minLeft))
+    } ?: tabLefts.getOrElse(selected) { 0f }
     val pillLeft by animateFloatAsState(
         targetValue = targetLeft,
         animationSpec = spring(
-            dampingRatio = Spring.DampingRatioMediumBouncy,
-            stiffness = Spring.StiffnessMediumLow,
+            dampingRatio = if (dragX != null) 0.8f else Spring.DampingRatioMediumBouncy,
+            stiffness = if (dragX != null) Spring.StiffnessHigh else Spring.StiffnessMediumLow,
         ),
         label = "tabPillX",
+    )
+    val pillLift by animateFloatAsState(
+        targetValue = if (dragX != null) 1.12f else 1f,
+        animationSpec = spring(dampingRatio = 0.55f, stiffness = 700f),
+        label = "tabPillLift",
     )
     val pillWidth by animateFloatAsState(
         targetValue = targetWidth,
@@ -546,7 +581,24 @@ private fun GlassTabBar(
         Box(
             Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 6.dp, vertical = 10.dp),
+                .padding(horizontal = 6.dp, vertical = 10.dp)
+                .pointerInput(tabs) {
+                    detectTapGestures { pos -> onSelect(tabs[indexAt(pos.x)].first) }
+                }
+                .pointerInput(tabs) {
+                    detectDragGesturesAfterLongPress(
+                        onDragStart = { pos -> dragX = pos.x },
+                        onDrag = { change, amount ->
+                            change.consume()
+                            dragX = (dragX ?: change.position.x) + amount.x
+                        },
+                        onDragEnd = {
+                            dragX?.let { onSelect(tabs[indexAt(it)].first) }
+                            dragX = null
+                        },
+                        onDragCancel = { dragX = null },
+                    )
+                },
         ) {
             if (pillWidth > 1f) {
                 Box(Modifier.matchParentSize()) {
@@ -560,8 +612,26 @@ private fun GlassTabBar(
                             }
                             .width(with(density) { pillWidth.toDp() })
                             .fillMaxHeight()
+                            .graphicsLayer {
+                                scaleX = pillLift
+                                scaleY = pillLift
+                            }
                             .clip(pillShape)
-                            .background(activeFill, pillShape),
+                            .background(activeFill.copy(alpha = if (dragX != null) 0.55f else 1f), pillShape)
+                            // Glass lens: bright top edge fading down, like light catching the rim.
+                            .background(
+                                Brush.verticalGradient(
+                                    listOf(Color.White.copy(alpha = if (light) 0.5f else 0.14f), Color.Transparent),
+                                ),
+                                pillShape,
+                            )
+                            .border(
+                                1.dp,
+                                Brush.verticalGradient(
+                                    listOf(Color.White.copy(alpha = if (light) 0.9f else 0.22f), Color.White.copy(alpha = 0.03f)),
+                                ),
+                                pillShape,
+                            ),
                     )
                 }
             }
@@ -574,7 +644,7 @@ private fun GlassTabBar(
                     TabBtn(
                         label = label,
                         icon = icon,
-                        active = current == tab,
+                        active = index == shown,
                         onClick = { onSelect(tab) },
                         modifier = Modifier
                             .weight(1f)
@@ -638,9 +708,13 @@ private fun TabBtn(
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
+        // Taps and drags are handled by the bar so press-and-slide works across tabs.
         modifier = modifier
-            .clip(RoundedCornerShape(percent = 50))
-            .clickable(onClick = onClick)
+            .semantics {
+                role = Role.Tab
+                selected = active
+                onClick { onClick(); true }
+            }
             .padding(horizontal = 10.dp, vertical = 4.dp)
             .graphicsLayer {
                 translationY = jump.value

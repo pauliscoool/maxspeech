@@ -278,8 +278,24 @@ class AgentEnhanceClient(private val assets: AssetManager) {
             val i = input.trim().length
             val r = reply.trim().length
             if (r == 0) return false
-            if (i < 30) return r <= i * 3 + 25
-            return r * 100 >= i * 30 && r * 100 <= i * 180
+            if (i < 30) return r <= i * 3 + 25 && mostlyInputWords(input, reply)
+            return r * 100 >= i * 30 && r * 100 <= i * 180 && mostlyInputWords(input, reply)
         }
+
+        /**
+         * Cleanup keeps the speaker's words, so most reply words must come from the input. Catches the
+         * model pasting the on-screen context (other people's chat messages) in place of the dictation.
+         */
+        fun mostlyInputWords(input: String, reply: String): Boolean {
+            val said = wordSet(input)
+            val out = wordList(reply)
+            if (out.size < 6) return true
+            return out.count { it in said } * 100 >= out.size * 60
+        }
+
+        private fun wordList(s: String): List<String> =
+            s.lowercase().split(Regex("""[^\p{L}\p{N}']+""")).map { it.replace("'", "") }.filter { it.isNotEmpty() }
+
+        private fun wordSet(s: String): Set<String> = wordList(s).toSet()
     }
 }

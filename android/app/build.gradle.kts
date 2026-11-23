@@ -13,8 +13,8 @@ android {
         applicationId = "com.maxspeech.android"
         minSdk = 26
         targetSdk = 35
-        versionCode = 86
-        versionName = "0.5.9-beta"
+        versionCode = 87
+        versionName = "0.6.0-beta"
         vectorDrawables.useSupportLibrary = true
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

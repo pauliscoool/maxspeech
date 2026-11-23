@@ -1,5 +1,16 @@
 package com.maxspeech.android.ui.home
 
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.isImeVisible
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
 import android.app.Activity
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateContentSize
@@ -26,6 +37,10 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.Canvas
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -37,7 +52,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material.icons.outlined.Search
@@ -89,6 +103,7 @@ import java.util.Date
 import java.util.Locale
 import kotlinx.coroutines.launch
 
+@OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
 @Composable
 fun HomeScreen(
     name: String,
@@ -131,9 +146,27 @@ fun HomeScreen(
     val failedCount = remember(history) { history.count { it.failed } }
     var pendingDelete by remember { mutableStateOf<HistoryEntity?>(null) }
 
+    val scroll = rememberScrollState()
+    val focusManager = LocalFocusManager.current
+    val searchBringer = remember { BringIntoViewRequester() }
+    var searchRowHeight by remember { mutableStateOf(0) }
+    val imeVisible = WindowInsets.isImeVisible
+    val gapPx = with(LocalDensity.current) { 14.dp.toPx() }
+    // Where the page sat before search opened, so closing slides it back.
+    var scrollBeforeSearch by remember { mutableStateOf(0) }
     LaunchedEffect(searchOpen) {
         if (searchOpen) {
+            scrollBeforeSearch = scroll.value
             runCatching { searchFocus.requestFocus() }
+        } else {
+            focusManager.clearFocus()
+            scroll.animateScrollTo(scrollBeforeSearch, spring(dampingRatio = 0.85f, stiffness = 380f))
+        }
+    }
+    // Keyboard up: lift the search bar so it rests just above the keyboard with a small gap.
+    LaunchedEffect(searchOpen, imeVisible) {
+        if (searchOpen && imeVisible) {
+            searchBringer.bringIntoView(Rect(0f, 0f, 1f, searchRowHeight + gapPx))
         }
     }
 
@@ -143,7 +176,8 @@ fun HomeScreen(
             .fillMaxSize()
             .background(c.bg)
             .statusBarsPadding()
-            .verticalScroll(rememberScrollState())
+            .imePadding()
+            .verticalScroll(scroll)
             .padding(horizontal = 20.dp)
             .padding(top = 8.dp, bottom = 120.dp),
     ) {
@@ -166,51 +200,6 @@ fun HomeScreen(
             onSelectStyleGroup = onSelectStyleGroup,
             onOpenStyleEdit = onOpenStyleEdit,
         )
-
-        Spacer(Modifier.height(16.dp))
-        SurfaceCard(Modifier.fillMaxWidth()) {
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-            ) {
-                Row(verticalAlignment = Alignment.Top) {
-                    Icon(
-                        Icons.Outlined.Mic,
-                        contentDescription = null,
-                        tint = Turquoise,
-                        modifier = Modifier.size(22.dp).padding(top = 2.dp),
-                    )
-                    Spacer(Modifier.width(12.dp))
-                    Column {
-                        Text("Dictate anywhere", color = c.text, fontSize = 15.sp, fontWeight = FontWeight.Medium)
-                        Text(
-                            if (overlayReady && a11yReady) {
-                                "Tap a text field in any app. Tap the mic to dictate, or hold it and talk."
-                            } else {
-                                "Enable Overlay + Accessibility in Settings so the floating mic can show."
-                            },
-                            color = c.textDim,
-                            fontSize = 13.sp,
-                            modifier = Modifier.padding(top = 4.dp),
-                        )
-                        if (!overlayReady || !a11yReady) {
-                            Text(
-                                "Open Settings",
-                                color = Turquoise,
-                                fontSize = 13.sp,
-                                modifier = Modifier
-                                    .padding(top = 10.dp)
-                                    .pointerInput(Unit) {
-                                        detectTapGestures { onOpenSettings() }
-                                    },
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
 
         Spacer(Modifier.height(22.dp))
         // Compact toolbar: search expands on the left with a jump-slide; filter on the right.
@@ -243,6 +232,8 @@ fun HomeScreen(
         Row(
             Modifier
                 .fillMaxWidth()
+                .bringIntoViewRequester(searchBringer)
+                .onSizeChanged { searchRowHeight = it.height }
                 .animateContentSize(
                     animationSpec = spring(
                         dampingRatio = Spring.DampingRatioMediumBouncy,
@@ -262,7 +253,7 @@ fun HomeScreen(
                 shape = RoundedCornerShape(percent = 50),
             ) {
                 Row(
-                    Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+                    Modifier.padding(2.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     IconButton(
@@ -270,7 +261,7 @@ fun HomeScreen(
                             searchOpen = !searchOpen
                             if (!searchOpen) query = ""
                         },
-                        modifier = Modifier.size(40.dp),
+                        modifier = Modifier.size(44.dp),
                     ) {
                         AnimatedContent(
                             targetState = searchOpen,
@@ -351,16 +342,23 @@ fun HomeScreen(
                 modifier = Modifier.graphicsLayer { translationX = filterSlide },
                 shape = RoundedCornerShape(percent = 50),
             ) {
-                Text(
-                    text = if (failedOnly) "Failed" else "All",
-                    color = if (failedOnly) Orange else c.text,
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Medium,
-                    modifier = Modifier
+                // Same 48dp height as the search circle; "All" stays a circle, "Failed" a pill.
+                Box(
+                    Modifier
+                        .height(48.dp)
+                        .widthIn(min = 48.dp)
                         .clip(RoundedCornerShape(percent = 50))
                         .clickable { failedOnly = !failedOnly }
-                        .padding(horizontal = 14.dp, vertical = 12.dp),
-                )
+                        .padding(horizontal = 12.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = if (failedOnly) "Failed" else "All",
+                        color = if (failedOnly) Orange else c.text,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium,
+                    )
+                }
             }
         }
         if (failedCount > 0 && !failedOnly) {
@@ -627,12 +625,7 @@ private fun HistoryRow(
                         onClick = { menuOpen = true },
                         modifier = Modifier.size(32.dp),
                     ) {
-                        Icon(
-                            Icons.Filled.MoreVert,
-                            contentDescription = "More",
-                            tint = c.text,
-                            modifier = Modifier.size(18.dp),
-                        )
+                        MoreToClose(open = menuOpen, color = c.text)
                     }
                     DropdownMenu(
                         expanded = menuOpen,
@@ -672,6 +665,31 @@ private fun HistoryRow(
                     }
                 }
             }
+        }
+    }
+}
+
+/** Three dots that morph into an X while the menu is open. */
+@Composable
+private fun MoreToClose(open: Boolean, color: Color) {
+    val p by animateFloatAsState(
+        targetValue = if (open) 1f else 0f,
+        animationSpec = spring(dampingRatio = 0.62f, stiffness = 600f),
+        label = "moreToClose",
+    )
+    Canvas(Modifier.size(20.dp)) {
+        val dot = 2.6.dp.toPx()
+        val gap = 6.dp.toPx()
+        val half = (7.dp.toPx() * p).coerceAtLeast(0.01f)
+        val cx = size.width / 2
+        val cy = size.height / 2
+        drawCircle(color.copy(alpha = (1f - p * 1.6f).coerceIn(0f, 1f)), dot / 2, Offset(cx, cy))
+        for ((dir, sign) in listOf(-1f to 1f, 1f to -1f)) {
+            val y = cy + dir * gap * (1f - p)
+            val a = 45f * sign * p * (Math.PI / 180f).toFloat()
+            val dx = kotlin.math.cos(a) * half
+            val dy = kotlin.math.sin(a) * half
+            drawLine(color, Offset(cx - dx, y - dy), Offset(cx + dx, y + dy), dot, StrokeCap.Round)
         }
     }
 }

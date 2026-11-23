@@ -460,6 +460,24 @@ object LocalCleanup {
     )
 
     /**
+     * Speech-to-text writes a trailing-off pause as "a... Like," and splits spoken file names
+     * ("project.md" -> "project. MD."). Mid-text ellipses become a comma; known extensions rejoin.
+     */
+    fun tidyDictationDots(text: String): String = text
+        .replace(MID_ELLIPSIS) { m ->
+            val next = m.groupValues[2]
+            val keepCap = next == "I" || next.startsWith("I'")
+            m.groupValues[1] + ", " + if (keepCap) next else next.lowercase()
+        }
+        .replace(SPLIT_FILE_EXT) { "." + it.groupValues[1].lowercase() }
+
+    private val MID_ELLIPSIS = Regex("""(\w)(?:\.{2,}|…)\s+(\S+)""")
+    private val SPLIT_FILE_EXT = Regex(
+        """(?<=\w)\. ?(md|txt|json|js|ts|tsx|py|kt|rs|html|css|pdf|png|jpg|jpeg|exe|apk|zip|yml|yaml|csv|toml)\b""",
+        RegexOption.IGNORE_CASE,
+    )
+
+    /**
      * Fit dictation between the text before and after the caret: a space on each side
      * where words would otherwise touch, and no sentence-ending period when the text after
      * continues in lowercase ("went to the| store" + "big." -> "big").
